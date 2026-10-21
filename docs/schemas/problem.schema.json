@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "problem.schema.json",
+  "title": "problem.yaml, format_version 1",
+  "description": "Descriptor of a problem package. See docs/PROBLEM_FORMAT.md for the human-readable reference.",
+  "type": "object",
+  "required": ["format_version", "slug", "title", "type"],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": { "const": 1 },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+      "description": "Stable identifier of the problem, lowercase latin letters, digits and hyphens."
+    },
+    "title": { "$ref": "#/$defs/i18n" },
+    "statement": {
+      "$ref": "#/$defs/i18n",
+      "description": "Optional map language -> path of the Markdown statement. Default: statement/<lang>.md for each language in title."
+    },
+    "type": { "enum": ["batch", "interactive", "output_only", "choice", "text_answer"] },
+    "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "difficulty": { "type": "integer", "minimum": 1, "maximum": 10 },
+
+    "io": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["stdio", "files"], "default": "stdio" },
+        "input": { "type": "string", "description": "Input file name when mode is files." },
+        "output": { "type": "string", "description": "Output file name when mode is files." }
+      },
+      "if": { "properties": { "mode": { "const": "files" } }, "required": ["mode"] },
+      "then": { "required": ["input", "output"] }
+    },
+
+    "limits": { "$ref": "#/$defs/limits" },
+    "languages": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9_+-]+$" },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Allowed language keys (see Language table). Omit to allow all enabled languages."
+    },
+    "submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow_archive": { "type": "boolean", "default": true },
+        "entry": { "type": "string", "description": "Entry file for interpreted languages, default main.py." },
+        "max_archive_kb": { "type": "integer", "minimum": 1, "default": 1024 },
+        "max_files": { "type": "integer", "minimum": 1, "default": 20 }
+      }
+    },
+
+    "checker": { "$ref": "#/$defs/checker" },
+    "interactor": { "$ref": "#/$defs/programRef" },
+    "validator": { "$ref": "#/$defs/programRef" },
+    "feedback": { "$ref": "#/$defs/feedback" },
+    "test_groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/testGroup" }
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/choiceQuestion" }
+    },
+    "answers": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/textAnswer" }
+    },
+    "solutions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/solution" }
+    }
+  },
+
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "batch" } }, "required": ["type"] },
+      "then": { "required": ["test_groups", "checker"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "output_only" } }, "required": ["type"] },
+      "then": { "required": ["test_groups", "checker"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "interactive" } }, "required": ["type"] },
+      "then": { "required": ["test_groups", "interactor"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "choice" } }, "required": ["type"] },
+      "then": { "required": ["questions"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "text_answer" } }, "required": ["type"] },
+      "then": { "required": ["answers"] }
+    }
+  ],
+
+  "$defs": {
+    "i18n": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-z]{2}(-[A-Z]{2})?$" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "null or absent means: no task-specific limit. System hard caps always apply.",
+      "properties": {
+        "time_ms": { "type": ["integer", "null"], "minimum": 1 },
+        "memory_mb": { "type": ["integer", "null"], "minimum": 1 },
+        "output_kb": { "type": ["integer", "null"], "minimum": 1 },
+        "per_language": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "time_multiplier": { "type": "number", "minimum": 0.1 },
+              "memory_multiplier": { "type": "number", "minimum": 0.1 }
+            }
+          }
+        }
+      }
+    },
+
+    "feedback": {
+      "enum": ["full", "first_fail", "groups_only", "verdict_only"],
+      "description": "What a student sees about hidden tests. A teacher always sees everything."
+    },
+
+    "programRef": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "language": { "type": "string", "default": "cpp" }
+      }
+    },
+
+    "checker": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["exact", "tokens", "float", "custom"] },
+        "eps": { "type": "number", "exclusiveMinimum": 0 },
+        "path": { "type": "string" },
+        "language": { "type": "string", "default": "cpp" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "float" } }, "required": ["type"] }, "then": { "required": ["eps"] } },
+        { "if": { "properties": { "type": { "const": "custom" } }, "required": ["type"] }, "then": { "required": ["path"] } }
+      ]
+    },
+
+    "testGroup": {
+      "type": "object",
+      "required": ["name", "tests"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "tests": {
+          "description": "Glob(s) of input files relative to the package root, for example tests/small*.in. Answer file has the same name with .out.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          ]
+        },
+        "points": { "type": "number", "minimum": 0, "default": 0 },
+        "scoring": { "enum": ["sum", "all_or_nothing", "min"], "default": "sum" },
+        "visibility": { "enum": ["open", "hidden"], "default": "hidden" },
+        "depends_on": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "show_in_statement": { "type": "boolean", "default": false },
+        "feedback": { "$ref": "#/$defs/feedback" }
+      }
+    },
+
+    "choiceQuestion": {
+      "type": "object",
+      "required": ["id", "text", "options", "correct"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "text": { "type": "string", "minLength": 1 },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["id", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+              "text": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "correct": { "type": "array", "minItems": 1, "items": { "type": "string" }, "uniqueItems": true },
+        "points": { "type": "number", "minimum": 0, "default": 1 },
+        "explanation": { "type": "string" }
+      }
+    },
+
+    "textAnswer": {
+      "type": "object",
+      "required": ["id", "text", "accept"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "text": { "type": "string", "minLength": 1 },
+        "accept": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "match": { "enum": ["exact", "normalized", "regex", "number"], "default": "normalized" },
+        "eps": { "type": "number", "exclusiveMinimum": 0 },
+        "points": { "type": "number", "minimum": 0, "default": 1 },
+        "explanation": { "type": "string" }
+      }
+    },
+
+    "solution": {
+      "type": "object",
+      "required": ["path", "expect"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "language": { "type": "string" },
+        "expect": { "enum": ["OK", "WA", "PE", "TL", "ML", "RE", "CE", "OL"] },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+format_version: 1
+slug: what-is-the-output
+title: { ru: "Что выведет программа?" }
+type: text_answer
+tags: [quiz, python]
+difficulty: 1
+
+answers:
+  - id: a1
+    text: "Что выведет `print(sum(range(5)))`? Ответ: число."
+    accept: ["10"]
+    match: number
+    eps: 0.000001
+    points: 1
+  - id: a2
+    text: "Как называется встроенная функция, возвращающая длину списка? Ответ: одно слово."
+    accept: ["len"]
+    match: normalized
+    points: 1

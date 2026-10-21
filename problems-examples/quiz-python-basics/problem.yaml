@@ -1,0 +1,34 @@
+format_version: 1
+slug: quiz-python-basics
+title: { ru: "Тест: основы Python" }
+type: choice
+tags: [quiz, python]
+difficulty: 1
+
+questions:
+  - id: q1
+    text: "Какой тип у значения `3 / 2` в Python 3?"
+    options:
+      - { id: a, text: "int" }
+      - { id: b, text: "float" }
+      - { id: c, text: "str" }
+    correct: [b]
+    points: 1
+    explanation: "Оператор `/` всегда возвращает float. Для целого деления есть `//`."
+  - id: q2
+    text: "Какие из выражений истинны?"
+    options:
+      - { id: a, text: "`7 // 2 == 3`" }
+      - { id: b, text: "`7 % 2 == 1`" }
+      - { id: c, text: "`2 ** 3 == 6`" }
+    correct: [a, b]
+    points: 2
+    explanation: "`2 ** 3` равно 8."
+  - id: q3
+    text: "Что выведет `print(len([1, 2, 3]))`?"
+    options:
+      - { id: a, text: "2" }
+      - { id: b, text: "3" }
+      - { id: c, text: "4" }
+    correct: [b]
+    points: 1

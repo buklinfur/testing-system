@@ -1,0 +1,33 @@
+format_version: 1
+slug: guess-number
+title: { ru: "Угадай число" }
+type: interactive
+tags: [interactive, binary-search]
+difficulty: 3
+
+limits:
+  time_ms: 2000
+  memory_mb: 256
+  per_language:
+    python: { time_multiplier: 3 }
+
+languages: [python, c, cpp]
+
+# Вердикт выносит интерактор. Файлов *.out нет.
+interactor: { path: interactor/interactor.cpp }
+feedback: verdict_only
+
+test_groups:
+  - name: samples
+    tests: "tests/sample*.in"
+    points: 0
+    visibility: open
+  - name: main
+    tests: "tests/t*.in"
+    points: 100
+    scoring: sum
+    visibility: hidden
+
+solutions:
+  - { path: solutions/ok.py, expect: OK }
+  - { path: solutions/wa_linear.py, expect: WA, note: "линейный перебор не укладывается в 32 запроса" }

@@ -1,0 +1,41 @@
+format_version: 1
+slug: sum-of-two
+title: { ru: "Сумма двух чисел" }
+type: batch
+tags: [basics, io]
+difficulty: 1
+
+io: { mode: stdio }
+
+limits:
+  time_ms: 1000
+  memory_mb: 256
+  per_language:
+    python: { time_multiplier: 3 }
+
+languages: [python, c, cpp]
+
+checker: { type: tokens }
+feedback: first_fail
+
+test_groups:
+  - name: samples
+    tests: "tests/sample*.in"
+    points: 0
+    visibility: open
+    show_in_statement: true
+  - name: small
+    tests: "tests/small*.in"
+    points: 40
+    scoring: sum
+    visibility: hidden
+  - name: large
+    tests: "tests/large*.in"
+    points: 60
+    scoring: all_or_nothing
+    visibility: hidden
+    depends_on: [small]
+
+solutions:
+  - { path: solutions/ok.py, expect: OK }
+  - { path: solutions/wa_int_overflow.cpp, expect: WA, note: "int переполняется на больших числах" }

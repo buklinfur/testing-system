@@ -1,0 +1,28 @@
+format_version: 1
+slug: pair-with-sum
+title: { ru: "Любая пара с заданной суммой" }
+type: batch
+tags: [checker, constructive]
+difficulty: 2
+
+limits:
+  time_ms: 1000
+  memory_mb: 256
+
+languages: [python, c, cpp]
+
+# У задачи много правильных ответов, поэтому нужен собственный чекер.
+# Файлов *.out нет: чекеру передаётся пустой файл ответа.
+checker: { type: custom, path: checker/check.cpp }
+feedback: first_fail
+
+test_groups:
+  - name: main
+    tests: "tests/*.in"
+    points: 100
+    scoring: sum
+    visibility: hidden
+
+solutions:
+  - { path: solutions/ok.py, expect: OK }
+  - { path: solutions/wa.py, expect: WA }
