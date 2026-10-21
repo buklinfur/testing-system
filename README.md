@@ -1,13 +1,16 @@
 # Judge: тестирующая система для школьных контестов
 
-Статус: модуль 1 (формат задачи и модель данных). Среда: WSL2 + Ubuntu + `isolate`.
+Статус: модули 0-2 (среда, формат задачи и модель данных, раннер). Среда: WSL2 + Ubuntu + `isolate`.
 
 ```
 docs/
   PROBLEM_FORMAT.md           формат пакета задачи (для людей и LLM)
+  RUNNER.md                   устройство раннера, запуск, что проверено и что нет
   DATA_MODEL.md               модель данных и инварианты
   schemas/problem.schema.json JSON Schema для problem.yaml
 backend/app/models.py         модели SQLAlchemy 2.0 (PostgreSQL)
+runner/                       раннер: песочница, компиляция, чекеры, интерактив, вердикты (docs/RUNNER.md)
+tests/                        автотесты (python -m unittest discover -s tests -t .)
 problems-examples/            пять примеров: batch, custom checker, interactive, choice, text_answer
 tools/validate_problem.py     проверка пакета задачи
 ```

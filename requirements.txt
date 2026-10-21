@@ -1,0 +1,3 @@
+pyyaml>=6
+jsonschema>=4
+# backend (module 4): sqlalchemy>=2, alembic, psycopg[binary], fastapi
