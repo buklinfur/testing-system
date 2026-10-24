@@ -1,0 +1,23 @@
+[Unit]
+Description=Judge internal API for workers (127.0.0.1 only, never behind the tunnel)
+After=network-online.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=judge
+Group=judge
+WorkingDirectory=/opt/judge
+Environment=PYTHONPATH=/opt/judge:/opt/judge/backend
+EnvironmentFile=/etc/judge/backend.env
+ExecStart=/opt/judge/.venv/bin/uvicorn app.internal_main:app --host 127.0.0.1 --port 8001 --workers 2
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/judge
+
+[Install]
+WantedBy=multi-user.target

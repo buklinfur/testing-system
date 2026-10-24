@@ -36,6 +36,10 @@ class RunnerConfig:
     jury_time_ms: int = 10_000
     jury_memory_mb: int = 512
 
+    # --- jury program cache ----------------------------------------------
+    # Part of the cache key of compiled checkers/interactors (e.g. a hash of `g++ --version`).
+    toolchain_id: str = ""
+
     # --- behaviour -------------------------------------------------------
     run_all_tests: bool = False  # False: stop a all_or_nothing group at its first failure
     message_cap_bytes: int = 1024

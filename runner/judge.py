@@ -1,7 +1,6 @@
 """Orchestration: compile a submission, run it on every test, check, score."""
 from __future__ import annotations
 
-import hashlib
 import os
 import threading
 from decimal import Decimal
@@ -12,6 +11,7 @@ from .checkers import run_builtin
 from .common import Limits, RunResult, SandboxError, Verdict
 from .compile import Program, compile_program
 from .config import RunnerConfig
+from .jurycache import JuryCache, MemoryJuryCache, jury_key
 from .languages import EXECUTABLE_NAME, get_profile, guess_language
 from .package import Problem, TestFile
 from .report import GroupReport, JudgeReport, TestReport
@@ -25,41 +25,54 @@ class JudgeError(Exception):
     """Internal failure (jury program broken, sandbox problem). Becomes verdict IE."""
 
 
+class JudgeCancelled(Exception):
+    """The caller asked to stop (lease lost, shutdown). Not a verdict: no report is produced."""
+
+
 def _decode(data: bytes, cap: int) -> str:
     return data[:cap].decode("utf-8", errors="replace")
 
 
 class Judge:
-    def __init__(self, config: Optional[RunnerConfig] = None, factory=None) -> None:
+    def __init__(self, config: Optional[RunnerConfig] = None, factory=None,
+                 jury_cache: Optional[JuryCache] = None) -> None:
         self.config = config or RunnerConfig()
         self.factory = factory or make_factory(self.config)
-        self._jury_cache: dict = {}
+        self._jury_cache: JuryCache = jury_cache if jury_cache is not None else MemoryJuryCache()
+        self._jury_local: dict = {}  # per-process layer: a disk cache is read once per binary, not once per test
 
     # ------------------------------------------------------------------ public
     def judge_submission(self, problem: Problem, language: str, data: bytes, is_archive: bool = False,
-                         entry: Optional[str] = None) -> JudgeReport:
+                         entry: Optional[str] = None, cancel=None, progress=None) -> JudgeReport:
+        """cancel() -> bool is polled between steps (raises JudgeCancelled);
+        progress(phase, done, total) reports "compiling" / "running" and finished tests."""
         profile = get_profile(language)
         try:
             files = extract_submission(data, is_archive, profile, self.config)
         except SubmissionError as exc:
             return JudgeReport(Verdict.CE, max_score=problem.max_score(), first_fail_verdict=Verdict.CE,
                                compile_log=str(exc))
-        return self.judge(problem, language, files, entry)
+        return self.judge(problem, language, files, entry, cancel=cancel, progress=progress)
 
-    def judge(self, problem: Problem, language: str, files: dict, entry: Optional[str] = None) -> JudgeReport:
+    def judge(self, problem: Problem, language: str, files: dict, entry: Optional[str] = None,
+              cancel=None, progress=None) -> JudgeReport:
         if problem.type not in ("batch", "interactive"):
             raise NotImplementedError(f"problem type {problem.type!r} is not supported by the runner yet")
         profile = get_profile(language)
         if problem.languages and language not in problem.languages:
             raise ValueError(f"language {language!r} is not allowed for this problem")
         max_score = problem.max_score()
+        total = sum(len(g.tests) for g in problem.groups)
+        self._tick(cancel, progress, "compiling", 0, total)
         try:
             outcome = compile_program(self.factory, profile, files, entry or problem.submission.get("entry"), self.config)
             if outcome.verdict == Verdict.IE:
                 raise JudgeError(outcome.log)
             if not outcome.ok:
                 return JudgeReport(Verdict.CE, max_score=max_score, first_fail_verdict=Verdict.CE, compile_log=outcome.log)
-            groups = self._run_groups(problem, outcome.program, self._limits(problem, profile), language)
+            self._tick(cancel, progress, "running", 0, total)
+            groups = self._run_groups(problem, outcome.program, self._limits(problem, profile), language,
+                                      cancel=cancel, progress=progress, total=total)
         except (JudgeError, SandboxError) as exc:
             return JudgeReport(Verdict.IE, max_score=max_score, first_fail_verdict=Verdict.IE, error=str(exc))
         verdicts = [t.verdict for g in groups for t in g.tests]
@@ -102,7 +115,15 @@ class Judge:
         return Limits(time_ms=time_ms, wall_ms=wall_ms, memory_mb=memory, processes=c.processes, fsize_kb=out_kb)
 
     # ------------------------------------------------------------------ groups
-    def _run_groups(self, problem: Problem, program: Program, limits: Limits, language: str) -> list:
+    @staticmethod
+    def _tick(cancel, progress, phase: str, done: int, total: int) -> None:
+        if cancel is not None and cancel():
+            raise JudgeCancelled()
+        if progress is not None:
+            progress(phase, done, total)
+
+    def _run_groups(self, problem: Problem, program: Program, limits: Limits, language: str,
+                    cancel=None, progress=None, total: int = 0) -> list:
         reports, passed, index = [], set(), 0
         for group in problem.groups:
             tests, verdicts = [], []
@@ -112,6 +133,8 @@ class Judge:
                 if stop:
                     report = TestReport(group.name, test.name, index, Verdict.SKIPPED)
                 else:
+                    if cancel is not None and cancel():
+                        raise JudgeCancelled()
                     report = self._run_test(problem, program, test, limits, index)
                     if report.verdict == Verdict.IE:
                         raise JudgeError(report.message or "internal error")
@@ -120,6 +143,8 @@ class Judge:
                         stop = True
                 tests.append(report)
                 verdicts.append(report.verdict)
+                if progress is not None:
+                    progress("running", index, total)
             if verdicts and all(v == Verdict.OK for v in verdicts):
                 passed.add(group.name)
             reports.append(GroupReport(
@@ -149,16 +174,22 @@ class Judge:
 
     def _jury_exe(self, path, language: str) -> bytes:
         source = path.read_bytes()
-        key = (str(path), hashlib.sha256(source).hexdigest())
-        if key not in self._jury_cache:
-            profile = get_profile(language)
-            if profile.compile is None:
-                raise JudgeError("jury programs must be written in a compiled language (c or cpp)")
+        profile = get_profile(language)
+        if profile.compile is None:
+            raise JudgeError("jury programs must be written in a compiled language (c or cpp)")
+        key = jury_key(source, language, profile.compile, self.config.toolchain_id)
+        exe = self._jury_local.get(key)
+        if exe is not None:
+            return exe
+        exe = self._jury_cache.get(key)
+        if exe is None:
             outcome = compile_program(self.factory, profile, {profile.default_source: source}, None, self.config, slot=1)
             if not outcome.ok:
                 raise JudgeError(f"cannot compile {path.name}: {outcome.log}")
-            self._jury_cache[key] = outcome.program.files[EXECUTABLE_NAME]
-        return self._jury_cache[key]
+            exe = outcome.program.files[EXECUTABLE_NAME]
+            self._jury_cache.put(key, exe)
+        self._jury_local[key] = exe
+        return exe
 
     # ------------------------------------------------------------------ batch
     def _run_batch(self, problem, program, test, limits, index) -> TestReport:

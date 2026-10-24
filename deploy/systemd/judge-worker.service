@@ -1,0 +1,26 @@
+[Unit]
+Description=Judge workers (supervisor, N processes pinned to cores)
+After=network-online.target isolate.service judge-api-internal.service
+Wants=network-online.target
+# isolate.service is the cg-keeper unit created by isolate's `make install` (module 0); drop the line if you start isolate differently
+
+[Service]
+Type=simple
+User=judge
+Group=judge
+WorkingDirectory=/opt/judge
+Environment=PYTHONPATH=/opt/judge
+EnvironmentFile=/etc/judge/worker.env
+ExecStart=/opt/judge/.venv/bin/python -m worker run
+# SIGTERM goes to the supervisor, which forwards it: workers finish their current job (JUDGE_DRAIN_TIMEOUT_S, 120 s)
+# TimeoutStopSec must be larger than JUDGE_DRAIN_TIMEOUT_S + 20 s
+KillMode=mixed
+TimeoutStopSec=170
+Restart=always
+RestartSec=3
+# isolate needs setuid helpers and cgroups: do NOT add NoNewPrivileges / ProtectSystem / PrivateTmp here
+LimitNOFILE=65536
+Nice=0
+
+[Install]
+WantedBy=multi-user.target

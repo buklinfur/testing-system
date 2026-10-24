@@ -1,16 +1,24 @@
 # Judge: тестирующая система для школьных контестов
 
-Статус: модули 0-2 (среда, формат задачи и модель данных, раннер). Среда: WSL2 + Ubuntu + `isolate`.
+Статус: модули 0-3 (среда, формат задачи и модель данных, раннер, очередь и воркеры). Среда: WSL2 + Ubuntu + `isolate`.
 
 ```
 docs/
   PROBLEM_FORMAT.md           формат пакета задачи (для людей и LLM)
   RUNNER.md                   устройство раннера, запуск, что проверено и что нет
   DATA_MODEL.md               модель данных и инварианты
+  QUEUE.md                    очередь на PostgreSQL: выдача, справедливость, зависшие задания, перепроверка
+  WORKER.md                   воркеры: параллельность, ядра, дисковый кэш, остановка
+  WORKER_PROTOCOL.md          внутренний API воркера (контракт)
+  DEPLOY_WSL2.md              systemd-юниты, первый запуск, наблюдаемость
   schemas/problem.schema.json JSON Schema для problem.yaml
 backend/app/models.py         модели SQLAlchemy 2.0 (PostgreSQL)
 runner/                       раннер: песочница, компиляция, чекеры, интерактив, вердикты (docs/RUNNER.md)
-tests/                        автотесты (python -m unittest discover -s tests -t .)
+worker/                       воркер: supervisor, процессы, дисковый кэш, клиент API (docs/WORKER.md)
+protocol/                     общий код бэкенда и воркера (манифест задачи)
+backend/app/                  models, queue, worker_api, internal_main, maintenance (reaper), admin_cli
+deploy/                       systemd-юниты, примеры env, install-wsl.sh
+tests/                        автотесты (python -m unittest discover -s tests -t .); tests/pg нужны вашей PostgreSQL
 problems-examples/            пять примеров: batch, custom checker, interactive, choice, text_answer
 tools/validate_problem.py     проверка пакета задачи
 ```

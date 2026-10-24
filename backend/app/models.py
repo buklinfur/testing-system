@@ -216,6 +216,9 @@ class ProblemVersion(Base):
     # normalized problem.yaml (limits, io, checker, feedback, questions, answers, ...)
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     package_sha256: Mapped[Optional[str]] = mapped_column(ForeignKey("blobs.sha256"))
+    # digest of the worker manifest (protocol/manifest.py); stored once the version is published, because
+    # a published version never changes. Null for drafts: the manifest is rebuilt on demand.
+    manifest_sha256: Mapped[Optional[str]] = mapped_column(String(64))
     created_at: Mapped[datetime] = utcnow_column()
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
@@ -366,10 +369,24 @@ class Submission(Base):
 
 
 class Judgement(Base):
+    """One attempt to check a submission (module 3: queue semantics).
+
+    * status: queued -> compiling -> running -> finished | internal_error. The queue is `status = 'queued'`.
+    * attempt: how many times a worker claimed it; it is the fencing token of a lease, a result is
+      accepted only from the worker and attempt that currently own the row.
+    * failures: attempts that went wrong (worker lost, internal error); at max_attempts the judgement
+      ends as internal_error instead of looping forever on a "poison" submission.
+    * priority: lower goes first (fresh submissions 0, rejudges 10).
+    * requires: capabilities a worker must have (["cpu"], later ["gpu"]).
+    * is_current: the judgement the student sees. A rejudge starts as is_current = false and takes over
+      only when it finishes without an internal error, so the old verdict stays visible meanwhile.
+    """
+
     __tablename__ = "judgements"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     submission_id: Mapped[int] = mapped_column(ForeignKey("submissions.id", ondelete="CASCADE"), nullable=False)
+    problem_version_id: Mapped[int] = mapped_column(ForeignKey("problem_versions.id"), nullable=False)
     reason: Mapped[JudgementReason] = mapped_column(
         pg_enum(JudgementReason, "judgement_reason"), nullable=False, default=JudgementReason.initial
     )
@@ -377,10 +394,19 @@ class Judgement(Base):
         pg_enum(JudgementStatus, "judgement_status"), nullable=False, default=JudgementStatus.queued
     )
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    requires: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=lambda: ["cpu"])
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     verdict: Mapped[Optional[Verdict]] = mapped_column(VERDICT_T)
     score: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False, default=0)
     compile_log: Mapped[Optional[str]] = mapped_column(Text)
+    error: Mapped[Optional[str]] = mapped_column(Text)  # internal error text: teachers only
+    summary: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB)  # {"groups": [...], "first_fail": ...} / {"quiz": ...}
+    tests_done: Mapped[Optional[int]] = mapped_column(Integer)  # live progress while running
+    tests_total: Mapped[Optional[int]] = mapped_column(Integer)
     worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"))
+    requested_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))  # who asked for a rejudge
     created_at: Mapped[datetime] = utcnow_column()
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -391,10 +417,19 @@ class Judgement(Base):
     )
 
     __table_args__ = (
-        # the queue: only rows waiting for a worker
-        Index("ix_judgements_queue", "created_at", postgresql_where=text("status = 'queued'")),
+        # the queue: only rows waiting for a worker, in claim order
+        Index("ix_judgements_queue", "priority", "created_at", postgresql_where=text("status = 'queued'")),
+        # rows currently held by a worker (reaper, load counters)
+        Index("ix_judgements_inflight", "worker_id", postgresql_where=text("status IN ('compiling', 'running')")),
         # at most one current judgement per submission
         Index("uq_judgements_current", "submission_id", unique=True, postgresql_where=text("is_current")),
+        # at most one unfinished judgement per submission (no double queueing, rejudge never races itself)
+        Index(
+            "uq_judgements_active",
+            "submission_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'compiling', 'running')"),
+        ),
     )
 
 
@@ -409,6 +444,9 @@ class TestResult(Base):
     time_ms: Mapped[Optional[int]] = mapped_column(Integer)
     memory_kb: Mapped[Optional[int]] = mapped_column(Integer)
     exit_code: Mapped[Optional[int]] = mapped_column(Integer)
+    signal: Mapped[Optional[int]] = mapped_column(Integer)
+    stderr_excerpt: Mapped[Optional[str]] = mapped_column(Text)  # teachers only (<= 4 KB)
+    output_excerpt: Mapped[Optional[str]] = mapped_column(Text)  # the program's own output, teachers / open tests
     checker_message: Mapped[Optional[str]] = mapped_column(Text)  # always stored; shown per feedback policy
     visible_to_student: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
@@ -418,15 +456,51 @@ class TestResult(Base):
 
 
 # --------------------------------------------------------------------------- infrastructure
+class WorkerToken(Base):
+    """Credential of a machine (or pool) of workers. Only sha256(token) is stored; tokens are 256-bit random."""
+
+    __tablename__ = "worker_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=lambda: ["cpu"])  # allowed maximum
+    created_at: Mapped[datetime] = utcnow_column()
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class Worker(Base):
+    """One worker process. Created by /register (upsert by name); `instance_id` changes at every start."""
+
     __tablename__ = "workers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    token_hash: Mapped[str] = mapped_column(String(128), nullable=False)  # worker authenticates to the API
-    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)  # e.g. ["cpu"], ["gpu"]
+    token_id: Mapped[int] = mapped_column(ForeignKey("worker_tokens.id"), nullable=False)
+    instance_id: Mapped[Optional[str]] = mapped_column(String(36))
+    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=lambda: ["cpu"])  # e.g. ["cpu", "gpu"]
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="idle")  # idle | busy | draining | stopped
+    info: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)  # pid, cpus, boxes, backend
+    stats: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)  # jobs done, cache hits, rss
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = utcnow_column()
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class QueueEvent(Base):
+    """Short history of queue incidents: worker lost, internal error, rejudge, registration. Pruned by the reaper."""
+
+    __tablename__ = "queue_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = utcnow_column()
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id", ondelete="SET NULL"))
+    judgement_id: Mapped[Optional[int]] = mapped_column(ForeignKey("judgements.id", ondelete="SET NULL"))
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (Index("ix_queue_events_at", "at"),)
 
 
 class AuditLog(Base):

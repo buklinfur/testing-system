@@ -56,3 +56,15 @@ audit_log        — кто, что и откуда делал
 - Антиплагиат: есть флаг `contests.plagiarism_check`, исходники хранятся пригодными для сравнения.
 - Частичные баллы от чекера (`scoring: min`): нужен расширенный протокол чекера.
 - Сессии и токены доступа: появятся в модуле API и авторизации.
+
+## Изменения модуля 3
+
+* `judgements`: `problem_version_id`, `priority`, `requires` (capabilities воркера), `attempt` (fencing), `failures`, `error`
+  (текст внутренней ошибки, только преподавателю), `summary` (JSONB: баллы по группам / разбор теста), `tests_done/tests_total`
+  (живой прогресс), `requested_by`. Индексы: очередь `(priority, created_at)` где `queued`; `ix_judgements_inflight`;
+  уникальный `uq_judgements_active` (одно незавершённое задание на посылку) рядом с прежним `uq_judgements_current`.
+* `test_results`: `signal`, `stderr_excerpt`, `output_excerpt`.
+* `workers`: вместо `token_hash` ссылка `token_id`; добавлены `instance_id`, `state`, `info`, `stats`, `started_at`.
+* Новые таблицы `worker_tokens` (один токен на машину, хранится sha256, список разрешённых capabilities, отзыв) и `queue_events` (журнал инцидентов очереди).
+* `problem_versions.manifest_sha256`: хеш манифеста опубликованной версии (ключ кэша воркера).
+* Формат пакета задачи не менялся. Для воркера `problem_versions.config` должен быть нормализованным `problem.yaml` без `test_groups`.
