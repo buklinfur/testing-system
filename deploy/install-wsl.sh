@@ -17,18 +17,21 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 # 0. checks that save a half-done installation
 command -v rsync >/dev/null || { echo "rsync is missing: apt install rsync"; exit 1; }
-if [ -z "${HTTPS_PROXY:-${https_proxy:-}}" ]; then
-  echo "warning: no HTTPS_PROXY in the environment; inside WSL pip usually needs the Windows proxy."
-  echo "         Run with: sudo --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy $0"
-fi
-if ! python3 - <<'EOF'
-import sys, urllib.request
+check_pypi() {  # only called when pip really has to download something
+  if [ -z "${HTTPS_PROXY:-${https_proxy:-}}" ]; then
+    echo "warning: no HTTPS_PROXY in the environment; inside WSL pip usually needs the Windows proxy."
+    echo "         Run with: sudo --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy $0"
+  fi
+  python3 - <<'EOF'
+import os, sys, urllib.request
+proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or "none"
 try:
     urllib.request.urlopen("https://pypi.org/simple/pip/", timeout=10)
 except Exception as exc:
-    sys.exit(f"PyPI is not reachable ({exc}). Is the proxy on Windows (127.0.0.1:8899) running?")
+    sys.exit(f"PyPI is not reachable through proxy {proxy} ({exc}). Is the proxy on Windows (127.0.0.1:8899) "
+             "running, and were the proxy variables passed through sudo (--preserve-env)?")
 EOF
-then exit 1; fi
+}
 systemctl is-active --quiet isolate.service || echo "warning: isolate.service (cg-keeper) is not active; judge-worker requires it"
 
 # 1. user and directories
@@ -43,7 +46,13 @@ rsync -a --delete --chown=root:root --chmod=Dgo-w,Fgo-w --exclude=__pycache__ --
 
 # 3. venv with pinned requirements; bytecode compiled now because judge cannot write __pycache__
 [ -d /opt/judge/.venv ] || python3 -m venv /opt/judge/.venv
-/opt/judge/.venv/bin/pip install -q --disable-pip-version-check -r /opt/judge/requirements.txt
+# offline first: succeeds without any network when every pinned package is already installed
+if /opt/judge/.venv/bin/pip install -q --disable-pip-version-check --no-index -r /opt/judge/requirements.txt 2>/dev/null; then
+  echo "requirements already installed: no download needed"
+else
+  check_pypi
+  /opt/judge/.venv/bin/pip install -q --disable-pip-version-check -r /opt/judge/requirements.txt
+fi
 /opt/judge/.venv/bin/python -m compileall -q /opt/judge/runner /opt/judge/worker /opt/judge/protocol /opt/judge/backend
 chown -R root:root /opt/judge
 chmod -R go-w /opt/judge
