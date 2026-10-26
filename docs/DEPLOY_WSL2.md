@@ -126,6 +126,8 @@ export DATABASE_URL=$JUDGE_TEST_DATABASE_URL JUDGE_BLOB_DIR=/tmp/judge-blobs PYT
 alembic upgrade head && alembic check                            # схема public базы judge_test
 uvicorn app.internal_main:app --host 127.0.0.1 --port 8001 &
 JUDGE_DEV=1 python -m app.dev_seed --count 3                     # посылки в очередь без публичного API
+JUDGE_DEV=1 python -m app.dev_seed --package problems-examples/sum-of-two --source sol.cpp --language cpp --user 2
+python -m app.admin_cli judgements --last 20                     # последние проверки: вердикт, первый провал, вид TL
 python -m app.admin_cli create-worker-token smoke | tail -1 > /tmp/judge-token && chmod 600 /tmp/judge-token
 tools/smoke-internal-api.sh /tmp/judge-token                     # протокол воркера curl-ом, код выхода = число провалов
 ```
