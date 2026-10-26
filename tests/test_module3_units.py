@@ -415,6 +415,15 @@ class DeployFilesTests(unittest.TestCase):
         self.assertTrue(s.database_url.startswith("postgresql+psycopg://"))
         self.assertEqual(s.queue.max_attempts, 3)
 
+    def test_deploy_scripts_are_executable(self):
+        # the docs run them as ./deploy/...; without the bit sudo says "command not found"
+        scripts = sorted((ROOT / "deploy").rglob("*.sh")) + [ROOT / "deploy/dev/judge-dev"]
+        self.assertTrue(scripts)
+        for path in scripts:
+            with self.subTest(script=str(path.relative_to(ROOT))):
+                self.assertTrue(os.access(path, os.X_OK))
+                self.assertTrue(path.read_text().startswith("#!/usr/bin/env bash\n"))
+
     def test_unit_stop_timeout_exceeds_drain_timeout(self):
         unit = (ROOT / "deploy/systemd/judge-worker.service").read_text()
         stop = int([l for l in unit.splitlines() if l.startswith("TimeoutStopSec=")][0].split("=")[1])
