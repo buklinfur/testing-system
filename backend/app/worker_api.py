@@ -3,8 +3,7 @@
 Served by app.internal_main on a separate port that is NOT published through Cloudflare Tunnel.
 Every handler commits explicitly; the session dependency only guarantees rollback and close.
 
-Written against FastAPI 0.110+ / Pydantic 2; not executed by the author (no FastAPI in the build
-environment): run tests/pg/test_worker_api_pg.py.
+Covered by tests/pg/test_worker_api_pg.py (FastAPI TestClient on a real PostgreSQL).
 """
 from __future__ import annotations
 

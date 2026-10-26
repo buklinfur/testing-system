@@ -1,4 +1,4 @@
-"""Queue semantics on a real PostgreSQL. NOT run by the author (no PostgreSQL in the build environment)."""
+"""Queue semantics on a real PostgreSQL (tests are skipped unless JUDGE_TEST_DATABASE_URL is set)."""
 import random
 import threading
 import unittest
@@ -79,6 +79,65 @@ class QueueTests(PgCase):
             self.s.commit()
             picked.append(j.id)
         self.assertEqual(picked[0], expected[0], "SQL order == reference order for the first pick")
+
+    def test_every_claim_follows_the_reference_order(self):
+        """CLAIM_SQL / POSITION_SQL == loadinfo.fair_key at every step, with the counters taken from raw rows.
+
+        created_at is shuffled against id (the tie-break order matters), and some students have history:
+        judgements that started inside the fairness window (count as recent) and long before it (do not).
+        """
+        rng = random.Random(11)
+        users = [self.student(i) for i in range(5)]
+        # minutes ago; the window is 5 minutes. Uneven on purpose: a wrong window changes who goes first.
+        history = {0: (60, 90, 120), 1: (1,), 2: (2, 3, 60)}
+        for n, starts in history.items():
+            for minutes_ago in starts:
+                sub, _ = self.submission(users[n], enqueue=False)
+                self.s.add(Judgement(submission_id=sub.id, problem_version_id=self.seed["version"].id,
+                                     status=JudgementStatus.finished, verdict=Verdict.OK,
+                                     started_at=text(f"now() - interval '{minutes_ago} minutes'"),
+                                     finished_at=text("now()")))
+        queued = []
+        for _ in range(16):
+            _sub, j = self.submission(rng.choice(users), priority=rng.choice([0, 0, 0, 10, -1]))
+            queued.append(j)
+        for j, seconds_ago in zip(queued, rng.sample(range(10, 1000), len(queued))):
+            j.created_at = text(f"now() - interval '{seconds_ago} seconds'")
+        ties = rng.sample(queued, 4)  # equal created_at: the id decides
+        for j in ties:
+            j.created_at = text("now() - interval '5000 seconds'")
+        self.s.commit()
+        _t, w = self.token_and_worker(token_caps=("cpu",))
+
+        def reference():
+            now = self.s.execute(text("SELECT now()")).scalar_one()
+            window = self.settings.recent_window_s
+            rows = self.s.execute(text("""SELECT j.id, s.user_id, j.priority, j.created_at, j.status, j.started_at
+                                          FROM judgements j JOIN submissions s ON s.id = j.submission_id""")).all()
+            inflight, recent = {}, {}
+            for r in rows:
+                if r.status in (JudgementStatus.compiling.value, JudgementStatus.running.value):
+                    inflight[r.user_id] = inflight.get(r.user_id, 0) + 1
+                if r.started_at is not None and (now - r.started_at).total_seconds() < window:
+                    recent[r.user_id] = recent.get(r.user_id, 0) + 1
+            waiting = [{"id": r.id, "user_id": r.user_id, "priority": r.priority, "created_at": r.created_at}
+                       for r in rows if r.status == JudgementStatus.queued.value]
+            return [r["id"] for r in loadinfo.fair_order(waiting, inflight, recent)]
+
+        steps = 0
+        while True:
+            expected = reference()
+            positions = sorted(self.s.execute(q.POSITION_SQL, {"window": self.settings.recent_window_s}).all(),
+                               key=lambda r: r.pos)
+            self.assertEqual([r.id for r in positions], expected, f"POSITION_SQL order, step {steps}")
+            j = q.claim(self.s, w, self.settings)
+            self.s.commit()
+            if not expected:
+                self.assertIsNone(j)
+                break
+            self.assertEqual(j.id, expected[0], f"CLAIM_SQL pick, step {steps}")
+            steps += 1
+        self.assertEqual(steps, len(queued))
 
     def test_one_student_does_not_block_another(self):
         a, b = self.student(1), self.student(2)

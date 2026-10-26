@@ -1,5 +1,5 @@
 """The internal worker API (FastAPI + PostgreSQL) end to end through TestClient.
-NOT run by the author (no FastAPI / PostgreSQL in the build environment). Needs: fastapi, httpx, sqlalchemy, psycopg."""
+Needs: fastapi, httpx, sqlalchemy, psycopg; skipped unless JUDGE_TEST_DATABASE_URL is set."""
 import tempfile
 import unittest
 
