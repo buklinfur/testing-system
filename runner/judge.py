@@ -110,6 +110,8 @@ class Judge:
         else:
             time_ms = min(c.time_ms_cap, int(problem.time_ms * t_mult))
             wall_ms = min(c.wall_ms_cap, time_ms * 2 + 1000)
+        if problem.wall_ms is not None:  # set by the problem: scaled like the time limit, still capped
+            wall_ms = min(c.wall_ms_cap, int(problem.wall_ms * t_mult))
         memory = c.memory_mb_cap if problem.memory_mb is None else min(c.memory_mb_cap, int(problem.memory_mb * m_mult))
         out_kb = c.output_kb_cap if problem.output_kb is None else min(c.output_kb_cap, problem.output_kb)
         return Limits(time_ms=time_ms, wall_ms=wall_ms, memory_mb=memory, processes=c.processes, fsize_kb=out_kb)
@@ -168,6 +170,7 @@ class Judge:
         return TestReport(
             group=test.group, name=test.name, index=index, verdict=run.verdict,
             time_ms=run.time_ms, memory_kb=run.memory_kb, exit_code=run.exit_code, signal=run.signal,
+            tl_kind=run.tl_kind if run.verdict == Verdict.TL else None,
             message=run.message if run.verdict == Verdict.IE else "",
             stderr_excerpt=_decode(run.stderr, 2048),
         )

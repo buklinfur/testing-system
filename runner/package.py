@@ -36,6 +36,7 @@ class Problem:
     type: str
     titles: dict
     time_ms: Optional[int]
+    wall_ms: Optional[int]  # None: derived from time_ms (see Judge._limits)
     memory_mb: Optional[int]
     output_kb: Optional[int]
     per_language: dict
@@ -87,6 +88,7 @@ class Problem:
             type=data["type"],
             titles=data["title"],
             time_ms=limits.get("time_ms"),
+            wall_ms=limits.get("wall_ms"),
             memory_mb=limits.get("memory_mb"),
             output_kb=limits.get("output_kb"),
             per_language=limits.get("per_language") or {},

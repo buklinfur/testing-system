@@ -33,6 +33,14 @@ VERDICT_HINT_RU = {
     "IE": "Что-то пошло не так на стороне системы, не по вашей вине. Сообщите преподавателю.",
 }
 
+TL_KIND_RU = {
+    "cpu": "Закончилось процессорное время: программа считала слишком долго. Поищите бесконечный цикл "
+           "или более быстрый алгоритм.",
+    "wall": "Процессорное время в норме, но истекло общее время работы: программа долго ничего не делала. "
+            "Обычно она ждёт ввода, которого не будет; в интерактивной задаче проверьте, что после каждого "
+            "вывода стоит flush (в C++ endl или cout.flush()).",
+}
+
 SIGNAL_RU = {
     11: "Ошибка сегментации: выход за границы массива, обращение по нулевому указателю или слишком глубокая рекурсия.",
     8: "Арифметическая ошибка, чаще всего деление на ноль.",
@@ -131,6 +139,9 @@ def student_view(report: JudgeReport, problem, language: str = "", excerpt_cap: 
                     hint = explain_runtime_error(language, test.stderr_excerpt, test.exit_code, test.signal)
                     if hint:
                         entry["runtime_hint"] = hint
+                if test.verdict == Verdict.TL and test.tl_kind in TL_KIND_RU and feedback != "verdict_only":
+                    entry["tl_kind"] = test.tl_kind
+                    entry["time_limit_hint"] = TL_KIND_RU[test.tl_kind]
                 tests_out.append(entry)
             if test.verdict not in (Verdict.OK, Verdict.SKIPPED):
                 first_fail_done = True

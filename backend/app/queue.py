@@ -378,7 +378,8 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
         session.add(TestResult(
             judgement_id=j.id, test_case_id=t["test_case_id"], verdict=Verdict(t["verdict"]),
             time_ms=t.get("time_ms"), memory_kb=t.get("memory_kb"), exit_code=t.get("exit_code"),
-            signal=t.get("signal"), checker_message=t.get("message") or None,
+            signal=t.get("signal"), tl_kind=t.get("tl_kind") if t["verdict"] == "TL" else None,
+            checker_message=t.get("message") or None,
             stderr_excerpt=t.get("stderr_excerpt") or None, output_excerpt=t.get("output_excerpt") or None,
             visible_to_student=bool(t.get("visible_to_student")),
         ))

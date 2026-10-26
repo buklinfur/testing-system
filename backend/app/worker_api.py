@@ -7,7 +7,7 @@ Covered by tests/pg/test_worker_api_pg.py (FastAPI TestClient on a real PostgreS
 """
 from __future__ import annotations
 
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -99,6 +99,7 @@ class TestOut(BaseModel):
     memory_kb: Optional[int] = None
     exit_code: Optional[int] = None
     signal: Optional[int] = None
+    tl_kind: Optional[Literal["cpu", "wall"]] = None
     message: Optional[str] = None
     stderr_excerpt: Optional[str] = None
     output_excerpt: Optional[str] = None

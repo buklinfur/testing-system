@@ -31,6 +31,7 @@ def code_result(report: JudgeReport, problem, language: str, test_ids: list) -> 
         tests.append({
             "test_case_id": test_ids[t.index - 1], "index": t.index, "verdict": t.verdict.value,
             "time_ms": t.time_ms, "memory_kb": t.memory_kb, "exit_code": t.exit_code, "signal": t.signal,
+            "tl_kind": t.tl_kind,
             "message": t.message, "stderr_excerpt": t.stderr_excerpt, "output_excerpt": t.output_excerpt,
             "visible_to_student": t.index in visible,
         })

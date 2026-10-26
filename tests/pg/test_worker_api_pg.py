@@ -19,7 +19,7 @@ if URL and HAVE_SA and HAVE_API:
     from app import queue as q
     from app.blobstore import BlobStore
     from app.internal_main import create_internal_app
-    from app.models import Blob, Judgement, JudgementStatus, TestCase
+    from app.models import Blob, Judgement, JudgementStatus, TestCase, TestResult
     from app.settings import Settings
     from protocol.manifest import manifest_digest
 
@@ -80,6 +80,23 @@ class WorkerApiTests(PgCase):
         with self.Session() as s:
             self.assertEqual(s.get(Judgement, self.j.id).status, JudgementStatus.finished)
         self.assertEqual(self.client.post(f"{base}/claim", headers=h).json(), {"job": None})
+
+    def test_tl_kind_is_stored_for_tl_only_and_validated(self):
+        base = "/internal/worker/v1"
+        h = self.headers(self.register())
+        job = self.client.post(f"{base}/claim", headers=h).json()["job"]
+        ids = [t.id for t in self.seed["tests"]]
+        url = f"{base}/judgements/{job['judgement_id']}/result"
+        bad = {"attempt": 1, "verdict": "TL", "tests": [{"test_case_id": ids[0], "verdict": "TL", "tl_kind": "moon"}]}
+        self.assertEqual(self.client.post(url, headers=h, json=bad).status_code, 422)
+        body = {"attempt": 1, "verdict": "TL", "score": "0", "max_score": "100", "summary": {"groups": []},
+                "tests": [{"test_case_id": ids[0], "verdict": "TL", "tl_kind": "wall"},
+                          {"test_case_id": ids[1], "verdict": "OK", "tl_kind": "cpu"}]}  # a kind on OK is ignored
+        self.assertEqual(self.client.post(url, headers=h, json=body).json(), {"status": "recorded"})
+        with self.Session() as s:
+            kinds = dict(s.execute(select(TestResult.test_case_id, TestResult.tl_kind)
+                                   .where(TestResult.judgement_id == job["judgement_id"])).all())
+        self.assertEqual(kinds, {ids[0]: "wall", ids[1]: None})
 
     def test_stale_attempt_gets_409(self):
         base = "/internal/worker/v1"

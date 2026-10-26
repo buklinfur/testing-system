@@ -115,6 +115,10 @@
       "description": "null or absent means: no task-specific limit. System hard caps always apply.",
       "properties": {
         "time_ms": { "type": ["integer", "null"], "minimum": 1 },
+        "wall_ms": {
+          "type": ["integer", "null"], "minimum": 1,
+          "description": "Wall-clock limit per test, before language multipliers. Absent or null: 2 * time + 1000 ms. Must be >= time_ms."
+        },
         "memory_mb": { "type": ["integer", "null"], "minimum": 1 },
         "output_kb": { "type": ["integer", "null"], "minimum": 1 },
         "per_language": {

@@ -47,9 +47,10 @@
 {"attempt": 1, "verdict": "PARTIAL", "score": "40.00", "max_score": "100.00",
  "compile_log": null, "error": null,
  "summary": {"first_fail": "WA", "groups": [{"name": "small", "points": "40.00", "score": "40.00", "scoring": "sum", "visibility": "hidden"}]},
- "tests": [{"test_case_id": 101, "index": 1, "verdict": "OK", "time_ms": 12, "memory_kb": 3100, "exit_code": 0, "signal": null,
+ "tests": [{"test_case_id": 101, "index": 1, "verdict": "OK", "time_ms": 12, "memory_kb": 3100, "exit_code": 0, "signal": null, "tl_kind": null,
             "message": "", "stderr_excerpt": "", "output_excerpt": "…", "visible_to_student": true}],
  "timing": {"fetch_ms": 40, "judge_ms": 900}}
 ```
+`tl_kind` бывает только у `TL`: `"cpu"` или `"wall"` (иначе 422); у других вердиктов бэкенд его не сохраняет.
 `visible_to_student` вычисляет воркер тем же `runner.explain.student_view`, который уже проверен тестами раннера (одна логика, а не две).
 Вердикт `IE` бэкенд повторяет до `max_attempts`, потом фиксирует.
