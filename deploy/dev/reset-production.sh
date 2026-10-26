@@ -11,7 +11,7 @@ set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 j() {  # as judge with the backend environment
-  env -i PATH=/usr/bin:/bin HOME=/var/lib/judge LANG=C.UTF-8 runuser -u judge -- /bin/bash -c \
+  env -i PATH=/usr/bin:/bin HOME=/var/lib/judge LANG=C.UTF-8 /usr/sbin/runuser -u judge -- /bin/bash -c \
     'set -a; . /etc/judge/backend.env; set +a; cd /opt/judge; export PYTHONPATH=/opt/judge:/opt/judge/backend; exec "$@"' _ "$@"
 }
 

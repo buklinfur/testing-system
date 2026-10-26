@@ -424,6 +424,19 @@ class DeployFilesTests(unittest.TestCase):
                 self.assertTrue(os.access(path, os.X_OK))
                 self.assertTrue(path.read_text().startswith("#!/usr/bin/env bash\n"))
 
+    def test_env_i_runs_commands_by_absolute_path(self):
+        # `env -i PATH=/usr/bin:/bin cmd` looks cmd up in that short PATH: runuser (/usr/sbin) is not found
+        import re
+        scripts = sorted((ROOT / "deploy").rglob("*.sh")) + [ROOT / "deploy/dev/judge-dev"]
+        for path in scripts:
+            for n, line in enumerate(path.read_text().splitlines(), 1):
+                if line.lstrip().startswith("#") or "env -i " not in line:
+                    continue
+                rest = line.split("env -i ", 1)[1].split()
+                command = next((w for w in rest if not re.match(r"^[A-Z_][A-Z0-9_]*=", w)), "")
+                with self.subTest(script=f"{path.relative_to(ROOT)}:{n}"):
+                    self.assertTrue(command.startswith("/"), f"command after env -i must be absolute: {command!r}")
+
     def test_unit_stop_timeout_exceeds_drain_timeout(self):
         unit = (ROOT / "deploy/systemd/judge-worker.service").read_text()
         stop = int([l for l in unit.splitlines() if l.startswith("TimeoutStopSec=")][0].split("=")[1])

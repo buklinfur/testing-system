@@ -38,7 +38,7 @@ PY=$OPT/.venv/bin/python
 UNITS="judge-api-internal judge-reaper judge-worker"
 
 is_uint() { [[ $1 =~ ^[0-9]{1,6}$ ]]; }
-as_judge_raw() { env -i PATH=/usr/bin:/bin HOME=/var/lib/judge LANG=C.UTF-8 runuser -u judge -- "$@"; }
+as_judge_raw() { env -i PATH=/usr/bin:/bin HOME=/var/lib/judge LANG=C.UTF-8 /usr/sbin/runuser -u judge -- "$@"; }
 
 check_opt() {  # as judge: read-only look at /opt/judge
   local bad
@@ -68,7 +68,7 @@ stage() {  # runs inside $(...): must not change any state of the main shell
   [[ $src = /* ]] || die "give absolute paths ($src)"
   name=$(basename "$src")
   [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "bad file name: $name"
-  runuser -u "$CALLER" -- tar -C "$(dirname "$src")" --dereference -cf - -- "$name" \
+  /usr/sbin/runuser -u "$CALLER" -- tar -C "$(dirname "$src")" --dereference -cf - -- "$name" \
     | as_judge_raw tar -C "$STAGE" --no-same-owner --no-same-permissions -xf -
   echo "$STAGE/$name"
 }
