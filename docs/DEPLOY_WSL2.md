@@ -17,7 +17,7 @@
    затем в PowerShell `wsl --shutdown`. (Automount/interop отключены по решению о безопасности; репозиторий и кэш держите внутри ext4.) В env-файлах systemd комментарии допустимы только на отдельных строках.
 2. `systemctl is-system-running` отвечает `running` или `degraded`; cgroup v2: `stat -fc %T /sys/fs/cgroup` даёт `cgroup2fs`.
 3. isolate установлен как в модуле 0 вместе с `isolate.service` (cg-keeper). Проверка: `sudo -u judge python -m runner.cli sandbox-check` после шага 2 ниже. **Юниты воркера работают от пользователя `judge`, а не root**: если sandbox-check от `judge` не проходит, а от root проходит, скажите, что именно у вас в модуле 0 (setuid/права), и я скорректирую `User=`.
-4. Автозапуск самого WSL при входе в Windows: планировщик заданий Windows, действие `wsl.exe -d Ubuntu-22.04 -u root -- /bin/true` при входе (WSL стартует вместе с первым вызовом, systemd поднимет юниты).
+4. Дистрибутив называется `Ubuntu` (Ubuntu 24.04 LTS). Автозапуск самого WSL при входе в Windows: планировщик заданий Windows, действие `wsl.exe -d Ubuntu -u root -- /bin/true` при входе (WSL стартует вместе с первым вызовом, systemd поднимет юниты).
 
 ## 1. Установка
 
