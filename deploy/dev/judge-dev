@@ -15,7 +15,7 @@
 #   judge-dev runner sandbox-check | redteam | selfcheck PACKAGE_DIR
 #   judge-dev seed [--package DIR] [--source FILE] [--language python|c|cpp] [--archive] [--entry NAME]
 #                  [--user N] [--count N]                     (app.dev_seed on the production database)
-#   judge-dev admin status | reap | judgements [--last N] | rejudge --submission N
+#   judge-dev admin status | reap | judgements [--last N] | events [--last N] | rejudge --submission N
 #   judge-dev migrate                     (alembic upgrade head on the production database)
 #   judge-dev api                         (internal API in the foreground, before systemd)
 #   judge-dev worker run-one --index N | plan | check
@@ -99,13 +99,13 @@ case "$cmd" in
   admin)
     case "${1:-}" in
       status|reap) [ $# = 1 ] || die "no extra arguments"; backend "$PY" -m app.admin_cli "$1" ;;
-      judgements)
-        if [ $# = 1 ]; then backend "$PY" -m app.admin_cli judgements
-        elif [ $# = 3 ] && [ "$2" = --last ] && is_uint "$3"; then backend "$PY" -m app.admin_cli judgements --last "$3"
-        else die "judgements [--last N]"; fi ;;
+      judgements|events)
+        if [ $# = 1 ]; then backend "$PY" -m app.admin_cli "$1"
+        elif [ $# = 3 ] && [ "$2" = --last ] && is_uint "$3"; then backend "$PY" -m app.admin_cli "$1" --last "$3"
+        else die "$1 [--last N]"; fi ;;
       rejudge) [ $# = 3 ] && [ "$2" = --submission ] && is_uint "$3" || die "rejudge --submission N"
         backend "$PY" -m app.admin_cli rejudge --submission "$3" ;;
-      *) die "admin status | reap | judgements [--last N] | rejudge --submission N" ;;
+      *) die "admin status | reap | judgements [--last N] | events [--last N] | rejudge --submission N" ;;
     esac ;;
   migrate) [ $# = 0 ] || die "no arguments"; backend $OPT/.venv/bin/alembic -c $OPT/alembic.ini upgrade head ;;
   api) [ $# = 0 ] || die "no arguments"

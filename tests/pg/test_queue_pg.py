@@ -10,7 +10,7 @@ if URL and HAVE_SA:  # imported only when the database is configured
     from sqlalchemy.exc import IntegrityError
 
     from app import loadinfo, metrics, queue as q
-    from app.models import Judgement, JudgementReason, JudgementStatus, TestResult, Verdict
+    from app.models import Judgement, JudgementReason, JudgementStatus, QueueEvent, TestResult, Verdict
 
 
 @requires_pg
@@ -260,6 +260,9 @@ class QueueTests(PgCase):
         self.s.commit()
         j = self.s.get(Judgement, j.id, populate_existing=True)
         self.assertEqual((j.status, j.failures), (JudgementStatus.queued, 0))
+        event = self.s.execute(select(QueueEvent).where(QueueEvent.kind == "released")).scalar_one()
+        self.assertEqual((event.worker_id, event.judgement_id, event.details),
+                         (w.id, j.id, {"reason": "stopping", "attempt": 1}), "the history names the worker")
 
 
 @requires_pg

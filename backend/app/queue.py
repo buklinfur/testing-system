@@ -289,8 +289,8 @@ def _free(worker: Worker) -> None:
 
 
 def _release(session: Session, j: Judgement, reason: str) -> None:
+    _event(session, "released", j.worker_id, j.id, reason=reason, attempt=j.attempt)  # before the worker is cleared
     j.status, j.worker_id, j.started_at, j.tests_done, j.tests_total = JudgementStatus.queued, None, None, None, None
-    _event(session, "released", judgement_id=j.id, reason=reason)
 
 
 def release(session: Session, worker: Worker, judgement_id: int, attempt: int, reason: str) -> bool:

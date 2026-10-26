@@ -6,6 +6,7 @@
     python -m app.admin_cli reap
     python -m app.admin_cli rejudge --submission 17 | --contest-problem 3 [--verdicts WA,TL]
     python -m app.admin_cli judgements [--last 20]     (newest first: verdict, first failure, TL kind, timing)
+    python -m app.admin_cli events [--last 30]         (queue_events, newest first: releases, requeues, restarts)
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from sqlalchemy import select, update
 
 from . import queue as q
 from .db import session_scope
-from .models import Judgement, Problem, ProblemVersion, Submission, TestResult, User, Worker, WorkerToken
+from .models import Judgement, Problem, ProblemVersion, QueueEvent, Submission, TestResult, User, Worker, WorkerToken
 from .settings import Settings
 
 
@@ -37,6 +38,8 @@ def main(argv=None) -> int:
     p.add_argument("--verdicts", default="")
     p = sub.add_parser("judgements")
     p.add_argument("--last", type=int, default=20)
+    p = sub.add_parser("events")
+    p.add_argument("--last", type=int, default=30)
     args = parser.parse_args(argv)
     settings = Settings.from_env().queue
 
@@ -68,7 +71,19 @@ def main(argv=None) -> int:
                 parser.error("give --submission or --contest-problem")
         elif args.cmd == "judgements":
             print_judgements(session, args.last)
+        elif args.cmd == "events":
+            print_events(session, args.last)
     return 0
+
+
+def print_events(session, last: int) -> None:
+    """Newest queue events first (kept JUDGE_EVENT_RETENTION_DAYS, 14 by default)."""
+    rows = session.execute(select(QueueEvent, Worker.name).outerjoin(Worker, Worker.id == QueueEvent.worker_id)
+                           .order_by(QueueEvent.id.desc()).limit(last)).all()
+    for e, worker in rows:
+        details = json.dumps(e.details, ensure_ascii=False)
+        print(f"{e.id:>6} {e.at:%Y-%m-%d %H:%M:%S} {e.kind:<18} judgement={e.judgement_id or '-':<6} "
+              f"worker={worker or '-':<12} {details}")
 
 
 def print_judgements(session, last: int) -> None:
