@@ -2,6 +2,7 @@
 Needs: fastapi, httpx, sqlalchemy, psycopg; skipped unless JUDGE_TEST_DATABASE_URL is set."""
 import tempfile
 import unittest
+from unittest import mock
 
 from tests.pg.pgbase import HAVE_SA, URL, PgCase, requires_pg
 
@@ -14,7 +15,7 @@ except ImportError:
 
 if URL and HAVE_SA and HAVE_API:
     from fastapi.testclient import TestClient
-    from sqlalchemy import select
+    from sqlalchemy import select, text
 
     from app import queue as q
     from app.blobstore import BlobStore
@@ -119,6 +120,18 @@ class WorkerApiTests(PgCase):
             s.execute(text("UPDATE worker_tokens SET revoked_at = now()"))
             s.commit()
         self.assertEqual(self.client.post("/internal/worker/v1/claim", headers=self.headers(reg)).status_code, 401)
+
+    def test_status_reads_one_moment_of_the_database(self):
+        seen = []
+        real = q.read_one_moment
+
+        def spy(session):
+            real(session)
+            seen.append(session.execute(text("SHOW transaction_isolation")).scalar_one())
+        with mock.patch.object(q, "read_one_moment", spy):
+            self.assertEqual(self.client.get("/internal/status").status_code, 200)
+            self.assertEqual(self.client.get("/internal/metrics").status_code, 200)
+        self.assertEqual(seen, ["repeatable read", "repeatable read"])
 
     def test_proxied_traffic_is_refused_and_metrics_work(self):
         for header in ("cf-ray", "X-Forwarded-For", "Forwarded"):

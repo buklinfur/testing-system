@@ -51,10 +51,12 @@ def create_internal_app(settings: Optional[Settings] = None, session_factory=Non
 
     @app.get("/internal/metrics", response_class=PlainTextResponse, dependencies=[Depends(metrics_auth)])
     def metrics(session=Depends(get_session)):
+        q.read_one_moment(session)
         return render_prometheus(q.collect_metrics(session, settings.queue))
 
     @app.get("/internal/status", dependencies=[Depends(metrics_auth)])
     def status(session=Depends(get_session)):
+        q.read_one_moment(session)
         snap = q.load_snapshot(session, settings.queue)
         return {"load": snap.to_dict(), "metrics": q.collect_metrics(session, settings.queue),
                 "workers": q.worker_table(session, settings.queue)}

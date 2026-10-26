@@ -435,6 +435,15 @@ def _workers_online(session: Session, settings: QueueSettings) -> tuple:
     return by_state.get("idle", 0) + by_state.get("busy", 0), busy, by_state
 
 
+def read_one_moment(session: Session) -> None:
+    """Make the following reads see one moment of the database (call before the first query of the transaction).
+
+    The load snapshot and the status page are several queries; under READ COMMITTED a judgement finished
+    between them is counted in one and not in the other (e.g. 5 busy workers but 4 holding a job).
+    """
+    session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+
+
 def load_snapshot(session: Session, settings: QueueSettings, user_id: Optional[int] = None,
                   judgement_id: Optional[int] = None) -> LoadSnapshot:
     """Numbers for the students' load indicator: queue length, busy workers, expected wait."""

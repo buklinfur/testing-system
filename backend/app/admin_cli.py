@@ -53,6 +53,7 @@ def main(argv=None) -> int:
                 revoked_at=datetime.now(timezone.utc))).rowcount
             print("revoked" if n else "no such token")
         elif args.cmd == "status":
+            q.read_one_moment(session)
             snap = q.load_snapshot(session, settings)
             print(json.dumps(snap.to_dict(), ensure_ascii=False))
             for w in q.worker_table(session, settings):
