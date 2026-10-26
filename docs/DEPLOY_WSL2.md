@@ -81,7 +81,30 @@ Caddy (собственный домен `.ru`, модуль 6) проксиру
 Второй рубеж: внутренний API отвечает 403 на любой запрос с `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`
 (Caddy ставит их всегда), `Forwarded`, `X-Real-IP` и заголовками Cloudflare (`docs/WORKER_PROTOCOL.md`).
 
-## 6. Проверки для разработчика (без sudo)
+## 6. Временный доступ без пароля на время стабилизации (удалить до запуска с учениками)
+
+На время отладки модуля 3 разработчик получает `sudo` без пароля ровно на одну программу,
+[`deploy/dev/judge-dev`](../deploy/dev/judge-dev), через [`deploy/dev/sudoers-judge-dev`](../deploy/dev/sudoers-judge-dev).
+От root она выполняет только `svc` (systemctl для трёх юнитов `judge-*`) и `signal` (сигнал процессу воркера или
+reaper). Всё остальное делается через `runuser -u judge`, входные файлы читаются правами вызывающего.
+Python-код запускается, только если всё в `/opt/judge` принадлежит root и недоступно на запись другим.
+
+```bash
+sudo install -o root -g root -m 0755 deploy/dev/judge-dev /usr/local/sbin/judge-dev
+sudo visudo -cf deploy/dev/sudoers-judge-dev
+sudo install -o root -g root -m 0440 deploy/dev/sudoers-judge-dev /etc/sudoers.d/judge-dev
+```
+
+Чистка тестовых данных в этот доступ **не входит**: `sudo ./deploy/dev/reset-production.sh --yes-wipe-production`
+(с паролем) пересоздаёт базу `judge` миграциями, удаляет блобы и кэш воркеров и записывает новый токен воркера.
+
+> **Обязательно перед запуском с учениками (первый шаг модуля 6):**
+> ```bash
+> sudo rm /etc/sudoers.d/judge-dev /usr/local/sbin/judge-dev
+> sudo -l -U buklinfur | grep -c judge-dev   # должно быть 0
+> ```
+
+## 7. Проверки для разработчика (без sudo)
 
 ```bash
 set -a; . ~/.config/judge/test.env; set +a                       # JUDGE_TEST_DATABASE_URL от setup-postgres.sh

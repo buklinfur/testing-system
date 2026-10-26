@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# judge-dev: the only command the temporary sudoers rule (deploy/dev/sudoers-judge-dev) allows.
+# TEMPORARY, for the stabilisation of module 3. It MUST be removed before students use the system:
+#   sudo rm /etc/sudoers.d/judge-dev /usr/local/sbin/judge-dev
+#
+# Who does what:
+#   * as root (the sudo process itself): argument checks, one syslog line, and ONLY the `svc` and
+#     `signal` subcommands (systemctl on the three judge units; a signal to a judge worker / reaper);
+#   * as the caller ($SUDO_USER, via runuser): reading the input files you pass to `seed` / `selfcheck`
+#     (tar, symlinks dereferenced, so you can only pass what you can read yourself);
+#   * as `judge` (via runuser): everything else, including the temporary directory, the check of
+#     /opt/judge, Python, alembic, uvicorn and the worker.
+# Python code runs only if everything in /opt/judge is root-owned and writable only by root.
+#
+#   judge-dev runner sandbox-check | redteam | selfcheck PACKAGE_DIR
+#   judge-dev seed [--package DIR] [--source FILE] [--language python|c|cpp] [--archive] [--entry NAME]
+#                  [--user N] [--count N]                     (app.dev_seed on the production database)
+#   judge-dev admin status | reap | judgements [--last N] | rejudge --submission N
+#   judge-dev migrate                     (alembic upgrade head on the production database)
+#   judge-dev api                         (internal API in the foreground, before systemd)
+#   judge-dev worker run-one --index N | plan | check
+#   judge-dev svc start|stop|restart|status|enable|disable UNIT       UNIT: judge-api-internal|judge-reaper|judge-worker
+#   judge-dev svc kill UNIT TERM|KILL
+#   judge-dev signal TERM|KILL|STOP|CONT PID                         (only a judge worker or reaper process)
+set -euo pipefail
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C.UTF-8
+
+die() { echo "judge-dev: $*" >&2; exit 2; }
+[ "$(id -u)" = 0 ] || die "run through sudo"
+CALLER=${SUDO_USER:-}
+[ -n "$CALLER" ] && [ "$CALLER" != root ] && [ "$CALLER" != judge ] || die "run through sudo from your own account"
+logger -t judge-dev -- "$CALLER: $*" || true
+
+OPT=/opt/judge
+PY=$OPT/.venv/bin/python
+UNITS="judge-api-internal judge-reaper judge-worker"
+
+is_uint() { [[ $1 =~ ^[0-9]{1,6}$ ]]; }
+as_judge_raw() { env -i PATH=/usr/bin:/bin HOME=/var/lib/judge LANG=C.UTF-8 runuser -u judge -- "$@"; }
+
+check_opt() {  # as judge: read-only look at /opt/judge
+  local bad
+  # symlinks (the venv has some) always show mode 777: only their owner matters
+  bad=$(as_judge_raw find "$OPT" \( ! -user root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null || true)
+  [ -z "$bad" ] || die "$OPT must be root-owned and writable only by root (found: $bad); rerun deploy/install-wsl.sh"
+}
+
+# as judge, with an env file sourced by bash; the script text is constant, arguments are positional
+as_judge() {
+  local envfile=$1; shift
+  check_opt
+  as_judge_raw /bin/bash -c 'set -a; . "$1"; set +a; cd /opt/judge; shift; exec "$@"' _ "$envfile" "$@"
+}
+backend() { as_judge /etc/judge/backend.env env PYTHONPATH=$OPT:$OPT/backend "$@"; }
+worker() { as_judge /etc/judge/worker.env env PYTHONPATH=$OPT "$@"; }
+
+# Caller's input files go into a private directory of judge (created and removed by judge).
+STAGE=""
+new_stage() {
+  [ -n "$STAGE" ] && return
+  STAGE=$(as_judge_raw mktemp -d /tmp/judge-dev.XXXXXX)
+  trap 'as_judge_raw rm -rf -- "$STAGE"' EXIT
+}
+stage() {  # runs inside $(...): must not change any state of the main shell
+  local src=$1 name
+  [[ $src = /* ]] || die "give absolute paths ($src)"
+  name=$(basename "$src")
+  [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "bad file name: $name"
+  runuser -u "$CALLER" -- tar -C "$(dirname "$src")" --dereference -cf - -- "$name" \
+    | as_judge_raw tar -C "$STAGE" --no-same-owner --no-same-permissions -xf -
+  echo "$STAGE/$name"
+}
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+  runner)
+    case "${1:-}" in
+      sandbox-check|redteam) [ $# = 1 ] || die "no extra arguments"; backend "$PY" -m runner.cli "$1" ;;
+      selfcheck) [ $# = 2 ] || die "selfcheck PACKAGE_DIR"; new_stage; pkg=$(stage "$2")
+        backend "$PY" -m runner.cli selfcheck "$pkg" ;;
+      *) die "runner sandbox-check | redteam | selfcheck DIR" ;;
+    esac ;;
+  seed)
+    args=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --package|--source) [ $# -ge 2 ] || die "$1 needs a path"; new_stage; args+=("$1" "$(stage "$2")"); shift 2 ;;
+        --language) [[ ${2:-} =~ ^(python|c|cpp)$ ]] || die "bad language"; args+=("$1" "$2"); shift 2 ;;
+        --entry) [[ ${2:-} =~ ^[A-Za-z0-9._/-]{1,128}$ && ${2:-} != *..* ]] || die "bad entry"; args+=("$1" "$2"); shift 2 ;;
+        --user|--count) is_uint "${2:-}" || die "$1 needs a number"; args+=("$1" "$2"); shift 2 ;;
+        --archive) args+=("$1"); shift ;;
+        *) die "seed: unknown option $1" ;;
+      esac
+    done
+    backend env JUDGE_DEV=1 "$PY" -m app.dev_seed "${args[@]}" ;;
+  admin)
+    case "${1:-}" in
+      status|reap) [ $# = 1 ] || die "no extra arguments"; backend "$PY" -m app.admin_cli "$1" ;;
+      judgements)
+        if [ $# = 1 ]; then backend "$PY" -m app.admin_cli judgements
+        elif [ $# = 3 ] && [ "$2" = --last ] && is_uint "$3"; then backend "$PY" -m app.admin_cli judgements --last "$3"
+        else die "judgements [--last N]"; fi ;;
+      rejudge) [ $# = 3 ] && [ "$2" = --submission ] && is_uint "$3" || die "rejudge --submission N"
+        backend "$PY" -m app.admin_cli rejudge --submission "$3" ;;
+      *) die "admin status | reap | judgements [--last N] | rejudge --submission N" ;;
+    esac ;;
+  migrate) [ $# = 0 ] || die "no arguments"; backend $OPT/.venv/bin/alembic -c $OPT/alembic.ini upgrade head ;;
+  api) [ $# = 0 ] || die "no arguments"
+    backend $OPT/.venv/bin/uvicorn app.internal_main:app --host 127.0.0.1 --port 8001 ;;
+  worker)
+    case "${1:-}" in
+      plan|check) [ $# = 1 ] || die "no extra arguments"; worker "$PY" -m worker "$1" ;;
+      run-one) [ $# = 3 ] && [ "$2" = --index ] && is_uint "$3" || die "worker run-one --index N"
+        worker "$PY" -m worker run-one --index "$3" ;;
+      *) die "worker run-one --index N | plan | check" ;;
+    esac ;;
+  svc)  # as root
+    action=${1:-}; unit=${2:-}
+    [[ " $UNITS " == *" $unit "* ]] || die "unit must be one of: $UNITS"
+    case "$action" in
+      start|stop|restart|enable|disable) [ $# = 2 ] || die "svc $action UNIT"; check_opt; systemctl --no-pager "$action" "$unit" ;;
+      status) [ $# = 2 ] || die "svc status UNIT"; SYSTEMD_PAGER=cat systemctl --no-pager status "$unit" || true ;;
+      kill) [ $# = 3 ] && [[ $3 =~ ^(TERM|KILL)$ ]] || die "svc kill UNIT TERM|KILL"
+        systemctl --no-pager kill --signal="SIG$3" "$unit" ;;
+      *) die "svc start|stop|restart|status|enable|disable|kill UNIT" ;;
+    esac ;;
+  signal)  # as root
+    [ $# = 2 ] && [[ $1 =~ ^(TERM|KILL|STOP|CONT)$ ]] && is_uint "$2" || die "signal TERM|KILL|STOP|CONT PID"
+    owner=$(stat -c %U "/proc/$2" 2>/dev/null) || die "no such process"
+    [ "$owner" = judge ] || die "process $2 does not belong to judge"
+    exe=$(readlink "/proc/$2/exe" || true)
+    [[ $exe == /usr/bin/python3* ]] || die "process $2 is not a Python process ($exe)"
+    tr '\0' ' ' < "/proc/$2/cmdline" | grep -Eq "^$OPT/\.venv/bin/python -m (worker|app\.maintenance)( |$)" \
+      || die "process $2 is not a judge worker or reaper"
+    kill -s "$1" "$2"; echo "sent SIG$1 to $2" ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

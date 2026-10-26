@@ -1,0 +1,14 @@
+# /etc/sudoers.d/judge-dev  (TEMPORARY: module 3 stabilisation; delete when it is done)
+#
+# Lets buklinfur run exactly one root-owned program without a password: /usr/local/sbin/judge-dev,
+# which validates its own arguments (see the header of deploy/dev/judge-dev). No other command,
+# no shell, no editor, no pager is allowed. Install and check:
+#   sudo install -o root -g root -m 0755 deploy/dev/judge-dev /usr/local/sbin/judge-dev
+#   sudo visudo -cf deploy/dev/sudoers-judge-dev
+#   sudo install -o root -g root -m 0440 deploy/dev/sudoers-judge-dev /etc/sudoers.d/judge-dev
+# Test-data cleanup is NOT allowed here: deploy/dev/reset-production.sh runs with your password.
+# Remove (MANDATORY before students use the system, first step of module 6):
+#   sudo rm /etc/sudoers.d/judge-dev /usr/local/sbin/judge-dev
+
+Defaults!/usr/local/sbin/judge-dev env_reset, !setenv
+buklinfur DESKTOP-IQOM2R4 = (root) NOPASSWD: /usr/local/sbin/judge-dev

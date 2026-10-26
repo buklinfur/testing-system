@@ -19,7 +19,7 @@ protocol/                     общий код бэкенда и воркера
 backend/app/                  models, queue, worker_api, internal_main, maintenance (reaper), admin_cli
 deploy/                       systemd-юниты, примеры env, install-wsl.sh, setup-postgres.sh
 backend/migrations/           миграции Alembic
-tests/                        автотесты (python -m unittest discover -s tests -t .); tests/pg нужна PostgreSQL (docs/DEPLOY_WSL2.md, раздел 6)
+tests/                        автотесты (python -m unittest discover -s tests -t .); tests/pg нужна PostgreSQL (docs/DEPLOY_WSL2.md, раздел 7)
 problems-examples/            пять примеров: batch, custom checker, interactive, choice, text_answer
 tools/validate_problem.py     проверка пакета задачи
 tools/smoke-internal-api.sh   проверка внутреннего API curl-ом (dev-база)
