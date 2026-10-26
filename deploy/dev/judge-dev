@@ -109,7 +109,7 @@ case "$cmd" in
     esac ;;
   migrate) [ $# = 0 ] || die "no arguments"; backend $OPT/.venv/bin/alembic -c $OPT/alembic.ini upgrade head ;;
   api) [ $# = 0 ] || die "no arguments"
-    backend $OPT/.venv/bin/uvicorn app.internal_main:app --host 127.0.0.1 --port 8001 ;;
+    backend $OPT/.venv/bin/uvicorn app.internal_main:app --host 127.0.0.1 --port 8001 --timeout-keep-alive 75 ;;
   worker)
     case "${1:-}" in
       plan|check) [ $# = 1 ] || die "no extra arguments"; worker "$PY" -m worker "$1" ;;

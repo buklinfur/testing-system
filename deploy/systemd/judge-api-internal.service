@@ -10,7 +10,9 @@ Group=judge
 WorkingDirectory=/opt/judge
 Environment=PYTHONPATH=/opt/judge:/opt/judge/backend
 EnvironmentFile=/etc/judge/backend.env
-ExecStart=/opt/judge/.venv/bin/uvicorn app.internal_main:app --host 127.0.0.1 --port 8001 --workers 2
+# --timeout-keep-alive: workers reuse one connection for the heartbeat every 5 s; uvicorn's default (5 s) closed it
+# just as the next heartbeat was sent ("Remote end closed connection without response"). Keep it well above.
+ExecStart=/opt/judge/.venv/bin/uvicorn app.internal_main:app --host 127.0.0.1 --port 8001 --workers 2 --timeout-keep-alive 75
 Restart=always
 RestartSec=2
 NoNewPrivileges=true

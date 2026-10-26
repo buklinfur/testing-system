@@ -439,6 +439,14 @@ class DeployFilesTests(unittest.TestCase):
                     # same PATH as systemd services get, so manual runs behave like the units (isolate is in /usr/local/bin)
                     self.assertIn("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin", rest)
 
+    def test_api_keep_alive_outlasts_the_heartbeat_interval(self):
+        # otherwise uvicorn closes the idle connection just as the next heartbeat reuses it
+        import re
+        unit = (ROOT / "deploy/systemd/judge-api-internal.service").read_text()
+        keep_alive = int(re.search(r"--timeout-keep-alive (\d+)", unit).group(1))
+        cfg = WorkerConfig()
+        self.assertGreater(keep_alive, 3 * max(cfg.heartbeat_interval_s, cfg.poll_interval_s))
+
     def test_unit_stop_timeout_exceeds_drain_timeout(self):
         unit = (ROOT / "deploy/systemd/judge-worker.service").read_text()
         stop = int([l for l in unit.splitlines() if l.startswith("TimeoutStopSec=")][0].split("=")[1])
