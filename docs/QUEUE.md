@@ -60,22 +60,34 @@ Claim выполняется под `pg_advisory_xact_lock`. Без него д�
 Место считается в том же справедливом порядке (по снимку, без учёта будущих изменений), оценка в `loadinfo.estimate_wait_seconds`.
 Это приближение: «около N секунд», а не обещание. Публичный эндпоинт появится в модуле 4, он просто отдаст `snapshot.to_dict()`.
 
-## Что проверено, а что нет
+## Известные упрощения
 
-| Что | Как проверено |
+* Место в очереди (`POSITION_SQL`) считается по всем заданиям, без учёта `capabilities` воркеров. Пока все задачи `cpu`,
+  это не важно; когда появятся `gpu`-задачи, место надо будет считать по своей «полосе».
+* Возврат задания в очередь (reaper, `release`) обнуляет `started_at`, поэтому неудачная попытка не попадает в счётчик
+  «стартовало за последние 5 минут». Это немного в пользу ученика, чья проверка сорвалась не по его вине; эффект маленький.
+
+## Что проверено
+
+На PostgreSQL 16 (WSL2, Ubuntu 24.04), октябрь 2026:
+
+| Что | Как |
 |---|---|
-| Порядок справедливости (эталон), оценка ожидания, уровни | автотесты `tests/test_module3_units.py`, **запущены** |
-| Протокол воркер-бэкенд, fencing, release, потеря lease, вытеснение, воркер целиком | `tests/test_worker_e2e.py` против модели бэкенда в памяти, **запущены** |
-| SQL очереди, индексы, `models.py` на реальном SQLAlchemy/PostgreSQL | `tests/pg/test_queue_pg.py`, **НЕ запускались** (нет PostgreSQL) |
-| FastAPI-слой | `tests/pg/test_worker_api_pg.py`, **НЕ запускался** |
+| Порядок справедливости (эталон), оценка ожидания, уровни | `tests/test_module3_units.py` |
+| Протокол воркер-бэкенд, fencing, release, потеря lease, вытеснение, воркер целиком | `tests/test_worker_e2e.py` против модели бэкенда в памяти |
+| SQL очереди, индексы, `models.py` на реальном PostgreSQL | `tests/pg/test_queue_pg.py`. Порядок выдачи `CLAIM_SQL` и `POSITION_SQL` сверяется с `loadinfo.fair_key` **на каждом шаге** до опустошения очереди: перемешанные `created_at`, равные `created_at`, история стартов внутри и вне окна. Тест ловит перестановку ключей, потерю `created_at`, неверное окно, in-flight без `compiling` |
+| FastAPI-слой | `tests/pg/test_worker_api_pg.py` (TestClient) и вживую: uvicorn + `tools/smoke-internal-api.sh` (401/400/422, полный цикл, 409 `superseded` и `lease_lost`, `cancel` на устаревший heartbeat, идемпотентный результат, release, 403 на заголовки прокси, 401 после отзыва токена) |
+| Миграции == `models.py` | `tests/pg/test_migrations_pg.py`: `compare_metadata`, определения индексов (с `WHERE`) и значения enum против `create_all`, чистый `downgrade` и повторный `upgrade` |
 
-Запуск у вас:
+Запуск (базу и файл с URL создаёт `deploy/setup-postgres.sh`):
 
 ```bash
-createdb judge_test            # или через psql
-export JUDGE_TEST_DATABASE_URL=postgresql+psycopg://USER:PASS@127.0.0.1:5432/judge_test
-pip install -r requirements.txt
+set -a; . ~/.config/judge/test.env; set +a
 python -m unittest discover -s tests/pg -t . -v
 ```
 
-Каждый тест работает в собственной временной схеме и удаляет её. Первый запуск заодно впервые исполнит `models.py`.
+Каждый тестовый класс работает в собственной временной схеме и удаляет её, схему `public` базы `judge_test` тесты не трогают.
+Остальные dev-проверки: `docs/DEPLOY_WSL2.md`, раздел 6.
+
+Не проверено: работа под пользователем `judge` через systemd-юниты, isolate от `judge`, реальный воркер против реального бэкенда
+(вторая часть стабилизации модуля 3).

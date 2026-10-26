@@ -10,7 +10,7 @@ id judge >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/j
 install -d -o judge -g judge /var/lib/judge/blobs /var/cache/judge/worker
 install -d -o root -g judge -m 750 /etc/judge
 mkdir -p /opt/judge
-cp -a runner worker protocol backend requirements.txt /opt/judge/
+cp -a runner worker protocol backend requirements.txt alembic.ini /opt/judge/
 [ -d /opt/judge/.venv ] || python3 -m venv /opt/judge/.venv
 /opt/judge/.venv/bin/pip install -q -r /opt/judge/requirements.txt
 for f in backend worker; do

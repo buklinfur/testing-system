@@ -1,6 +1,6 @@
 # Развёртывание в WSL2 (systemd)
 
-Сервисы: `judge-api-internal` (API для воркеров, 127.0.0.1:8001), `judge-reaper`, `judge-worker`; публичный API (модуль 4) и `cloudflared` добавятся рядом.
+Сервисы: `judge-api-internal` (API для воркеров, 127.0.0.1:8001), `judge-reaper`, `judge-worker`; публичный API (модуль 4) и Caddy добавятся рядом. PostgreSQL 16 работает на той же машине.
 
 ## 0. Предусловия (проверьте один раз)
 
@@ -22,16 +22,30 @@
 ## 1. Установка
 
 ```bash
+sudo apt install postgresql      # один раз (PostgreSQL 16 в Ubuntu 24.04)
 sudo ./deploy/install-wsl.sh     # пользователь judge, каталоги, venv в /opt/judge, юниты, шаблоны /etc/judge/*.env
-sudo nano /etc/judge/backend.env # DATABASE_URL
+sudo ./deploy/setup-postgres.sh  # роли и базы, пароли в env-файлы (см. ниже)
 ```
+
+### PostgreSQL
+
+`deploy/setup-postgres.sh` можно запускать повторно; пароли сохраняются, новые выдаёт `--rotate`. Что он делает:
+
+* `conf.d/judge.conf`: `listen_addresses = 'localhost'` и `password_encryption = 'scram-sha-256'`. Основной `postgresql.conf` не трогается.
+  Если в `pg_hba.conf` есть TCP-строка с `trust`, `md5` или `password`, скрипт останавливается и показывает её (правка руками).
+* Роли `judge` (продовая) и `judge_test` (тесты и локальные проверки): LOGIN без superuser/createdb/createrole.
+  У каждой своя база, у которой она владелец; `CONNECT` отобран у PUBLIC, так что `judge_test` не может подключиться к `judge`.
+* Пароли: `openssl rand -hex 24`, в psql идут через stdin, в env-файлы через окружение, в `ps` и истории не видны.
+  * `DATABASE_URL` → `/etc/judge/backend.env` (640 root:judge), остальные строки файла не меняются;
+  * `JUDGE_TEST_DATABASE_URL` → `~/.config/judge/test.env` (600, владелец тот, кто вызвал sudo). Тесты и dev-проверки идут без sudo.
+* В конце проверяет: слушает только `127.0.0.1`, вход по паролю работает, неверный пароль отвергается, пароли хранятся как SCRAM.
 
 ## 2. Первый запуск
 
 ```bash
-# БД и таблицы (миграции генерируются по README), затем:
-sudo -u judge bash -c 'set -a; . /etc/judge/backend.env; set +a; cd /opt/judge; \
-    PYTHONPATH=/opt/judge:/opt/judge/backend .venv/bin/python -m app.admin_cli create-worker-token main'   # токен покажется один раз
+j() { sudo -u judge bash -c 'set -a; . /etc/judge/backend.env; set +a; cd /opt/judge; PYTHONPATH=/opt/judge:/opt/judge/backend "$@"' _ "$@"; }
+j .venv/bin/alembic upgrade head                              # таблицы (миграции лежат в backend/migrations)
+j .venv/bin/python -m app.admin_cli create-worker-token main  # токен покажется один раз
 sudo nano /etc/judge/worker.env  # JUDGE_WORKER_TOKEN=...
 sudo systemctl enable --now judge-api-internal judge-reaper
 curl -s http://127.0.0.1:8001/internal/health
@@ -57,9 +71,26 @@ sudo systemctl enable --now judge-worker
 
 ## 4. Обновление
 
-`git pull`, снова `sudo ./deploy/install-wsl.sh`, затем `sudo systemctl restart judge-api-internal judge-reaper judge-worker`.
+`git pull`, снова `sudo ./deploy/install-wsl.sh`, затем `j .venv/bin/alembic upgrade head` (функция `j` из раздела 2) и
+`sudo systemctl restart judge-api-internal judge-reaper judge-worker`.
 Перезапуск воркеров корректный: текущие проверки дорабатываются (до 2 минут), потом процессы выходят.
 
-## 5. Cloudflare Tunnel
+## 5. Внешний доступ (Caddy)
 
-Туннель должен указывать только на публичный API (порт 8000, модуль 4). **Порт 8001 (внутренний API) в туннель не добавлять.**
+Caddy (собственный домен `.ru`, модуль 6) проксирует только публичный API (порт 8000, модуль 4). **Порт 8001 (внутренний API) в Caddyfile не добавлять.**
+Второй рубеж: внутренний API отвечает 403 на любой запрос с `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`
+(Caddy ставит их всегда), `Forwarded`, `X-Real-IP` и заголовками Cloudflare (`docs/WORKER_PROTOCOL.md`).
+
+## 6. Проверки для разработчика (без sudo)
+
+```bash
+set -a; . ~/.config/judge/test.env; set +a                       # JUDGE_TEST_DATABASE_URL от setup-postgres.sh
+python -m unittest discover -s tests/pg -t . -v                  # очередь, API, миграции (каждый класс в своей схеме)
+export DATABASE_URL=$JUDGE_TEST_DATABASE_URL JUDGE_BLOB_DIR=/tmp/judge-blobs PYTHONPATH=.:backend
+alembic upgrade head && alembic check                            # схема public базы judge_test
+uvicorn app.internal_main:app --host 127.0.0.1 --port 8001 &
+JUDGE_DEV=1 python -m app.dev_seed --count 3                     # посылки в очередь без публичного API
+python -m app.admin_cli create-worker-token smoke | tail -1 > /tmp/judge-token && chmod 600 /tmp/judge-token
+tools/smoke-internal-api.sh /tmp/judge-token                     # протокол воркера curl-ом, код выхода = число провалов
+```
+`dev_seed` и smoke-скрипт меняют данные: только для `judge_test`, не для продовой базы.
