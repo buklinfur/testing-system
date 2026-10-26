@@ -1,7 +1,10 @@
 # Протокол воркер ↔ бэкенд (внутренний API, версия 1)
 
 Базовый путь `/internal/worker/v1`, JSON. Внутренний API слушает **отдельный порт** (`127.0.0.1:8001`) и не публикуется
-через Cloudflare Tunnel; запросы с заголовками `cf-ray` / `cf-connecting-ip` дополнительно отклоняются.
+через обратный прокси (Caddy). Второй рубеж: запрос с любым заголовком, который добавляет прокси, получает **403** ещё до
+проверки токена. Это `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` (Caddy ставит их всегда), `Forwarded`,
+`X-Real-IP` (другие прокси) и `cf-ray` / `cf-connecting-ip` (Cloudflare). Воркер ходит на порт напрямую и таких заголовков не шлёт.
+Список: `PROXY_HEADERS` в `backend/app/internal_main.py`, тесты: `tests/test_internal_api_units.py`.
 Воркер знает только URL и токен и не ходит в БД, поэтому его можно вынести на другую машину (тогда нужен VPN/LAN и firewall; токен даёт доступ ко всем тестам).
 
 Заголовки: `Authorization: Bearer <token>`; после регистрации ещё `X-Worker-Id`, `X-Worker-Instance`.
@@ -18,7 +21,7 @@
 | `POST /judgements/{id}/release` `{attempt, reason}` | вернуть задание (остановка), не считается провалом |
 | `POST /deregister` | воркер остановился |
 
-Коды: 401 токен неверен/отозван; 403 чужое имя/токен не разрешает capability; **409** `superseded` (зарегистрировался другой
+Коды: 401 токен неверен/отозван; 403 запрос пришёл через прокси, чужое имя или токен не разрешает capability; **409** `superseded` (зарегистрировался другой
 процесс с этим именем) или `lease_lost` (результат от чужой/старой попытки); 422 результат не сходится с версией задачи.
 
 ## job (ответ claim)
@@ -44,9 +47,10 @@
 {"attempt": 1, "verdict": "PARTIAL", "score": "40.00", "max_score": "100.00",
  "compile_log": null, "error": null,
  "summary": {"first_fail": "WA", "groups": [{"name": "small", "points": "40.00", "score": "40.00", "scoring": "sum", "visibility": "hidden"}]},
- "tests": [{"test_case_id": 101, "index": 1, "verdict": "OK", "time_ms": 12, "memory_kb": 3100, "exit_code": 0, "signal": null,
+ "tests": [{"test_case_id": 101, "index": 1, "verdict": "OK", "time_ms": 12, "memory_kb": 3100, "exit_code": 0, "signal": null, "tl_kind": null,
             "message": "", "stderr_excerpt": "", "output_excerpt": "…", "visible_to_student": true}],
  "timing": {"fetch_ms": 40, "judge_ms": 900}}
 ```
+`tl_kind` бывает только у `TL`: `"cpu"` или `"wall"` (иначе 422); у других вердиктов бэкенд его не сохраняет.
 `visible_to_student` вычисляет воркер тем же `runner.explain.student_view`, который уже проверен тестами раннера (одна логика, а не две).
 Вердикт `IE` бэкенд повторяет до `max_attempts`, потом фиксирует.

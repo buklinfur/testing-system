@@ -1,4 +1,4 @@
-"""Queue semantics on a real PostgreSQL. NOT run by the author (no PostgreSQL in the build environment)."""
+"""Queue semantics on a real PostgreSQL (tests are skipped unless JUDGE_TEST_DATABASE_URL is set)."""
 import random
 import threading
 import unittest
@@ -10,7 +10,7 @@ if URL and HAVE_SA:  # imported only when the database is configured
     from sqlalchemy.exc import IntegrityError
 
     from app import loadinfo, metrics, queue as q
-    from app.models import Judgement, JudgementReason, JudgementStatus, TestResult, Verdict
+    from app.models import Judgement, JudgementReason, JudgementStatus, QueueEvent, TestResult, Verdict
 
 
 @requires_pg
@@ -80,6 +80,65 @@ class QueueTests(PgCase):
             picked.append(j.id)
         self.assertEqual(picked[0], expected[0], "SQL order == reference order for the first pick")
 
+    def test_every_claim_follows_the_reference_order(self):
+        """CLAIM_SQL / POSITION_SQL == loadinfo.fair_key at every step, with the counters taken from raw rows.
+
+        created_at is shuffled against id (the tie-break order matters), and some students have history:
+        judgements that started inside the fairness window (count as recent) and long before it (do not).
+        """
+        rng = random.Random(11)
+        users = [self.student(i) for i in range(5)]
+        # minutes ago; the window is 5 minutes. Uneven on purpose: a wrong window changes who goes first.
+        history = {0: (60, 90, 120), 1: (1,), 2: (2, 3, 60)}
+        for n, starts in history.items():
+            for minutes_ago in starts:
+                sub, _ = self.submission(users[n], enqueue=False)
+                self.s.add(Judgement(submission_id=sub.id, problem_version_id=self.seed["version"].id,
+                                     status=JudgementStatus.finished, verdict=Verdict.OK,
+                                     started_at=text(f"now() - interval '{minutes_ago} minutes'"),
+                                     finished_at=text("now()")))
+        queued = []
+        for _ in range(16):
+            _sub, j = self.submission(rng.choice(users), priority=rng.choice([0, 0, 0, 10, -1]))
+            queued.append(j)
+        for j, seconds_ago in zip(queued, rng.sample(range(10, 1000), len(queued))):
+            j.created_at = text(f"now() - interval '{seconds_ago} seconds'")
+        ties = rng.sample(queued, 4)  # equal created_at: the id decides
+        for j in ties:
+            j.created_at = text("now() - interval '5000 seconds'")
+        self.s.commit()
+        _t, w = self.token_and_worker(token_caps=("cpu",))
+
+        def reference():
+            now = self.s.execute(text("SELECT now()")).scalar_one()
+            window = self.settings.recent_window_s
+            rows = self.s.execute(text("""SELECT j.id, s.user_id, j.priority, j.created_at, j.status, j.started_at
+                                          FROM judgements j JOIN submissions s ON s.id = j.submission_id""")).all()
+            inflight, recent = {}, {}
+            for r in rows:
+                if r.status in (JudgementStatus.compiling.value, JudgementStatus.running.value):
+                    inflight[r.user_id] = inflight.get(r.user_id, 0) + 1
+                if r.started_at is not None and (now - r.started_at).total_seconds() < window:
+                    recent[r.user_id] = recent.get(r.user_id, 0) + 1
+            waiting = [{"id": r.id, "user_id": r.user_id, "priority": r.priority, "created_at": r.created_at}
+                       for r in rows if r.status == JudgementStatus.queued.value]
+            return [r["id"] for r in loadinfo.fair_order(waiting, inflight, recent)]
+
+        steps = 0
+        while True:
+            expected = reference()
+            positions = sorted(self.s.execute(q.POSITION_SQL, {"window": self.settings.recent_window_s}).all(),
+                               key=lambda r: r.pos)
+            self.assertEqual([r.id for r in positions], expected, f"POSITION_SQL order, step {steps}")
+            j = q.claim(self.s, w, self.settings)
+            self.s.commit()
+            if not expected:
+                self.assertIsNone(j)
+                break
+            self.assertEqual(j.id, expected[0], f"CLAIM_SQL pick, step {steps}")
+            steps += 1
+        self.assertEqual(steps, len(queued))
+
     def test_one_student_does_not_block_another(self):
         a, b = self.student(1), self.student(2)
         for _ in range(5):
@@ -139,6 +198,9 @@ class QueueTests(PgCase):
             self.s.commit()
             self.assertEqual(q.reap(self.s, self.settings), {"requeued": 1, "gave_up": 0})
             self.s.commit()
+            event = self.s.execute(select(QueueEvent).where(QueueEvent.kind == "requeued")
+                                   .order_by(QueueEvent.id.desc()).limit(1)).scalar_one()
+            self.assertEqual((event.worker_id, event.details["attempt"]), (w.id, attempt), "the history names the worker")
             self.s.execute(text("UPDATE workers SET last_heartbeat = now()"))
             self.s.commit()
         q.claim(self.s, w, self.settings)
@@ -201,6 +263,9 @@ class QueueTests(PgCase):
         self.s.commit()
         j = self.s.get(Judgement, j.id, populate_existing=True)
         self.assertEqual((j.status, j.failures), (JudgementStatus.queued, 0))
+        event = self.s.execute(select(QueueEvent).where(QueueEvent.kind == "released")).scalar_one()
+        self.assertEqual((event.worker_id, event.judgement_id, event.details),
+                         (w.id, j.id, {"reason": "stopping", "attempt": 1}), "the history names the worker")
 
 
 @requires_pg
@@ -323,6 +388,58 @@ class LoadTests(PgCase):
         self.assertIn("judge_queue_length 4", text_out)
         rows = q.worker_table(self.s, self.settings)
         self.assertEqual(rows[0]["state"], "idle")
+
+    def beat(self, w, state="idle"):
+        q.heartbeat(self.s, w, state=state, judgement_id=None, attempt=None, phase=None, tests_done=None,
+                    tests_total=None, stats={})
+        self.s.commit()
+
+    def counters(self):
+        snap = q.load_snapshot(self.s, self.settings)
+        return snap.workers_online, snap.workers_busy, snap.level
+
+    def test_busy_follows_the_jobs_without_waiting_for_a_heartbeat(self):
+        _t, w = self.token_and_worker()
+        self.beat(w)
+        _s, j = self.submission(self.student(1))
+        self.s.commit()
+        j = q.claim(self.s, w, self.settings)
+        self.s.commit()
+        self.assertEqual(self.counters(), (1, 1, "busy"))
+        q.finish(self.s, w, j.id, self.ok_payload(j), self.settings)
+        self.s.commit()
+        self.assertEqual(w.state, "idle", "finish frees the worker at once")
+        self.assertEqual(self.counters(), (1, 0, "free"), "no heartbeat needed for the indicator to recover")
+
+    def test_release_frees_the_worker_at_once(self):
+        _t, w = self.token_and_worker()
+        self.beat(w)
+        _s, j = self.submission(self.student(1))
+        self.s.commit()
+        j = q.claim(self.s, w, self.settings)
+        self.s.commit()
+        self.assertTrue(q.release(self.s, w, j.id, j.attempt, "worker_stopping"))
+        self.s.commit()
+        self.assertEqual(w.state, "idle")
+        self.assertEqual(self.counters(), (1, 0, "busy"), "one job queued, one idle worker: busy, not overloaded")
+
+    def test_a_stale_busy_flag_without_a_job_is_not_busy(self):
+        _t, w = self.token_and_worker()
+        self.beat(w, state="busy")  # e.g. the flag left over from a job that was taken away by the reaper
+        self.assertEqual(self.counters(), (1, 0, "free"))
+
+    def test_a_draining_worker_is_not_capacity(self):
+        _t, w1 = self.token_and_worker("w1")
+        _t, w2 = self.token_and_worker("w2")
+        self.beat(w1)
+        self.beat(w2, state="draining")
+        student = self.student(1)
+        for _ in range(2):
+            self.submission(student)
+        self.s.commit()
+        self.assertEqual(self.counters(), (1, 0, "overloaded"), "two jobs, one worker that will take them")
+        metrics_out = q.collect_metrics(self.s, self.settings)
+        self.assertEqual(metrics_out["workers_by_state"], {"idle": 1, "draining": 1}, "metrics still show both")
 
 
 if __name__ == "__main__":

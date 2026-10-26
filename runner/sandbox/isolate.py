@@ -53,7 +53,10 @@ def classify_isolate(meta: dict, limits: Limits, stdout_overflow: bool = False) 
     if stdout_overflow:
         return RunResult(Verdict.OL, **base)
     if status == "TO":
-        return RunResult(Verdict.TL, **base)
+        # isolate says "Time limit exceeded (wall clock)" for the wall limit, "Time limit exceeded" for CPU
+        wall = "wall" in message or bool(limits.wall_ms and wall_ms >= limits.wall_ms
+                                         and not (limits.time_ms and time_ms > limits.time_ms))
+        return RunResult(Verdict.TL, tl_kind="wall" if wall else "cpu", **base)
     if meta.get("cg-oom-killed") == "1":
         return RunResult(Verdict.ML, **base)
     near_memory_limit = bool(limits.memory_mb and mem_kb and mem_kb >= 0.9 * limits.memory_mb * 1024)
@@ -66,7 +69,7 @@ def classify_isolate(meta: dict, limits: Limits, stdout_overflow: bool = False) 
     if status == "RE":
         return RunResult(Verdict.ML if near_memory_limit else Verdict.RE, **base)
     if limits.time_ms and time_ms > limits.time_ms:
-        return RunResult(Verdict.TL, **base)
+        return RunResult(Verdict.TL, tl_kind="cpu", **base)
     return RunResult(Verdict.OK, **base)
 
 

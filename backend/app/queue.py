@@ -282,9 +282,15 @@ def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Opt
     return {"cancel": cancel}
 
 
+def _free(worker: Worker) -> None:
+    """The worker holds no job any more: show it idle at once (a draining worker stays draining)."""
+    if worker.state == "busy":
+        worker.state = "idle"
+
+
 def _release(session: Session, j: Judgement, reason: str) -> None:
+    _event(session, "released", j.worker_id, j.id, reason=reason, attempt=j.attempt)  # before the worker is cleared
     j.status, j.worker_id, j.started_at, j.tests_done, j.tests_total = JudgementStatus.queued, None, None, None, None
-    _event(session, "released", judgement_id=j.id, reason=reason)
 
 
 def release(session: Session, worker: Worker, judgement_id: int, attempt: int, reason: str) -> bool:
@@ -293,6 +299,7 @@ def release(session: Session, worker: Worker, judgement_id: int, attempt: int, r
     if j is None or j.worker_id != worker.id or j.attempt != attempt or j.status not in IN_FLIGHT:
         return False
     _release(session, j, reason)
+    _free(worker)
     return True
 
 
@@ -305,8 +312,8 @@ def _fail_attempt(session: Session, j: Judgement, reason: str, settings: QueueSe
         j.error = f"gave up after {j.failures} failed attempts; last reason: {reason}"
         _event(session, "gave_up", j.worker_id, j.id, reason=reason, failures=j.failures)
         return "gave_up"
+    _event(session, "requeued", j.worker_id, j.id, reason=reason, failures=j.failures, attempt=j.attempt)
     j.status, j.worker_id, j.started_at, j.tests_done, j.tests_total = JudgementStatus.queued, None, None, None, None
-    _event(session, "requeued", None, j.id, reason=reason, failures=j.failures)
     return "requeued"
 
 
@@ -346,6 +353,7 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
         raise LeaseLost("no such judgement")
     if j.worker_id != worker.id or j.attempt != payload.get("attempt"):
         raise LeaseLost("the judgement belongs to another worker or attempt")
+    _free(worker)  # rolled back with everything else if the result turns out to be malformed
     if j.status in DONE:
         return "already_recorded"  # the same result delivered twice (network retry)
     if j.status not in IN_FLIGHT:
@@ -378,7 +386,8 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
         session.add(TestResult(
             judgement_id=j.id, test_case_id=t["test_case_id"], verdict=Verdict(t["verdict"]),
             time_ms=t.get("time_ms"), memory_kb=t.get("memory_kb"), exit_code=t.get("exit_code"),
-            signal=t.get("signal"), checker_message=t.get("message") or None,
+            signal=t.get("signal"), tl_kind=t.get("tl_kind") if t["verdict"] == "TL" else None,
+            checker_message=t.get("message") or None,
             stderr_excerpt=t.get("stderr_excerpt") or None, output_excerpt=t.get("output_excerpt") or None,
             visible_to_student=bool(t.get("visible_to_student")),
         ))
@@ -410,11 +419,29 @@ def _recent_durations(session: Session, limit: int = 50) -> list:
 
 
 def _workers_online(session: Session, settings: QueueSettings) -> tuple:
+    """(capacity, busy, by_state) of workers with a fresh heartbeat.
+
+    capacity counts idle and busy workers only: a draining worker takes no new jobs. busy counts the workers
+    that actually hold a job in progress (the judgements table), not the state flag, which the heartbeat
+    updates only every few seconds.
+    """
     cutoff = _now() - timedelta(seconds=settings.heartbeat_timeout_s)
-    rows = session.execute(select(Worker.state, func.count()).where(
-        Worker.last_heartbeat >= cutoff, Worker.state != "stopped").group_by(Worker.state)).all()
-    by_state = {state: n for state, n in rows}
-    return sum(by_state.values()), by_state.get("busy", 0), by_state
+    fresh = (Worker.last_heartbeat >= cutoff, Worker.state != "stopped")
+    by_state = {state: n for state, n in session.execute(
+        select(Worker.state, func.count()).where(*fresh).group_by(Worker.state)).all()}
+    holding = select(Judgement.worker_id).where(Judgement.status.in_(IN_FLIGHT))
+    busy = session.execute(select(func.count()).select_from(Worker).where(
+        *fresh, Worker.state.in_(("idle", "busy")), Worker.id.in_(holding))).scalar_one()
+    return by_state.get("idle", 0) + by_state.get("busy", 0), busy, by_state
+
+
+def read_one_moment(session: Session) -> None:
+    """Make the following reads see one moment of the database (call before the first query of the transaction).
+
+    The load snapshot and the status page are several queries; under READ COMMITTED a judgement finished
+    between them is counted in one and not in the other (e.g. 5 busy workers but 4 holding a job).
+    """
+    session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
 
 
 def load_snapshot(session: Session, settings: QueueSettings, user_id: Optional[int] = None,

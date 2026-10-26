@@ -1,7 +1,6 @@
 """Orchestration: compile a submission, run it on every test, check, score."""
 from __future__ import annotations
 
-import os
 import threading
 from decimal import Decimal
 from typing import Optional
@@ -11,6 +10,7 @@ from .checkers import run_builtin
 from .common import Limits, RunResult, SandboxError, Verdict
 from .compile import Program, compile_program
 from .config import RunnerConfig
+from .interact import INTERACTOR, Relay
 from .jurycache import JuryCache, MemoryJuryCache, jury_key
 from .languages import EXECUTABLE_NAME, get_profile, guess_language
 from .package import Problem, TestFile
@@ -110,6 +110,8 @@ class Judge:
         else:
             time_ms = min(c.time_ms_cap, int(problem.time_ms * t_mult))
             wall_ms = min(c.wall_ms_cap, time_ms * 2 + 1000)
+        if problem.wall_ms is not None:  # set by the problem: scaled like the time limit, still capped
+            wall_ms = min(c.wall_ms_cap, int(problem.wall_ms * t_mult))
         memory = c.memory_mb_cap if problem.memory_mb is None else min(c.memory_mb_cap, int(problem.memory_mb * m_mult))
         out_kb = c.output_kb_cap if problem.output_kb is None else min(c.output_kb_cap, problem.output_kb)
         return Limits(time_ms=time_ms, wall_ms=wall_ms, memory_mb=memory, processes=c.processes, fsize_kb=out_kb)
@@ -168,6 +170,7 @@ class Judge:
         return TestReport(
             group=test.group, name=test.name, index=index, verdict=run.verdict,
             time_ms=run.time_ms, memory_kb=run.memory_kb, exit_code=run.exit_code, signal=run.signal,
+            tl_kind=run.tl_kind if run.verdict == Verdict.TL else None,
             message=run.message if run.verdict == Verdict.IE else "",
             stderr_excerpt=_decode(run.stderr, 2048),
         )
@@ -265,15 +268,18 @@ class Judge:
             if test.answer_path:
                 ibox.put_file("answer.txt", test.answer_path.read_bytes())
                 args.append("answer.txt")
-            p_read, i_write = os.pipe()  # interactor stdout -> solution stdin
-            i_read, p_write = os.pipe()  # solution stdout -> interactor stdin
+            relay = Relay()  # the programs talk through the runner: see runner/interact.py
             try:
-                p_handle = pbox.start(program.argv, limits, stdin_fd=p_read, stdout_fd=p_write,
+                sol_in, sol_out = relay.solution_fds
+                int_in, int_out = relay.interactor_fds
+                p_handle = pbox.start(program.argv, limits, stdin_fd=sol_in, stdout_fd=sol_out,
                                       env=program.env, stderr_cap=c.stderr_cap_bytes)
-                i_handle = ibox.start(args, ilimits, stdin_fd=i_read, stdout_fd=i_write, stderr_cap=4096)
-            finally:
-                for fd in (p_read, i_write, i_read, p_write):
-                    os.close(fd)
+                i_handle = ibox.start(args, ilimits, stdin_fd=int_in, stdout_fd=int_out, stderr_cap=4096)
+            except BaseException:
+                relay.abort()
+                raise
+            relay.close_program_ends()
+            relay.start()
             results: dict = {}
             threads = [threading.Thread(target=lambda k=k, h=h: results.__setitem__(k, h.wait()))
                        for k, h in (("p", p_handle), ("i", i_handle))]
@@ -281,24 +287,28 @@ class Judge:
                 t.start()
             for t in threads:
                 t.join()
+            relay.stop()
+        if relay.error is not None:
+            raise JudgeError(f"interactive relay failed: {relay.error!r}")
         p, i = results["p"], results["i"]
         report = self._base_report(test, index, p)
-        report.verdict, report.message = self._resolve_interactive(p, i)
+        report.verdict, report.message = self._resolve_interactive(p, i, relay.first_closed())
         return report
 
-    def _resolve_interactive(self, p: RunResult, i: RunResult):
-        """Combine the solution's and the interactor's outcomes into one verdict."""
+    def _resolve_interactive(self, p: RunResult, i: RunResult, first_closed: Optional[str]):
+        """Combine the solution's and the interactor's outcomes into one verdict (policy: docs/RUNNER.md).
+
+        first_closed: which program's output reached EOF first, as seen by the relay ("solution",
+        "interactor", or None for neither / both in the same round).
+        """
         message = _decode(i.stderr, self.config.message_cap_bytes).strip()
         if p.verdict in (Verdict.TL, Verdict.ML, Verdict.OL, Verdict.IE):
             return p.verdict, ""
         protocol = i.verdict in (Verdict.OK, Verdict.RE) and i.signal is None and i.exit_code in PROTOCOL_VERDICT
         if not protocol:
             raise JudgeError(f"interactor failed ({i.verdict.value}, code {i.exit_code}): {message}")
-        if i.exit_code in (1, 2):
-            # whoever failed first is the cause; the other one only reacts to the closed pipe
-            if p.verdict == Verdict.RE and p.ended_at < i.ended_at:
-                return Verdict.RE, ""
-            return PROTOCOL_VERDICT[i.exit_code], message
         if p.verdict == Verdict.RE:
-            return Verdict.RE, ""
-        return Verdict.OK, message
+            if i.exit_code == 0 or first_closed != INTERACTOR:
+                return Verdict.RE, ""
+            # the interactor finished first; the solution failed only after its input / output was cut
+        return PROTOCOL_VERDICT[i.exit_code], message

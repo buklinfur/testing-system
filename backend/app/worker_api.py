@@ -1,14 +1,13 @@
 """Internal API for workers: /internal/worker/v1/*  (contract: docs/WORKER_PROTOCOL.md).
 
-Served by app.internal_main on a separate port that is NOT published through Cloudflare Tunnel.
+Served by app.internal_main on a separate localhost-only port that is NOT published through the reverse proxy.
 Every handler commits explicitly; the session dependency only guarantees rollback and close.
 
-Written against FastAPI 0.110+ / Pydantic 2; not executed by the author (no FastAPI in the build
-environment): run tests/pg/test_worker_api_pg.py.
+Covered by tests/pg/test_worker_api_pg.py (FastAPI TestClient on a real PostgreSQL).
 """
 from __future__ import annotations
 
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -100,6 +99,7 @@ class TestOut(BaseModel):
     memory_kb: Optional[int] = None
     exit_code: Optional[int] = None
     signal: Optional[int] = None
+    tl_kind: Optional[Literal["cpu", "wall"]] = None
     message: Optional[str] = None
     stderr_excerpt: Optional[str] = None
     output_excerpt: Optional[str] = None

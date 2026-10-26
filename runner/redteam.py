@@ -57,19 +57,21 @@ CASES = [
         "print('done')"), {"OK"}, False, "no network, including localhost services such as PostgreSQL"),
     Case("read-secrets-python", "python", _py(
         "import os",
-        "for path in ['/etc/shadow', '/root/.bash_history', '/mnt/c/Windows/System32/config/SAM']:",
+        "for path in ['/etc/shadow', '/root/.bash_history', '/mnt/c/Windows/System32/config/SAM',",
+        "             '/etc/judge/backend.env', '/etc/judge/worker.env']:",  # DB password, worker token
         "    try:",
         "        open(path, 'rb').read(1)",
         "        print('BREACH read', path)",
         "    except Exception:",
         "        pass",
-        "for path in ['/root', '/home', '/mnt', '/var/local/lib/isolate', '/var/lib/postgresql']:",
+        "for path in ['/root', '/home', '/mnt', '/var/local/lib/isolate', '/var/lib/postgresql',",
+        "             '/etc/judge', '/var/lib/judge', '/var/cache/judge', '/run/isolate']:",  # judge's secrets, tests and answers
         "    try:",
         "        if os.listdir(path):",
         "            print('BREACH list', path)",
         "    except Exception:",
         "        pass",
-        "print('done')"), {"OK"}, False, "host files must be invisible"),
+        "print('done')"), {"OK"}, False, "host files must be invisible, including the judge's env files, tests and cache"),
     Case("write-outside-python", "python", _py(
         "for path in ['/usr/bin/pwned', '/etc/pwned', '/bin/pwned', '/lib/pwned']:",
         "    try:",

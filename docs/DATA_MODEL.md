@@ -22,21 +22,9 @@ audit_log        — кто, что и откуда делал
 
 1. **Опубликованная `ProblemVersion` неизменяема.** Любая правка создаёт новую версию. `ContestProblem` хранит `problem_version_id`, поэтому старые результаты не меняются.
 2. **Посылка и проверка разделены.** `Submission` это то, что прислал ученик. `Judgement` это одна попытка проверки. Перепроверка добавляет новый `Judgement`, а `is_current` указывает актуальный (уникальный частичный индекс: один актуальный на посылку).
-3. **Очередь это `judgements` со статусом `queued`.** Для неё есть частичный индекс. Воркер забирает задания через внутренний API; внутри API захват делается так:
-
-   ```sql
-   UPDATE judgements
-   SET status = 'compiling', worker_id = :worker, started_at = now()
-   WHERE id = (
-       SELECT id FROM judgements
-       WHERE status = 'queued'
-       ORDER BY created_at
-       FOR UPDATE SKIP LOCKED
-       LIMIT 1
-   )
-   RETURNING id;
-   ```
-   Несколько воркеров не берут одно задание дважды. Если воркер пропал (нет heartbeat), зависшие задания возвращаются в `queued`. Справедливость между учениками (чтобы один не занял всю очередь) добавим в модуле очереди.
+3. **Очередь это `judgements` со статусом `queued`.** Для неё есть частичный индекс `ix_judgements_queue`. Воркер забирает
+   задания только через внутренний API; захват (`UPDATE ... FOR UPDATE SKIP LOCKED` под advisory lock, справедливый порядок
+   между учениками), возврат зависших заданий и перепроверки описаны в [`QUEUE.md`](QUEUE.md).
 4. **Файлы хранятся по хешу** (`blobs`), в БД только `sha256`. Одинаковые тесты в разных версиях не дублируются.
 5. **`checker_message` сохраняется всегда**, а ученику показывается по политике `feedback` и флагу `visible_to_student`. Преподаватель видит всё.
 
@@ -63,7 +51,7 @@ audit_log        — кто, что и откуда делал
   (текст внутренней ошибки, только преподавателю), `summary` (JSONB: баллы по группам / разбор теста), `tests_done/tests_total`
   (живой прогресс), `requested_by`. Индексы: очередь `(priority, created_at)` где `queued`; `ix_judgements_inflight`;
   уникальный `uq_judgements_active` (одно незавершённое задание на посылку) рядом с прежним `uq_judgements_current`.
-* `test_results`: `signal`, `stderr_excerpt`, `output_excerpt`.
+* `test_results`: `signal`, `stderr_excerpt`, `output_excerpt`; `tl_kind` (`cpu` / `wall` у вердикта TL, миграция `4499f58e60ca`).
 * `workers`: вместо `token_hash` ссылка `token_id`; добавлены `instance_id`, `state`, `info`, `stats`, `started_at`.
 * Новые таблицы `worker_tokens` (один токен на машину, хранится sha256, список разрешённых capabilities, отзыв) и `queue_events` (журнал инцидентов очереди).
 * `problem_versions.manifest_sha256`: хеш манифеста опубликованной версии (ключ кэша воркера).

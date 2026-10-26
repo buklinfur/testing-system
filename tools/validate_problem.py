@@ -71,6 +71,11 @@ def find_cycle(deps: dict[str, list[str]]) -> list[str] | None:
 def validate_semantics(root: Path, data: dict, errors: list[str], warnings: list[str]) -> None:
     ptype = data.get("type")
 
+    # Limits: a wall-clock limit below the CPU limit would silently cut the CPU limit
+    limits = data.get("limits") or {}
+    if limits.get("wall_ms") and limits.get("time_ms") and limits["wall_ms"] < limits["time_ms"]:
+        errors.append(f"limits.wall_ms ({limits['wall_ms']}) must not be less than limits.time_ms ({limits['time_ms']})")
+
     # Statement files
     statements = data.get("statement") or {lang: f"statement/{lang}.md" for lang in data.get("title", {})}
     for lang, rel in statements.items():

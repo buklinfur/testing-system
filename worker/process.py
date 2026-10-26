@@ -97,8 +97,7 @@ class WorkerProcess:
                                                  st["done"], st["total"], snap["stats"])
                 self._last_hb_ok = time.monotonic()
                 if reply.get("cancel"):
-                    log.warning("server cancelled judgement %s (lease lost)", st["judgement_id"])
-                    self.lease_lost.set()
+                    self._on_cancel(st["judgement_id"], st["attempt"])
                 if self._loaded is not None and st["judgement_id"] is not None:
                     self.problems.touch(self._loaded)
             except ApiConflict as exc:
@@ -119,6 +118,21 @@ class WorkerProcess:
                 if st["judgement_id"] is not None and time.monotonic() - self._last_hb_ok > HEARTBEAT_GIVE_UP_S:
                     log.error("no heartbeat acknowledged for %.0fs: dropping the job", HEARTBEAT_GIVE_UP_S)
                     self.lease_lost.set()
+
+    def _on_cancel(self, judgement_id, attempt) -> None:
+        """The server answered a heartbeat with cancel=true for (judgement_id, attempt) as they were when it was sent.
+
+        Act only if this worker still holds exactly that attempt. The reply can arrive after the job has finished
+        here and the next one has started (the heartbeat thread runs on its own); setting lease_lost then would
+        abandon the NEW job locally while the server still counts it as ours (stuck until max_judging_s).
+        """
+        with self._lock:
+            current = (self._state["judgement_id"], self._state["attempt"])
+            if judgement_id is None or current != (judgement_id, attempt):
+                log.debug("ignored a stale cancel for judgement %s attempt %s (now holding %s)", judgement_id, attempt, current)
+                return
+            log.warning("server cancelled judgement %s (lease lost)", judgement_id)
+            self.lease_lost.set()
 
     # ------------------------------------------------------------------ main loop
     def run(self) -> int:

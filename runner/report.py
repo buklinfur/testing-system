@@ -18,6 +18,7 @@ class TestReport:
     memory_kb: Optional[int] = None
     exit_code: Optional[int] = None
     signal: Optional[int] = None
+    tl_kind: Optional[str] = None  # TL only: "cpu" or "wall"
     message: str = ""  # checker / interactor message
     stderr_excerpt: str = ""
     output_excerpt: str = ""

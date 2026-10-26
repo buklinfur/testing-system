@@ -52,3 +52,4 @@ class RunResult:
     stderr: bytes = b""
     stdout_overflow: bool = False
     ended_at: float = 0.0  # time.monotonic() when the process ended
+    tl_kind: Optional[str] = None  # for TL: "cpu" (CPU time limit) or "wall" (wall-clock limit)

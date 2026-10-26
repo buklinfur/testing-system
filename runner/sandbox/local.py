@@ -50,8 +50,10 @@ class _LocalRunning(RunningProcess):
         overflow = bool(self.out_cap and self.out_cap.overflow)
         if overflow:
             return RunResult(Verdict.OL, stdout_overflow=True, **base)
-        if self.fired.is_set() or sig == int(signal_module.SIGXCPU) or (lim.time_ms and cpu_ms > lim.time_ms and (sig or code)):
-            return RunResult(Verdict.TL, **base)
+        if sig == int(signal_module.SIGXCPU) or (lim.time_ms and cpu_ms > lim.time_ms and (sig or code)):
+            return RunResult(Verdict.TL, tl_kind="cpu", **base)
+        if self.fired.is_set():  # the wall-clock timer killed it
+            return RunResult(Verdict.TL, tl_kind="wall", **base)
         if sig == int(signal_module.SIGXFSZ):
             return RunResult(Verdict.OL, **base)
         failed = bool(sig) or bool(code)

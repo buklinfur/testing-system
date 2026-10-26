@@ -83,6 +83,17 @@ class TopologyTests(unittest.TestCase):
         slots = topology.plan_workers([], workers=3, box_base=10, pin=False)
         self.assertEqual([s.boxes for s in slots], [(10, 11), (12, 13), (14, 15)])
 
+    def test_worker_boxes_never_overlap_manual_runs(self):
+        from runner.config import MANUAL_BOX_BASE
+        ok = [dict(workers=5, box_base=0), dict(workers=50, box_base=0), dict(workers=4, box_base=MANUAL_BOX_BASE + 2)]
+        bad = [dict(workers=51, box_base=0), dict(workers=1, box_base=MANUAL_BOX_BASE - 1),
+               dict(workers=1, box_base=MANUAL_BOX_BASE + 1)]
+        for kw in ok:
+            WorkerConfig(token="t", **kw).validate()
+        for kw in bad:
+            with self.subTest(**kw), self.assertRaises(ValueError):
+                WorkerConfig(token="t", **kw).validate()
+
     def test_affinity_is_applied_and_inherited(self):
         import subprocess
         cpu = sorted(os.sched_getaffinity(0))[0]
@@ -337,6 +348,39 @@ class SupervisorTests(unittest.TestCase):
 EXAMPLES = ROOT / "problems-examples"
 
 
+class StaleCancelTests(unittest.TestCase):
+    """A heartbeat reply describes the job as it was when the heartbeat was sent (found in the stage 6 load run)."""
+
+    def worker(self, judgement_id, attempt):
+        from types import SimpleNamespace
+        return SimpleNamespace(_lock=threading.Lock(), lease_lost=threading.Event(),
+                               _state={"judgement_id": judgement_id, "attempt": attempt})
+
+    def cancel(self, w, judgement_id, attempt):
+        from worker.process import WorkerProcess
+        WorkerProcess._on_cancel(w, judgement_id, attempt)
+
+    def test_cancel_for_the_held_attempt_is_applied(self):
+        w = self.worker(30, 1)
+        self.cancel(w, 30, 1)
+        self.assertTrue(w.lease_lost.is_set())
+
+    def test_late_cancel_for_a_finished_job_does_not_hit_the_next_one(self):
+        w = self.worker(31, 1)  # 30 finished, 31 claimed while the heartbeat about 30 was in flight
+        self.cancel(w, 30, 1)
+        self.assertFalse(w.lease_lost.is_set())
+
+    def test_late_cancel_for_an_older_attempt_of_the_same_job_is_ignored(self):
+        w = self.worker(30, 2)
+        self.cancel(w, 30, 1)
+        self.assertFalse(w.lease_lost.is_set())
+
+    def test_cancel_while_idle_is_ignored(self):
+        w = self.worker(None, None)
+        self.cancel(w, 30, 1)
+        self.assertFalse(w.lease_lost.is_set())
+
+
 class RunnerHookTests(unittest.TestCase):
     def test_cancel_and_progress(self):
         problem = Problem.load(EXAMPLES / "sum-of-two")
@@ -403,6 +447,38 @@ class DeployFilesTests(unittest.TestCase):
         s = Settings.from_env(read_systemd_env(ROOT / "deploy/env/backend.env.example"))
         self.assertTrue(s.database_url.startswith("postgresql+psycopg://"))
         self.assertEqual(s.queue.max_attempts, 3)
+
+    def test_deploy_scripts_are_executable(self):
+        # the docs run them as ./deploy/...; without the bit sudo says "command not found"
+        scripts = sorted((ROOT / "deploy").rglob("*.sh")) + [ROOT / "deploy/dev/judge-dev"]
+        self.assertTrue(scripts)
+        for path in scripts:
+            with self.subTest(script=str(path.relative_to(ROOT))):
+                self.assertTrue(os.access(path, os.X_OK))
+                self.assertTrue(path.read_text().startswith("#!/usr/bin/env bash\n"))
+
+    def test_env_i_runs_commands_by_absolute_path(self):
+        # `env -i PATH=/usr/bin:/bin cmd` looks cmd up in that short PATH: runuser (/usr/sbin) is not found
+        import re
+        scripts = sorted((ROOT / "deploy").rglob("*.sh")) + [ROOT / "deploy/dev/judge-dev"]
+        for path in scripts:
+            for n, line in enumerate(path.read_text().splitlines(), 1):
+                if line.lstrip().startswith("#") or "env -i " not in line:
+                    continue
+                rest = line.split("env -i ", 1)[1].split()
+                command = next((w for w in rest if not re.match(r"^[A-Z_][A-Z0-9_]*=", w)), "")
+                with self.subTest(script=f"{path.relative_to(ROOT)}:{n}"):
+                    self.assertTrue(command.startswith("/"), f"command after env -i must be absolute: {command!r}")
+                    # same PATH as systemd services get, so manual runs behave like the units (isolate is in /usr/local/bin)
+                    self.assertIn("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin", rest)
+
+    def test_api_keep_alive_outlasts_the_heartbeat_interval(self):
+        # otherwise uvicorn closes the idle connection just as the next heartbeat reuses it
+        import re
+        unit = (ROOT / "deploy/systemd/judge-api-internal.service").read_text()
+        keep_alive = int(re.search(r"--timeout-keep-alive (\d+)", unit).group(1))
+        cfg = WorkerConfig()
+        self.assertGreater(keep_alive, 3 * max(cfg.heartbeat_interval_s, cfg.poll_interval_s))
 
     def test_unit_stop_timeout_exceeds_drain_timeout(self):
         unit = (ROOT / "deploy/systemd/judge-worker.service").read_text()

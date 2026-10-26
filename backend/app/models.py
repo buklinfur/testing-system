@@ -445,6 +445,7 @@ class TestResult(Base):
     memory_kb: Mapped[Optional[int]] = mapped_column(Integer)
     exit_code: Mapped[Optional[int]] = mapped_column(Integer)
     signal: Mapped[Optional[int]] = mapped_column(Integer)
+    tl_kind: Mapped[Optional[str]] = mapped_column(String(8))  # TL only: "cpu" or "wall" (validated by the worker API)
     stderr_excerpt: Mapped[Optional[str]] = mapped_column(Text)  # teachers only (<= 4 KB)
     output_excerpt: Mapped[Optional[str]] = mapped_column(Text)  # the program's own output, teachers / open tests
     checker_message: Mapped[Optional[str]] = mapped_column(Text)  # always stored; shown per feedback policy
