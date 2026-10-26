@@ -436,6 +436,8 @@ class DeployFilesTests(unittest.TestCase):
                 command = next((w for w in rest if not re.match(r"^[A-Z_][A-Z0-9_]*=", w)), "")
                 with self.subTest(script=f"{path.relative_to(ROOT)}:{n}"):
                     self.assertTrue(command.startswith("/"), f"command after env -i must be absolute: {command!r}")
+                    # same PATH as systemd services get, so manual runs behave like the units (isolate is in /usr/local/bin)
+                    self.assertIn("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin", rest)
 
     def test_unit_stop_timeout_exceeds_drain_timeout(self):
         unit = (ROOT / "deploy/systemd/judge-worker.service").read_text()

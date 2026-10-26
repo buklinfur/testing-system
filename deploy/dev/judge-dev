@@ -38,7 +38,8 @@ PY=$OPT/.venv/bin/python
 UNITS="judge-api-internal judge-reaper judge-worker"
 
 is_uint() { [[ $1 =~ ^[0-9]{1,6}$ ]]; }
-as_judge_raw() { env -i PATH=/usr/bin:/bin HOME=/var/lib/judge LANG=C.UTF-8 /usr/sbin/runuser -u judge -- "$@"; }
+# PATH as systemd gives services (systemd-path search-binaries-default): isolate is in /usr/local/bin
+as_judge_raw() { env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin HOME=/var/lib/judge LANG=C.UTF-8 /usr/sbin/runuser -u judge -- "$@"; }
 
 check_opt() {  # as judge: read-only look at /opt/judge
   local bad
