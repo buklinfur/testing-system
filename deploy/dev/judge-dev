@@ -124,7 +124,8 @@ case "$cmd" in
       start|stop|restart|enable|disable) [ $# = 2 ] || die "svc $action UNIT"; check_opt; systemctl --no-pager "$action" "$unit" ;;
       status) [ $# = 2 ] || die "svc status UNIT"; SYSTEMD_PAGER=cat systemctl --no-pager status "$unit" || true ;;
       kill) [ $# = 3 ] && [[ $3 =~ ^(TERM|KILL)$ ]] || die "svc kill UNIT TERM|KILL"
-        systemctl --no-pager kill --signal="SIG$3" "$unit" ;;
+        # main process only, like `systemctl stop` with KillMode=mixed; the default (all) would also hit isolate
+        systemctl --no-pager kill --kill-whom=main --signal="SIG$3" "$unit" ;;
       *) die "svc start|stop|restart|status|enable|disable|kill UNIT" ;;
     esac ;;
   signal)  # as root

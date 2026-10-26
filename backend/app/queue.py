@@ -312,8 +312,8 @@ def _fail_attempt(session: Session, j: Judgement, reason: str, settings: QueueSe
         j.error = f"gave up after {j.failures} failed attempts; last reason: {reason}"
         _event(session, "gave_up", j.worker_id, j.id, reason=reason, failures=j.failures)
         return "gave_up"
+    _event(session, "requeued", j.worker_id, j.id, reason=reason, failures=j.failures, attempt=j.attempt)
     j.status, j.worker_id, j.started_at, j.tests_done, j.tests_total = JudgementStatus.queued, None, None, None, None
-    _event(session, "requeued", None, j.id, reason=reason, failures=j.failures)
     return "requeued"
 
 
