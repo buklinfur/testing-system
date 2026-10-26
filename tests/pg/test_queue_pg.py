@@ -383,6 +383,58 @@ class LoadTests(PgCase):
         rows = q.worker_table(self.s, self.settings)
         self.assertEqual(rows[0]["state"], "idle")
 
+    def beat(self, w, state="idle"):
+        q.heartbeat(self.s, w, state=state, judgement_id=None, attempt=None, phase=None, tests_done=None,
+                    tests_total=None, stats={})
+        self.s.commit()
+
+    def counters(self):
+        snap = q.load_snapshot(self.s, self.settings)
+        return snap.workers_online, snap.workers_busy, snap.level
+
+    def test_busy_follows_the_jobs_without_waiting_for_a_heartbeat(self):
+        _t, w = self.token_and_worker()
+        self.beat(w)
+        _s, j = self.submission(self.student(1))
+        self.s.commit()
+        j = q.claim(self.s, w, self.settings)
+        self.s.commit()
+        self.assertEqual(self.counters(), (1, 1, "busy"))
+        q.finish(self.s, w, j.id, self.ok_payload(j), self.settings)
+        self.s.commit()
+        self.assertEqual(w.state, "idle", "finish frees the worker at once")
+        self.assertEqual(self.counters(), (1, 0, "free"), "no heartbeat needed for the indicator to recover")
+
+    def test_release_frees_the_worker_at_once(self):
+        _t, w = self.token_and_worker()
+        self.beat(w)
+        _s, j = self.submission(self.student(1))
+        self.s.commit()
+        j = q.claim(self.s, w, self.settings)
+        self.s.commit()
+        self.assertTrue(q.release(self.s, w, j.id, j.attempt, "worker_stopping"))
+        self.s.commit()
+        self.assertEqual(w.state, "idle")
+        self.assertEqual(self.counters(), (1, 0, "busy"), "one job queued, one idle worker: busy, not overloaded")
+
+    def test_a_stale_busy_flag_without_a_job_is_not_busy(self):
+        _t, w = self.token_and_worker()
+        self.beat(w, state="busy")  # e.g. the flag left over from a job that was taken away by the reaper
+        self.assertEqual(self.counters(), (1, 0, "free"))
+
+    def test_a_draining_worker_is_not_capacity(self):
+        _t, w1 = self.token_and_worker("w1")
+        _t, w2 = self.token_and_worker("w2")
+        self.beat(w1)
+        self.beat(w2, state="draining")
+        student = self.student(1)
+        for _ in range(2):
+            self.submission(student)
+        self.s.commit()
+        self.assertEqual(self.counters(), (1, 0, "overloaded"), "two jobs, one worker that will take them")
+        metrics_out = q.collect_metrics(self.s, self.settings)
+        self.assertEqual(metrics_out["workers_by_state"], {"idle": 1, "draining": 1}, "metrics still show both")
+
 
 if __name__ == "__main__":
     unittest.main()

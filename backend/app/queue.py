@@ -282,6 +282,12 @@ def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Opt
     return {"cancel": cancel}
 
 
+def _free(worker: Worker) -> None:
+    """The worker holds no job any more: show it idle at once (a draining worker stays draining)."""
+    if worker.state == "busy":
+        worker.state = "idle"
+
+
 def _release(session: Session, j: Judgement, reason: str) -> None:
     j.status, j.worker_id, j.started_at, j.tests_done, j.tests_total = JudgementStatus.queued, None, None, None, None
     _event(session, "released", judgement_id=j.id, reason=reason)
@@ -293,6 +299,7 @@ def release(session: Session, worker: Worker, judgement_id: int, attempt: int, r
     if j is None or j.worker_id != worker.id or j.attempt != attempt or j.status not in IN_FLIGHT:
         return False
     _release(session, j, reason)
+    _free(worker)
     return True
 
 
@@ -346,6 +353,7 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
         raise LeaseLost("no such judgement")
     if j.worker_id != worker.id or j.attempt != payload.get("attempt"):
         raise LeaseLost("the judgement belongs to another worker or attempt")
+    _free(worker)  # rolled back with everything else if the result turns out to be malformed
     if j.status in DONE:
         return "already_recorded"  # the same result delivered twice (network retry)
     if j.status not in IN_FLIGHT:
@@ -411,11 +419,20 @@ def _recent_durations(session: Session, limit: int = 50) -> list:
 
 
 def _workers_online(session: Session, settings: QueueSettings) -> tuple:
+    """(capacity, busy, by_state) of workers with a fresh heartbeat.
+
+    capacity counts idle and busy workers only: a draining worker takes no new jobs. busy counts the workers
+    that actually hold a job in progress (the judgements table), not the state flag, which the heartbeat
+    updates only every few seconds.
+    """
     cutoff = _now() - timedelta(seconds=settings.heartbeat_timeout_s)
-    rows = session.execute(select(Worker.state, func.count()).where(
-        Worker.last_heartbeat >= cutoff, Worker.state != "stopped").group_by(Worker.state)).all()
-    by_state = {state: n for state, n in rows}
-    return sum(by_state.values()), by_state.get("busy", 0), by_state
+    fresh = (Worker.last_heartbeat >= cutoff, Worker.state != "stopped")
+    by_state = {state: n for state, n in session.execute(
+        select(Worker.state, func.count()).where(*fresh).group_by(Worker.state)).all()}
+    holding = select(Judgement.worker_id).where(Judgement.status.in_(IN_FLIGHT))
+    busy = session.execute(select(func.count()).select_from(Worker).where(
+        *fresh, Worker.state.in_(("idle", "busy")), Worker.id.in_(holding))).scalar_one()
+    return by_state.get("idle", 0) + by_state.get("busy", 0), busy, by_state
 
 
 def load_snapshot(session: Session, settings: QueueSettings, user_id: Optional[int] = None,
