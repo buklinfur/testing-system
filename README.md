@@ -1,6 +1,6 @@
 # Judge: тестирующая система для школьных контестов
 
-Статус: модули 0-3 (среда, формат задачи и модель данных, раннер, очередь и воркеры). Среда: WSL2 + Ubuntu + `isolate`.
+Статус: модули 0-3 готовы (среда, формат задачи и модель данных, раннер, очередь и воркеры) и проверены на реальной установке: systemd, PostgreSQL 16, `isolate` от пользователя `judge`, нагрузка 60 посылок на 5 воркерах. Среда: WSL2 + Ubuntu 24.04 + `isolate`.
 
 ```
 docs/
@@ -19,7 +19,7 @@ protocol/                     общий код бэкенда и воркера
 backend/app/                  models, queue, worker_api, internal_main, maintenance (reaper), admin_cli
 deploy/                       systemd-юниты, примеры env, install-wsl.sh, setup-postgres.sh
 backend/migrations/           миграции Alembic
-tests/                        автотесты (python -m unittest discover -s tests -t .); tests/pg нужна PostgreSQL (docs/DEPLOY_WSL2.md, раздел 7)
+tests/                        автотесты (python -m unittest discover -s tests -t .); tests/pg нужна PostgreSQL (docs/DEPLOY_WSL2.md, раздел 9)
 problems-examples/            пять примеров: batch, custom checker, interactive, choice, text_answer
 tools/validate_problem.py     проверка пакета задачи
 tools/smoke-internal-api.sh   проверка внутреннего API curl-ом (dev-база)
