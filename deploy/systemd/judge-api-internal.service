@@ -1,5 +1,5 @@
 [Unit]
-Description=Judge internal API for workers (127.0.0.1 only, never behind the tunnel)
+Description=Judge internal API for workers (127.0.0.1 only, never behind the reverse proxy)
 After=network-online.target postgresql.service
 Wants=postgresql.service
 

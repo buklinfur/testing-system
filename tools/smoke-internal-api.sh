@@ -73,7 +73,8 @@ c "release"                             200 POST "/judgements/$J3/release" -H @$
 c "result after release -> 409"         409 POST "/judgements/$J3/result" -H @$D/h_auth -H @$D/h_w2 -H "$J" -d "$(result $A3)"
 
 echo "--- tunnel / proxy headers"
-for h in 'cf-ray: 1' 'cf-connecting-ip: 1.2.3.4'; do
+for h in 'X-Forwarded-For: 1.2.3.4' 'X-Forwarded-Host: judge.example.ru' 'X-Forwarded-Proto: https' \
+         'Forwarded: for=1.2.3.4' 'X-Real-IP: 1.2.3.4' 'cf-ray: 1' 'cf-connecting-ip: 1.2.3.4'; do
   code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "$ROOT/internal/health" -H "$h")
   [ "$code" = 403 ] && echo "OK   health with '$h' -> 403" || { echo "FAIL health with '$h' -> $code"; FAILS=$((FAILS + 1)); }
 done

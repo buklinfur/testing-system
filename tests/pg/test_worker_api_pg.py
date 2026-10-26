@@ -103,9 +103,13 @@ class WorkerApiTests(PgCase):
             s.commit()
         self.assertEqual(self.client.post("/internal/worker/v1/claim", headers=self.headers(reg)).status_code, 401)
 
-    def test_tunnel_traffic_is_refused_and_metrics_work(self):
-        r = self.client.get("/internal/health", headers={"cf-ray": "abc"})
-        self.assertEqual(r.status_code, 403)
+    def test_proxied_traffic_is_refused_and_metrics_work(self):
+        for header in ("cf-ray", "X-Forwarded-For", "Forwarded"):
+            r = self.client.get("/internal/health", headers={header: "1.2.3.4"})
+            self.assertEqual(r.status_code, 403, header)
+        r = self.client.post("/internal/worker/v1/register", headers={**self.auth, "X-Forwarded-For": "1.2.3.4"},
+                             json={"name": "w0"})
+        self.assertEqual(r.status_code, 403, "refused before authentication, even with a valid token")
         self.assertEqual(self.client.get("/internal/health").json(), {"ok": True})
         text_out = self.client.get("/internal/metrics").text
         self.assertIn("judge_queue_length 1", text_out)

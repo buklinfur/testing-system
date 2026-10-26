@@ -1,6 +1,6 @@
 """Internal API for workers: /internal/worker/v1/*  (contract: docs/WORKER_PROTOCOL.md).
 
-Served by app.internal_main on a separate port that is NOT published through Cloudflare Tunnel.
+Served by app.internal_main on a separate localhost-only port that is NOT published through the reverse proxy.
 Every handler commits explicitly; the session dependency only guarantees rollback and close.
 
 Covered by tests/pg/test_worker_api_pg.py (FastAPI TestClient on a real PostgreSQL).
