@@ -2,7 +2,9 @@
 Description=Judge workers (supervisor, N processes pinned to cores)
 After=network-online.target isolate.service judge-api-internal.service
 Wants=network-online.target
-# isolate.service is the cg-keeper unit created by isolate's `make install` (module 0); drop the line if you start isolate differently
+# isolate.service is the cg-keeper unit created by isolate's `make install` (module 0). Without it every
+# submission would end as IE, so the workers do not run without it (and stop if it stops).
+Requires=isolate.service
 
 [Service]
 Type=simple

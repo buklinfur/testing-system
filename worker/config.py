@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 
+from runner.config import MANUAL_BOX_BASE
+
 
 def _int(env: Mapping, key: str, default: int) -> int:
     value = env.get(key)
@@ -90,5 +92,9 @@ class WorkerConfig:
             raise ValueError("JUDGE_WORKERS must be >= 1")
         if self.backend not in ("isolate", "local"):
             raise ValueError(f"unknown backend {self.backend!r}")
+        last_box = self.box_base + 2 * self.workers - 1
+        if self.box_base < MANUAL_BOX_BASE + 2 and last_box >= MANUAL_BOX_BASE:
+            raise ValueError(f"isolate boxes {self.box_base}..{last_box} overlap boxes {MANUAL_BOX_BASE}..{MANUAL_BOX_BASE + 1} "
+                             f"of manual runs (runner.cli): lower JUDGE_BOX_BASE / JUDGE_WORKERS")
         if self.heartbeat_interval_s <= 0 or self.poll_interval_s <= 0:
             raise ValueError("intervals must be positive")

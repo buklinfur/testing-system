@@ -8,24 +8,39 @@
    ```ini
    [boot]
    systemd=true
+   [user]
+   default=<ваш пользователь>
    [automount]
-   enabled=false
+   enabled=true
+   options="ro,uid=1001,gid=1001,umask=077"
    [interop]
    enabled=false
    appendWindowsPath=false
    ```
-   затем в PowerShell `wsl --shutdown`. (Automount/interop отключены по решению о безопасности; репозиторий и кэш держите внутри ext4.) В env-файлах systemd комментарии допустимы только на отдельных строках.
+   затем в PowerShell `wsl --shutdown`. (Interop отключён, диски Windows смонтированы только для чтения и только для вашего
+   пользователя; решение о безопасности. Репозиторий и кэш держите внутри ext4, в `/mnt/c` ничего не пишется.) Скрипты
+   установки `wsl.conf`, `/mnt/c` и настройки прокси не трогают. В env-файлах systemd комментарии допустимы только на отдельных строках.
 2. `systemctl is-system-running` отвечает `running` или `degraded`; cgroup v2: `stat -fc %T /sys/fs/cgroup` даёт `cgroup2fs`.
-3. isolate установлен как в модуле 0 вместе с `isolate.service` (cg-keeper). Проверка: `sudo -u judge python -m runner.cli sandbox-check` после шага 2 ниже. **Юниты воркера работают от пользователя `judge`, а не root**: если sandbox-check от `judge` не проходит, а от root проходит, скажите, что именно у вас в модуле 0 (setuid/права), и я скорректирую `User=`.
+3. isolate установлен как в модуле 0 вместе с `isolate.service` (cg-keeper; без него `judge-worker` не запустится, `Requires=`). Проверка: `sandbox-check` от `judge` после шага 1 ниже. **Юниты воркера работают от пользователя `judge`, а не root**: если sandbox-check от `judge` не проходит, а от root проходит, скажите, что именно у вас в модуле 0 (setuid/права), и я скорректирую `User=`.
 4. Дистрибутив называется `Ubuntu` (Ubuntu 24.04 LTS). Автозапуск самого WSL при входе в Windows: планировщик заданий Windows, действие `wsl.exe -d Ubuntu -u root -- /bin/true` при входе (WSL стартует вместе с первым вызовом, systemd поднимет юниты).
 
 ## 1. Установка
 
+Сеть из WSL идёт через прокси на Windows (`127.0.0.1:8899`), а `sudo` по умолчанию сбрасывает переменные прокси,
+поэтому `install-wsl.sh` запускается с `--preserve-env` (без этого pip не скачает пакеты; скрипт проверяет доступ к PyPI заранее).
+
 ```bash
-sudo apt install postgresql      # один раз (PostgreSQL 16 в Ubuntu 24.04)
-sudo ./deploy/install-wsl.sh     # пользователь judge, каталоги, venv в /opt/judge, юниты, шаблоны /etc/judge/*.env
-sudo ./deploy/setup-postgres.sh  # роли и базы, пароли в env-файлы (см. ниже)
+sudo apt install postgresql rsync   # один раз (PostgreSQL 16 в Ubuntu 24.04)
+P="--preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy"
+sudo $P ./deploy/install-wsl.sh     # пользователь judge, каталоги, код в /opt/judge (root, только чтение), venv, юниты, шаблоны env
+sudo ./deploy/setup-postgres.sh     # роли и базы, пароли в env-файлы (см. ниже)
+sudo $P ./deploy/install-wsl.sh     # ещё раз: теперь есть DATABASE_URL, скрипт применит миграции и создаст токен воркера
 ```
+
+`install-wsl.sh` можно запускать сколько угодно раз (обновление тоже им). Код копируется `rsync --delete` с владельцем root
+и без права записи для группы и остальных: пользователь `judge` и разработчик не могут его менять. Байткод собирается
+заранее (`judge` не может писать `__pycache__`). Если в `/etc/judge/worker.env` ещё `JUDGE_WORKER_TOKEN=CHANGE_ME`,
+скрипт создаёт токен и записывает его туда сам, не показывая.
 
 ### PostgreSQL
 
@@ -44,9 +59,7 @@ sudo ./deploy/setup-postgres.sh  # роли и базы, пароли в env-ф�
 
 ```bash
 j() { sudo -u judge bash -c 'set -a; . /etc/judge/backend.env; set +a; cd /opt/judge; PYTHONPATH=/opt/judge:/opt/judge/backend "$@"' _ "$@"; }
-j .venv/bin/alembic upgrade head                              # таблицы (миграции лежат в backend/migrations)
-j .venv/bin/python -m app.admin_cli create-worker-token main  # токен покажется один раз
-sudo nano /etc/judge/worker.env  # JUDGE_WORKER_TOKEN=...
+# миграции и токен воркера уже сделал install-wsl.sh; j нужна для ручных команд (admin_cli status и т.п.)
 sudo systemctl enable --now judge-api-internal judge-reaper
 curl -s http://127.0.0.1:8001/internal/health
 w() { sudo -u judge bash -c 'set -a; . /etc/judge/worker.env; set +a; cd /opt/judge; PYTHONPATH=/opt/judge .venv/bin/python -m worker "$@"' _ "$@"; }
@@ -71,7 +84,7 @@ sudo systemctl enable --now judge-worker
 
 ## 4. Обновление
 
-`git pull`, снова `sudo ./deploy/install-wsl.sh`, затем `j .venv/bin/alembic upgrade head` (функция `j` из раздела 2) и
+`git pull`, снова `sudo $P ./deploy/install-wsl.sh` (он же применит новые миграции), затем
 `sudo systemctl restart judge-api-internal judge-reaper judge-worker`.
 Перезапуск воркеров корректный: текущие проверки дорабатываются (до 2 минут), потом процессы выходят.
 

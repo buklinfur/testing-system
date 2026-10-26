@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+# Manual runs (runner.cli, tools) use these boxes, above every worker's range, so that a check run by hand
+# while the services work never takes a box a worker needs. Workers must stay below (worker/config.py).
+MANUAL_BOX_BASE = 100
+
+
 @dataclass
 class RunnerConfig:
     # --- sandbox backend -------------------------------------------------

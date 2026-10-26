@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from .config import RunnerConfig
+from .config import MANUAL_BOX_BASE, RunnerConfig
 from .judge import Judge
 from .languages import guess_language
 from .package import Problem
@@ -43,7 +43,8 @@ def _print_report(report) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="runner")
     parser.add_argument("--backend", default="isolate", choices=["isolate", "local"])
-    parser.add_argument("--box-base", type=int, default=0, help="first isolate box id (a worker uses two)")
+    parser.add_argument("--box-base", type=int, default=MANUAL_BOX_BASE,
+                        help=f"first isolate box id, two are used (default {MANUAL_BOX_BASE}: above the workers' boxes)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("judge")

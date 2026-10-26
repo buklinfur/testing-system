@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from runner.config import RunnerConfig  # noqa: E402
+from runner.config import MANUAL_BOX_BASE, RunnerConfig  # noqa: E402
 from runner.judge import Judge  # noqa: E402
 from runner.package import Problem  # noqa: E402
 
@@ -80,10 +80,9 @@ def main() -> int:
     ap.add_argument("--backend", default="isolate", choices=["isolate", "local"])
     ap.add_argument("--exchanges", type=int, default=100_000)
     ap.add_argument("--repeat", type=int, default=5)
-    ap.add_argument("--box-base", type=int, default=None)
+    ap.add_argument("--box-base", type=int, default=MANUAL_BOX_BASE)
     args = ap.parse_args()
-    overrides = {} if args.box_base is None else {"box_id_base": args.box_base}
-    judge = Judge(RunnerConfig(backend=args.backend, **overrides))
+    judge = Judge(RunnerConfig(backend=args.backend, box_id_base=args.box_base))
     test_seconds = []
     run_interactive = judge._run_interactive
 

@@ -83,6 +83,17 @@ class TopologyTests(unittest.TestCase):
         slots = topology.plan_workers([], workers=3, box_base=10, pin=False)
         self.assertEqual([s.boxes for s in slots], [(10, 11), (12, 13), (14, 15)])
 
+    def test_worker_boxes_never_overlap_manual_runs(self):
+        from runner.config import MANUAL_BOX_BASE
+        ok = [dict(workers=5, box_base=0), dict(workers=50, box_base=0), dict(workers=4, box_base=MANUAL_BOX_BASE + 2)]
+        bad = [dict(workers=51, box_base=0), dict(workers=1, box_base=MANUAL_BOX_BASE - 1),
+               dict(workers=1, box_base=MANUAL_BOX_BASE + 1)]
+        for kw in ok:
+            WorkerConfig(token="t", **kw).validate()
+        for kw in bad:
+            with self.subTest(**kw), self.assertRaises(ValueError):
+                WorkerConfig(token="t", **kw).validate()
+
     def test_affinity_is_applied_and_inherited(self):
         import subprocess
         cpu = sorted(os.sched_getaffinity(0))[0]

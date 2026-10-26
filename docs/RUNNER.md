@@ -97,7 +97,10 @@ python -m runner.cli judge problems-examples/sum-of-two my_solution.cpp
 python -m runner.cli judge problems-examples/sum-of-two project.zip --lang cpp --archive
 ```
 
-Два воркера на одной машине должны использовать разные `--box-base` (воркер занимает два номера: решение и чекер/интерактор). В конфигурации `isolate` должно хватать `num_boxes`.
+Ручные запуски `runner.cli` по умолчанию берут box 100 и 101 (`MANUAL_BOX_BASE`), выше всех воркеров, поэтому проверку
+можно запускать при работающих сервисах. Воркеры занимают `JUDGE_BOX_BASE + 2i` и `+1`; `WorkerConfig.validate` не даёт им
+дойти до 100. Два ручных запуска одновременно по-прежнему конфликтуют (оба берут 100). Номеров у isolate 2.7 хватает:
+`num_boxes` выводится из диапазона subuid пользователя `isolate` (65536).
 
 ## Что проверено, а что нет
 
