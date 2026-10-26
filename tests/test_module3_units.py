@@ -348,6 +348,39 @@ class SupervisorTests(unittest.TestCase):
 EXAMPLES = ROOT / "problems-examples"
 
 
+class StaleCancelTests(unittest.TestCase):
+    """A heartbeat reply describes the job as it was when the heartbeat was sent (found in the stage 6 load run)."""
+
+    def worker(self, judgement_id, attempt):
+        from types import SimpleNamespace
+        return SimpleNamespace(_lock=threading.Lock(), lease_lost=threading.Event(),
+                               _state={"judgement_id": judgement_id, "attempt": attempt})
+
+    def cancel(self, w, judgement_id, attempt):
+        from worker.process import WorkerProcess
+        WorkerProcess._on_cancel(w, judgement_id, attempt)
+
+    def test_cancel_for_the_held_attempt_is_applied(self):
+        w = self.worker(30, 1)
+        self.cancel(w, 30, 1)
+        self.assertTrue(w.lease_lost.is_set())
+
+    def test_late_cancel_for_a_finished_job_does_not_hit_the_next_one(self):
+        w = self.worker(31, 1)  # 30 finished, 31 claimed while the heartbeat about 30 was in flight
+        self.cancel(w, 30, 1)
+        self.assertFalse(w.lease_lost.is_set())
+
+    def test_late_cancel_for_an_older_attempt_of_the_same_job_is_ignored(self):
+        w = self.worker(30, 2)
+        self.cancel(w, 30, 1)
+        self.assertFalse(w.lease_lost.is_set())
+
+    def test_cancel_while_idle_is_ignored(self):
+        w = self.worker(None, None)
+        self.cancel(w, 30, 1)
+        self.assertFalse(w.lease_lost.is_set())
+
+
 class RunnerHookTests(unittest.TestCase):
     def test_cancel_and_progress(self):
         problem = Problem.load(EXAMPLES / "sum-of-two")
