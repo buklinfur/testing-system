@@ -123,6 +123,14 @@ class ImportTests(PgCase):
         self.s.refresh(v1)
         self.assertEqual(v1.statements["ru"], (EXAMPLES / "sum-of-two" / "statement" / "ru.md").read_text(encoding="utf-8"))
 
+    def test_a_package_with_a_monotonous_big_test_imports(self):
+        """A test of a million identical numbers compresses about 515 times: the default limits accept it."""
+        root = self.copy("sum-of-two")
+        (root / "tests" / "large05.in").write_bytes(b"1000000000 1000000000\n" + b"1000000000\n" * 10**6)
+        r = self.run_import(archive=zipped(root, "sum-of-two/"))
+        self.assertEqual(r.kind, "created")
+        self.assertIn("tests/large05.in", r.version.files)
+
     def test_a_refused_package_writes_nothing(self):
         root = self.copy("sum-of-two")
         (root / "tests" / "small01.out").unlink()

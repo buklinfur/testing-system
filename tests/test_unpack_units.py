@@ -105,14 +105,28 @@ class UnpackTests(unittest.TestCase):
     def test_archive_too_big(self):
         self.refused(make_zip([("a", os.urandom(3000))]), "the limit is", limits=ImportSettings(max_archive_bytes=2000))
 
-    def test_zip_bomb_by_ratio(self):
-        bomb = make_zip([("problem.yaml", b"x"), ("tests/big.in", b"0" * (2 * 1024 * 1024))])
-        self.refused(bomb, "tests/big.in", "zip bomb")
-        unpack_zip(bomb, self.dest(), ImportSettings(max_ratio=5000))  # a deliberately higher limit lets it through
+    def test_a_monotonous_big_test_is_accepted_with_the_default_limits(self):
+        """A million identical numbers (ratio about 515) is a legitimate test, not a bomb."""
+        data = make_zip([("p/problem.yaml", b"x"), ("p/tests/big.in", b"1000000000\n" * 10**6)])
+        self.assertEqual(unpack_zip(data, self.dest(), LIMITS), ["problem.yaml", "tests/big.in"])
+
+    def test_a_bomb_is_refused_by_volume_before_anything_is_written(self):
+        dest = self.dest()
+        bomb = make_zip([("problem.yaml", b"x"), ("tests/big.in", b"0" * (16 * 1024 * 1024))])
+        no_ratio = ImportSettings(max_unpacked_bytes=8 * 1024 * 1024, max_ratio=10**9)  # only the volume can stop it
+        with self.assertRaises(ArchiveError) as ctx:
+            unpack_zip(bomb, dest, no_ratio)
+        self.assertIn("declares 16.0 MB of files, the limit is 8.0 MB", str(ctx.exception))
+        self.assertEqual(list(dest.iterdir()), [])
+
+    def test_the_ratio_limit_is_a_second_line(self):
+        bomb = make_zip([("problem.yaml", b"x"), ("tests/big.in", b"0" * (2 * 1024 * 1024))])  # ratio about 1029
+        self.refused(bomb, "tests/big.in", "zip bomb", limits=ImportSettings(max_ratio=100))
+        self.refused(bomb, "tests/big.in", "zip bomb")  # above even the default 1000 (deflate tops out near 1030)
 
     def test_unpacked_total_limit(self):
         data = make_zip([(f"t/{i}.in", os.urandom(40_000)) for i in range(5)])  # random: no compression
-        self.refused(data, "unpacks to more than", limits=ImportSettings(max_unpacked_bytes=150_000))
+        self.refused(data, "declares 0.2 MB of files, the limit is 0.1 MB", limits=ImportSettings(max_unpacked_bytes=150_000))
 
     def test_a_header_that_lies_about_the_size(self):
         """The real content is longer than the size in the headers: zipfile stops at the declared size, the CRC

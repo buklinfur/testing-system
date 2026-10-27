@@ -2,9 +2,11 @@
 
 Before anything is written every entry name is checked: no absolute paths, drive letters, backslashes, `..`
 or empty parts, no symbolic links or special files (by the Unix mode in external_attr), no duplicates, not
-more than max_files entries. Then files are streamed out with byte counters: the sizes written in the zip
-headers are never trusted (a lying header ends in a CRC error from zipfile), the ratio unpacked / compressed
-is checked per file and in total, and so is the unpacked total. Junk (protocol.problem_package.is_junk) is
+more than max_files entries, and the sizes the headers declare must not add up to more than the unpacked
+limit (a cheap early refusal; headers are never trusted the other way round). Then files are streamed out
+with byte counters: the unpacked total is the main protection (a header that understates a size ends in a
+CRC error from zipfile, and the counter stops it before that anyway); the ratio unpacked / compressed per
+file and in total is a second line. Junk (protocol.problem_package.is_junk) is
 skipped. When every file sits in one top-level folder (a zipped package folder), that folder is removed.
 A directory import gets the same checks through check_directory.
 """
@@ -83,6 +85,10 @@ def unpack_zip(data: bytes, dest: Path, limits: ImportSettings) -> list[str]:
             files.append((rel, info))
     if problems:
         raise ArchiveError(problems)
+    declared = sum(info.file_size for _rel, info in files)
+    if declared > limits.max_unpacked_bytes:
+        raise ArchiveError([f"the archive declares {_mb(declared)} of files, the limit is "
+                            f"{_mb(limits.max_unpacked_bytes)}: refused as a zip bomb"])
 
     tops = {rel.split("/", 1)[0] for rel, _info in files}
     strip = len(tops) == 1 and all("/" in rel for rel, _info in files)
