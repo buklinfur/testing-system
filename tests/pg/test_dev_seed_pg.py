@@ -1,4 +1,4 @@
-"""app.dev_seed end to end without isolate: package -> published version -> backend manifest -> the worker's
+"""app.dev_seed end to end without isolate: package -> imported version -> backend manifest -> the worker's
 ProblemStore -> the runner (local backend) judges the package's own reference solutions with the expected
 verdicts. Skipped unless JUDGE_TEST_DATABASE_URL is set."""
 import contextlib
@@ -57,7 +57,7 @@ class DevSeedTests(PgCase):
         self.s.commit()  # main() works in its own session: uncommitted rows here would block it forever
 
     def version(self, root):
-        v = dev_seed.ensure_version(self.s, self.blobs, dev_seed.load_package(root), self.admin)
+        v = dev_seed.import_dir(self.s, self.blobs, Path(root), self.admin).version
         self.s.commit()
         return v
 

@@ -38,11 +38,22 @@ class AuthSettings:
 
 
 @dataclass(frozen=True)
+class ImportSettings:
+    """Limits of a problem package (R27): checked while unpacking, never trusting the sizes in zip headers."""
+
+    max_archive_bytes: int = 100 * 1024 * 1024  # JUDGE_IMPORT_MAX_ARCHIVE_MB
+    max_unpacked_bytes: int = 512 * 1024 * 1024  # JUDGE_IMPORT_MAX_UNPACKED_MB
+    max_files: int = 5000  # JUDGE_IMPORT_MAX_FILES
+    max_ratio: int = 100  # JUDGE_IMPORT_MAX_RATIO: unpacked / compressed, per file and in total
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = "postgresql+psycopg://judge:judge@127.0.0.1:5432/judge"
     blob_dir: str = "/var/lib/judge/blobs"
     queue: QueueSettings = QueueSettings()
     auth: AuthSettings = AuthSettings()
+    imports: ImportSettings = ImportSettings()
     metrics_token: Optional[str] = None  # if set, /internal/metrics needs "Authorization: Bearer <it>"
     public_origin: Optional[str] = None  # JUDGE_PUBLIC_ORIGIN, e.g. https://judge.example.ru: the only Origin accepted
     public_port: int = 8000  # the public app (app.public_main), proxied by Caddy
@@ -52,7 +63,8 @@ class Settings:
     @classmethod
     def from_env(cls, env: Optional[Mapping] = None) -> "Settings":
         env = os.environ if env is None else env
-        d, q, a = cls(), QueueSettings(), AuthSettings()
+        d, q, a, i = cls(), QueueSettings(), AuthSettings(), ImportSettings()
+        mib = 1024 * 1024
         return cls(
             database_url=env.get("DATABASE_URL", d.database_url),
             blob_dir=env.get("JUDGE_BLOB_DIR", d.blob_dir),
@@ -68,6 +80,12 @@ class Settings:
                 recent_window_s=float(env.get("JUDGE_FAIR_WINDOW_S", q.recent_window_s)),
                 event_retention_days=int(env.get("JUDGE_EVENT_RETENTION_DAYS", q.event_retention_days)),
                 reaper_interval_s=float(env.get("JUDGE_REAPER_INTERVAL_S", q.reaper_interval_s)),
+            ),
+            imports=ImportSettings(
+                max_archive_bytes=int(env.get("JUDGE_IMPORT_MAX_ARCHIVE_MB", i.max_archive_bytes // mib)) * mib,
+                max_unpacked_bytes=int(env.get("JUDGE_IMPORT_MAX_UNPACKED_MB", i.max_unpacked_bytes // mib)) * mib,
+                max_files=int(env.get("JUDGE_IMPORT_MAX_FILES", i.max_files)),
+                max_ratio=int(env.get("JUDGE_IMPORT_MAX_RATIO", i.max_ratio)),
             ),
             auth=AuthSettings(
                 secret_key=env.get("JUDGE_SECRET_KEY") or None,

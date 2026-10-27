@@ -348,6 +348,7 @@ class MigrationTests(PgCase):
                     contextlib.redirect_stdout(out):
                 self.assertEqual(dev_seed.main(["--count", "1"]), 0)
         made = json.loads(out.getvalue())[0]
+        self.assertEqual(made["import"], "created")  # the version of module 3 has no content digest yet
         with engine.connect() as conn:
             # the same contest and the same admin are reused; no second dev contest or dev-teacher
             self.assertEqual(conn.execute(text("SELECT count(*) FROM contests")).scalar_one(), 1)
@@ -362,3 +363,21 @@ class MigrationTests(PgCase):
             self.assertEqual(status.scalar_one(), "queued")
             owner = conn.execute(text("SELECT p.owner_id FROM problems p WHERE slug = 'dev-sum'")).scalar_one()
             self.assertEqual(owner, 1)
+            counts = lambda: tuple(conn.execute(text(  # noqa: E731
+                "SELECT (SELECT count(*) FROM problem_versions), (SELECT count(*) FROM contest_problems),"
+                " (SELECT count(*) FROM contest_problems WHERE hidden), (SELECT count(*) FROM blobs)")).one())
+            before = counts()
+
+        # dev_seed again: the content is known now -> "exists"; no new version, no new hidden row, no new blob
+        with tempfile.TemporaryDirectory() as blobs:
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.dict(os.environ, {"JUDGE_DEV": "1", "JUDGE_BLOB_DIR": blobs}), \
+                    mock.patch.object(db, "get_sessionmaker", lambda: sessionmaker(engine)), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(dev_seed.main(["--count", "1"]), 0)
+        again = json.loads(out.getvalue())[0]
+        self.assertEqual((again["import"], again["contest_problem_id"], again["problem_version_id"]),
+                         ("exists", made["contest_problem_id"], made["problem_version_id"]))
+        self.assertIn("dev-sum: already exists as v2", err.getvalue())
+        with engine.connect() as conn:
+            self.assertEqual(counts(), before)

@@ -310,7 +310,7 @@ class Problem(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    owner_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))  # null: imported from the console
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     created_at: Mapped[datetime] = utcnow_column()
 

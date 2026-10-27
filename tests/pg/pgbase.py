@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.settings import QueueSettings  # noqa: E402  (pure module, no database needed)
+from protocol.languages import SYSTEM_LANGUAGES  # noqa: E402
 
 URL = os.environ.get("JUDGE_TEST_DATABASE_URL")
 
@@ -76,7 +77,7 @@ class PgCase(unittest.TestCase):
     def make_seed(self):
         s = self.s
         admin = User(login="admin", password_hash="x", display_name="A", role=Role.admin)
-        s.add_all([admin, Language(key="python", name="Python", config={})])
+        s.add_all([admin] + [Language(key=k, name=n, config={}) for k, n in SYSTEM_LANGUAGES])  # as the migration
         s.flush()
         s.add_all([Blob(sha256="a" * 64, size_bytes=1), Blob(sha256="b" * 64, size_bytes=1), Blob(sha256="c" * 64, size_bytes=1)])
         problem = Problem(slug="sum", owner_id=admin.id)

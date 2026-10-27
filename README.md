@@ -14,18 +14,22 @@ docs/
   AUTH.md                     аккаунты, логины, пароли, сессии, 2FA, QR-вход, перебор, API /api/auth
   JUDGECTL.md                 консоль владельца сервера: админы, ученики, импорт CSV, очередь, воркеры
   MODULE_4A.md                спецификация модуля 4а и история решений
-  schemas/problem.schema.json JSON Schema для problem.yaml
+  PROBLEM_IMPORT.md           импорт задач: безопасная распаковка, проверка, версии по содержимому
 backend/app/models.py         модели SQLAlchemy 2.0 (PostgreSQL)
 runner/                       раннер: песочница, компиляция, чекеры, интерактив, вердикты (docs/RUNNER.md)
 worker/                       воркер: supervisor, процессы, дисковый кэш, клиент API (docs/WORKER.md)
-protocol/                     общий код бэкенда и воркера (манифест задачи)
+protocol/                     общий код бэкенда, воркера и инструментов: манифест, проверка пакета задачи,
+                              языки, schemas/problem.schema.json (JSON Schema для problem.yaml)
 backend/app/                  models, queue, worker_api, internal_main, public_main + auth_api (вход), auth/ (аккаунты,
-                              сессии, 2FA), judgectl/ (консоль; admin_cli — старый алиас), maintenance (reaper)
+                              сессии, 2FA), problems/ (импорт задач), judgectl/ (консоль; admin_cli — старый алиас),
+                              maintenance (reaper)
 deploy/                       systemd-юниты, примеры env, install-wsl.sh, setup-postgres.sh
 backend/migrations/           миграции Alembic
 tests/                        автотесты (python -m unittest discover -s tests -t .); tests/pg нужна PostgreSQL (docs/DEPLOY_WSL2.md, раздел 9)
 problems-examples/            пять примеров: batch, custom checker, interactive, choice, text_answer
-tools/validate_problem.py     проверка пакета задачи
+tools/validate_problem.py     проверка пакета задачи (те же проверки, что у импорта)
+tools/pack-problem.sh         zip папки задачи в stdout (тот же фильтр мусора, что у импорта)
+tools/make-bad-archives.py    вредоносные архивы для ручной проверки импорта
 tools/smoke-internal-api.sh   проверка внутреннего API curl-ом (dev-база)
 tools/smoke-public-auth.sh    проверка входа (пароль, TOTP, QR, CSRF) curl-ом против публичного приложения
 ```
