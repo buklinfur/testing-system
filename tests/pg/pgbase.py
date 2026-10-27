@@ -74,11 +74,11 @@ class PgCase(unittest.TestCase):
     # ---------------------------------------------------------------- seed helpers
     def make_seed(self):
         s = self.s
-        teacher = User(login="teacher", password_hash="x", display_name="T", role=Role.teacher)
-        s.add_all([teacher, Language(key="python", name="Python", config={})])
+        admin = User(login="admin", password_hash="x", display_name="A", role=Role.admin)
+        s.add_all([admin, Language(key="python", name="Python", config={})])
         s.flush()
         s.add_all([Blob(sha256="a" * 64, size_bytes=1), Blob(sha256="b" * 64, size_bytes=1), Blob(sha256="c" * 64, size_bytes=1)])
-        problem = Problem(slug="sum", owner_id=teacher.id)
+        problem = Problem(slug="sum", owner_id=admin.id)
         s.add(problem)
         s.flush()
         version = ProblemVersion(problem_id=problem.id, version=1, status=VersionStatus.published, type=ProblemType.batch,
@@ -90,16 +90,16 @@ class PgCase(unittest.TestCase):
         s.flush()
         tests = [TestCase(group_id=group.id, position=i, name=f"t{i}", input_sha256="a" * 64, answer_sha256="b" * 64) for i in range(2)]
         s.add_all(tests)
-        contest = Contest(slug="c", title="C", mode=ContestMode.practice, created_by=teacher.id)
+        contest = Contest(slug="c", title="C", mode=ContestMode.practice, created_by=admin.id)
         s.add(contest)
         s.flush()
         cp = ContestProblem(contest_id=contest.id, problem_version_id=version.id, label="A", position=0)
         s.add(cp)
         s.commit()
-        return {"teacher": teacher, "version": version, "cp": cp, "tests": tests}
+        return {"admin": admin, "version": version, "cp": cp, "tests": tests}
 
     def student(self, n: int):
-        u = User(login=f"s{n}", password_hash="x", display_name=f"S{n}", role=Role.student)
+        u = User(login=f"student{n}", password_hash="x", display_name=f"S{n}", role=Role.student)
         self.s.add(u)
         self.s.flush()
         return u

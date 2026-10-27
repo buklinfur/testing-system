@@ -15,7 +15,10 @@ contests ──< contest_problems ┘            (контест привяза�
                                             └──> workers
 blobs (sha256)   — файлы: тесты, исходники, архивы, пакеты
 languages        — профили языков (конфиг, не код)
-audit_log        — кто, что и откуда делал
+audit_log        — кто, что и откуда делал (веб: actor_user_id, консоль: actor_cli)
+users ──< sessions          (серверные сессии входа)
+users ──< login_tokens      (одноразовые QR-токены учеников)
+auth_failures, auth_lockouts — неудачные попытки входа и блокировки перебора
 ```
 
 ## Инварианты
@@ -43,7 +46,6 @@ audit_log        — кто, что и откуда делал
 
 - Антиплагиат: есть флаг `contests.plagiarism_check`, исходники хранятся пригодными для сравнения.
 - Частичные баллы от чекера (`scoring: min`): нужен расширенный протокол чекера.
-- Сессии и токены доступа: появятся в модуле API и авторизации.
 
 ## Изменения модуля 3
 
@@ -56,3 +58,21 @@ audit_log        — кто, что и откуда делал
 * Новые таблицы `worker_tokens` (один токен на машину, хранится sha256, список разрешённых capabilities, отзыв) и `queue_events` (журнал инцидентов очереди).
 * `problem_versions.manifest_sha256`: хеш манифеста опубликованной версии (ключ кэша воркера).
 * Формат пакета задачи не менялся. Для воркера `problem_versions.config` должен быть нормализованным `problem.yaml` без `test_groups`.
+
+## Изменения модуля 4а.1 (миграция `c13b55a3e4d5`)
+
+* Роль `teacher` переименована в `admin` (`ALTER TYPE role RENAME VALUE`, строки сохраняют роль). Ролей две: `admin` и `student`.
+* `users.login`: `varchar(32)`, обычный `UNIQUE` и `CHECK` по формату `^[a-z0-9][a-z0-9._-]{2,31}$` вместо индекса по
+  `lower(login)`; логин хранится в нижнем регистре (миграция приводит существующие). Решение: без `citext`, см.
+  `MODULE_4A.md`. Новые поля: `password_changed_at`, `last_login_at`, `last_login_ip`, `totp_secret_enc` (Fernet),
+  `totp_enabled_at` (2FA подтверждена кодом), `totp_last_step` (последний принятый 30-секундный шаг: код не принимается дважды).
+* `sessions`: `token_hash` (sha256 токена из cookie), `state` (`mfa_pending` / `active`), `csrf_token`, `last_seen_at`,
+  `expires_at` (скользящий срок), `absolute_expires_at` (жёсткий предел, только админы), `ip`, `user_agent`, `revoked_at`.
+* `auth_failures`: каждая неудача входа (`password` / `totp` / `qr`) с логином (для QR — пусто) и IP; индексы `(login, at)`, `(ip, at)`.
+* `auth_lockouts`: блокировка логина **или** IP (`CHECK`: ровно одно из двух) до `until`; снятие заполняет `cleared_at` и
+  `cleared_by`, неудачи до снятия больше не считаются. История неудач при этом не удаляется.
+* `login_tokens`: QR-токены (sha256), `expires_at`, `used_at`, `revoked_at`.
+* `audit_log`: колонки переименованы (`user_id` → `actor_user_id`, `created_at` → `at`, `ip_address` → `ip`),
+  добавлены `actor_cli` (`cli:<unix-user>`), `object_type`, `object_id`; индексы по `at`, по актору и по объекту.
+* `tests/pg/test_migrations_pg.py` теперь сравнивает с `create_all` ещё и все ограничения (`CHECK`, `UNIQUE`, `FK`),
+  а шаги миграции с данными (переименование роли, логины, `audit_log`) проверяются отдельным тестом вверх и вниз.

@@ -208,10 +208,10 @@ def ensure_version(session: Session, blobs: BlobStore, pkg: PackageData, owner: 
     return version
 
 
-def ensure_contest_problem(session: Session, version: ProblemVersion, teacher: User) -> ContestProblem:
+def ensure_contest_problem(session: Session, version: ProblemVersion, admin: User) -> ContestProblem:
     """An entry of the "dev" contest pinned to this version (one per version)."""
     contest = _get_or_create(session, Contest, {"slug": CONTEST_SLUG}, title="Dev contest", mode=ContestMode.practice,
-                             created_by=teacher.id)
+                             created_by=admin.id)
     cp = session.execute(select(ContestProblem).where(ContestProblem.contest_id == contest.id,
                                                       ContestProblem.problem_version_id == version.id)).scalars().first()
     if cp is None:
@@ -245,10 +245,11 @@ def main(argv=None) -> int:
     with session_scope() as session:
         for key, name in LANGUAGES:
             _get_or_create(session, Language, {"key": key}, name=name, config={})
-        teacher = _get_or_create(session, User, {"login": "dev-teacher"}, password_hash="!",
-                                 display_name="Dev Teacher", role=Role.teacher)
-        version = ensure_version(session, blobs, pkg, teacher)
-        cp = ensure_contest_problem(session, version, teacher)
+        # the login predates the admin role; kept so that existing dev databases reuse the same row
+        admin = _get_or_create(session, User, {"login": "dev-teacher"}, password_hash="!",
+                               display_name="Dev Teacher", role=Role.admin)
+        version = ensure_version(session, blobs, pkg, admin)
+        cp = ensure_contest_problem(session, version, admin)
         student = _student(session, args.user)
         source_sha = _blob(session, blobs, source)
         for _ in range(args.count):

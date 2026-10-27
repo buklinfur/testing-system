@@ -19,7 +19,9 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -51,8 +53,19 @@ class Base(DeclarativeBase):
 
 # --------------------------------------------------------------------------- enums
 class Role(str, enum.Enum):
-    teacher = "teacher"  # administrator and teacher are one role
+    admin = "admin"  # every administrator (teachers included) has the same rights in the web UI
     student = "student"
+
+
+class SessionState(str, enum.Enum):
+    mfa_pending = "mfa_pending"  # admin passed the password, TOTP not yet: allows nothing but /totp and /logout
+    active = "active"
+
+
+class AuthFailureKind(str, enum.Enum):
+    password = "password"
+    totp = "totp"
+    qr = "qr"
 
 
 class VersionStatus(str, enum.Enum):
@@ -147,20 +160,102 @@ def utcnow_column() -> Mapped[datetime]:
 
 
 # --------------------------------------------------------------------------- users
+LOGIN_PATTERN = r"^[a-z0-9][a-z0-9._-]{2,31}$"  # lower case only: input is trimmed and lowered before it gets here
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    login: Mapped[str] = mapped_column(String(64), nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)  # argon2
-    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    login: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)  # argon2id
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)  # the only name other students see
     role: Mapped[Role] = mapped_column(pg_enum(Role, "role"), nullable=False, default=Role.student)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = utcnow_column()
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_login_ip: Mapped[Optional[str]] = mapped_column(String(45))
+    totp_secret_enc: Mapped[Optional[str]] = mapped_column(Text)  # Fernet(JUDGE_SECRET_KEY), admins only
+    totp_enabled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # set once a code confirmed it
+    totp_last_step: Mapped[Optional[int]] = mapped_column(BigInteger)  # last accepted 30 s step: a code works once
+
+    __table_args__ = (CheckConstraint(f"login ~ '{LOGIN_PATTERN}'", name="login_format"),)
+
+
+class UserSession(Base):
+    """Server-side login session. The cookie holds a random token; only its sha256 is stored."""
+
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    state: Mapped[SessionState] = mapped_column(pg_enum(SessionState, "session_state"), nullable=False)
+    csrf_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+    last_seen_at: Mapped[datetime] = utcnow_column()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)  # sliding (idle timeout)
+    absolute_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # admins: hard cap
+    ip: Mapped[Optional[str]] = mapped_column(String(45))
+    user_agent: Mapped[Optional[str]] = mapped_column(String(256))  # truncated
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_sessions_user_live", "user_id", postgresql_where=text("revoked_at IS NULL")),)
+
+
+class AuthFailure(Base):
+    """One failed login step. Brute-force limits count these; the reaper prunes old rows."""
+
+    __tablename__ = "auth_failures"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    login: Mapped[Optional[str]] = mapped_column(String(64))  # as typed (normalised); null for QR attempts
+    ip: Mapped[str] = mapped_column(String(45), nullable=False)
+    kind: Mapped[AuthFailureKind] = mapped_column(pg_enum(AuthFailureKind, "auth_failure_kind"), nullable=False)
+    at: Mapped[datetime] = utcnow_column()
 
     __table_args__ = (
-        # logins are case-insensitive
-        Index("uq_users_login_lower", text("lower(login)"), unique=True),
+        Index("ix_auth_failures_login_at", "login", "at"),
+        Index("ix_auth_failures_ip_at", "ip", "at"),
+    )
+
+
+class AuthLockout(Base):
+    """A login or an IP blocked until `until`. Unlocking sets `cleared_at`; failures before it no longer count."""
+
+    __tablename__ = "auth_lockouts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    login: Mapped[Optional[str]] = mapped_column(String(64))
+    ip: Mapped[Optional[str]] = mapped_column(String(45))
+    until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+    cleared_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    cleared_by: Mapped[Optional[str]] = mapped_column(String(64))  # "user:<id>", "cli:<unix user>", "password_reset"
+
+    __table_args__ = (
+        CheckConstraint("(login IS NULL) <> (ip IS NULL)", name="one_subject"),
+        Index("ix_auth_lockouts_login_until", "login", "until"),
+        Index("ix_auth_lockouts_ip_until", "ip", "until"),
+    )
+
+
+class LoginToken(Base):
+    """One-time QR login token of a student (sha256 stored). A new token revokes the previous ones."""
+
+    __tablename__ = "login_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_login_tokens_user_live", "user_id", postgresql_where=text("used_at IS NULL AND revoked_at IS NULL")),
     )
 
 
@@ -505,13 +600,22 @@ class QueueEvent(Base):
 
 
 class AuditLog(Base):
+    """Every administrative action, from the web (actor_user_id) or the console (actor_cli), and admin logins."""
+
     __tablename__ = "audit_log"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
-    action: Mapped[str] = mapped_column(String(64), nullable=False)  # login, submit, view_tests, rejudge ...
-    ip_address: Mapped[Optional[str]] = mapped_column(String(45))
+    at: Mapped[datetime] = utcnow_column()
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    actor_cli: Mapped[Optional[str]] = mapped_column(String(64))  # "cli:<unix user>"
+    action: Mapped[str] = mapped_column(String(64), nullable=False)  # user.create, user.reset_password, auth.login ...
+    object_type: Mapped[Optional[str]] = mapped_column(String(32))  # user, contest, problem, submission ...
+    object_id: Mapped[Optional[str]] = mapped_column(String(64))
+    ip: Mapped[Optional[str]] = mapped_column(String(45))
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = utcnow_column()
 
-    __table_args__ = (Index("ix_audit_log_user_created", "user_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_audit_log_actor_at", "actor_user_id", "at"),
+        Index("ix_audit_log_object", "object_type", "object_id", "at"),
+        Index("ix_audit_log_at", "at"),
+    )

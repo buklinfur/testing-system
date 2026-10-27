@@ -51,13 +51,13 @@ class DevSeedTests(PgCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
         self.blobs = BlobStore(self.tmp / "blobs")
-        self.teacher = self.s.get(User, self.seed["teacher"].id)
+        self.admin = self.s.get(User, self.seed["admin"].id)
         for key, name in dev_seed.LANGUAGES:
             dev_seed._get_or_create(self.s, dev_seed.Language, {"key": key}, name=name, config={})
         self.s.commit()  # main() works in its own session: uncommitted rows here would block it forever
 
     def version(self, root):
-        v = dev_seed.ensure_version(self.s, self.blobs, dev_seed.load_package(root), self.teacher)
+        v = dev_seed.ensure_version(self.s, self.blobs, dev_seed.load_package(root), self.admin)
         self.s.commit()
         return v
 

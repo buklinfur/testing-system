@@ -324,7 +324,7 @@ class ResultTests(PgCase):
         w, sub, j1 = self.claimed()
         q.finish(self.s, w, j1.id, self.ok_payload(j1), self.settings)
         self.s.commit()
-        outcome = q.request_rejudge(self.s, sub.id, requested_by=self.seed["teacher"].id)
+        outcome = q.request_rejudge(self.s, sub.id, requested_by=self.seed["admin"].id)
         self.s.commit()
         self.assertEqual(outcome.kind, "created")
         j2 = outcome.judgement
