@@ -1,7 +1,7 @@
 # Развёртывание в WSL2 (systemd)
 
-Сервисы: `judge-api-internal` (API для воркеров, 127.0.0.1:8001), `judge-reaper`, `judge-worker`; публичный API (модуль 4)
-и Caddy добавятся рядом. PostgreSQL 16 работает на той же машине. Всё работает от системного пользователя `judge`,
+Сервисы: `judge-api-internal` (API для воркеров, 127.0.0.1:8001), `judge-reaper`, `judge-worker`; публичное приложение
+(вход, 127.0.0.1:8000) пока запускается вручную (§7), его юнит и Caddy — модуль 6. PostgreSQL 16 работает на той же машине. Всё работает от системного пользователя `judge`,
 код лежит в `/opt/judge` (принадлежит root, только чтение), настройки в `/etc/judge/*.env`.
 
 Последовательность ниже проверена целиком на Windows 11 + WSL2 + Ubuntu 24.04 (октябрь 2026, модуль 3).
@@ -57,6 +57,9 @@ sudo $P ./deploy/install-wsl.sh                       # 2-й раз: тепер�
 Ожидаемый конец второго запуска: строки alembic `Running upgrade ...`, затем
 `worker token '<host>-<время>' created and written to /etc/judge/worker.env (not shown)` и `installed.`
 
+Модуль 4а добавил пакеты (`argon2-cffi`, `cryptography`, `pyotp`, `segno`): первый `install-wsl.sh` после обновления
+качает их, поэтому нужен прокси и `$P`.
+
 Что делает `install-wsl.sh` (его можно запускать сколько угодно раз, обновление тоже им):
 
 | Шаг | Подробности |
@@ -69,6 +72,56 @@ sudo $P ./deploy/install-wsl.sh                       # 2-й раз: тепер�
 
 Команды от `judge` скрипты запускают через `/usr/sbin/runuser` по абсолютному пути и с тем же `PATH`, что systemd даёт
 сервисам (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`): с урезанным `PATH` раннер не найдёт isolate в `/usr/local/bin`.
+
+### Ключ 2FA и origin публичного приложения (модуль 4а)
+
+`install-wsl.sh` создаёт `/etc/judge/backend.env` из шаблона только один раз, поэтому на установке из модуля 3 новых
+переменных там нет. Обе команды ниже правят файл на месте (владелец `root:judge` и права 640 не меняются),
+ключ на экран не выводится, а уже заданный настоящий ключ не перезаписывается: новый ключ сделал бы нечитаемыми
+секреты 2FA всех админов ([`AUTH.md`](AUTH.md) §5).
+
+```bash
+sudo /opt/judge/.venv/bin/python - /etc/judge/backend.env <<'EOF'
+import sys
+from cryptography.fernet import Fernet
+path, name = sys.argv[1], "JUDGE_SECRET_KEY"
+with open(path, "r+", encoding="utf-8") as f:  # rewritten in place: owner and mode stay as they are
+    lines = f.read().splitlines()
+    old = [l.split("=", 1)[1].strip() for l in lines if l.startswith(name + "=")]
+    if any(v and v != "CHANGE_ME" for v in old):
+        sys.exit(f"{name} is already set: left as it is (a new key would make enrolled 2FA secrets unreadable)")
+    lines = [l for l in lines if not l.startswith(name + "=")] + [f"{name}={Fernet.generate_key().decode()}"]
+    f.seek(0); f.write("\n".join(lines) + "\n"); f.truncate()
+print(f"{name} written to {path} (not shown)")
+EOF
+```
+
+`JUDGE_PUBLIC_ORIGIN` — ровно то, что браузер пришлёт в `Origin` (`https://<домен>`; `http` допустим только для
+`localhost`, для проверок до модуля 6). Повторный запуск заменяет значение:
+
+```bash
+sudo /opt/judge/.venv/bin/python - /etc/judge/backend.env https://judge.example.ru <<'EOF'
+import sys
+path, value, name = sys.argv[1], sys.argv[2], "JUDGE_PUBLIC_ORIGIN"
+with open(path, "r+", encoding="utf-8") as f:
+    lines = [l for l in f.read().splitlines() if not l.startswith(name + "=")] + [f"{name}={value}"]
+    f.seek(0); f.write("\n".join(lines) + "\n"); f.truncate()
+print(f"{name}={value} written to {path}")
+EOF
+```
+
+После правки env перезапускать нечего, пока публичное приложение не работает как сервис (модуль 6); judgectl читает
+файл при каждом запуске.
+
+### Первый администратор
+
+```bash
+j .venv/bin/python -m app.judgectl admin add LOGIN --name "Имя Отчество"   # пароль дважды, затем QR и код 2FA
+j .venv/bin/python -m app.judgectl admin list                              # 2FA = confirmed
+```
+
+`j` — функция из §3. Нужен настоящий терминал (`sudo -u judge` его сохраняет). Если код не подтвердился: `judgectl admin reset-2fa LOGIN`.
+Остальные команды — [`JUDGECTL.md`](JUDGECTL.md).
 
 ### PostgreSQL (`deploy/setup-postgres.sh`)
 
@@ -90,7 +143,8 @@ w() { sudo -u judge bash -c 'set -a; . /etc/judge/worker.env;  set +a; cd /opt/j
 w .venv/bin/python -m runner.cli sandbox-check   # 5 строк ok (box 100-101)
 w .venv/bin/python -m runner.cli redteam         # 14 строк ok: лимиты, нет сети, секреты judge невидимы
 w .venv/bin/python -m worker plan                # 5 воркеров на ядрах 1-5, box 0-9; система: ядра 0, 6, 7
-j .venv/bin/python -m app.admin_cli status       # база доступна, воркеров пока нет
+j .venv/bin/python -m app.judgectl queue status  # база доступна
+j .venv/bin/python -m app.judgectl worker list   # воркеров пока нет
 ```
 
 `redteam` от `judge` важнее, чем от вашего пользователя: `judge` может читать пароль базы и токен (`/etc/judge`),
@@ -100,7 +154,7 @@ j .venv/bin/python -m app.admin_cli status       # база доступна, в
 
 ```bash
 sudo systemctl enable --now judge-api-internal judge-reaper judge-worker
-j .venv/bin/python -m app.admin_cli status       # через пару секунд: 5 воркеров idle, hb 0-1s
+j .venv/bin/python -m app.judgectl worker list   # через пару секунд: 5 воркеров idle, heartbeat 0-1s
 journalctl -u judge-worker -u judge-api-internal -u judge-reaper --since -5min -p warning   # пусто
 ```
 
@@ -128,9 +182,9 @@ journalctl -u judge-worker -u judge-api-internal -u judge-reaper --since -5min -
 | Логи | `journalctl -u judge-worker -u judge-api-internal -u judge-reaper -f` (группа `adm` читает без sudo) |
 | Метрики Prometheus | `curl http://127.0.0.1:8001/internal/metrics` (опционально защитить `JUDGE_METRICS_TOKEN`) |
 | JSON: загрузка, метрики, воркеры | `curl http://127.0.0.1:8001/internal/status` (одна транзакция: все числа из одного момента) |
-| Воркеры в консоли | `j .venv/bin/python -m app.admin_cli status` |
-| Последние проверки | `j .venv/bin/python -m app.admin_cli judgements --last 20` (вердикт, первый провал, вид TL, попытки, воркер или IE) |
-| История очереди | `j .venv/bin/python -m app.admin_cli events --last 30` (регистрации, `released`, `requeued`, `gave_up`, с воркером; 14 дней) |
+| Воркеры в консоли | `j .venv/bin/python -m app.judgectl worker list` (и `queue status`) |
+| Последние проверки | `j .venv/bin/python -m app.judgectl queue judgements --last 20` (вердикт, первый провал, вид TL, попытки, воркер или IE) |
+| История очереди | `j .venv/bin/python -m app.judgectl queue events --last 30` (регистрации, `released`, `requeued`, `gave_up`, с воркером; 14 дней) |
 
 Метрики: `judge_queue_length`, `judge_queue_oldest_age_seconds`, `judge_in_flight`, `judge_workers{state}`,
 `judge_typical_judge_seconds`, `judge_queue_wait_seconds`, `judge_finished_total{verdict}`, `judge_requeued_total`.
@@ -157,6 +211,8 @@ systemd — модуль 6). Оно не стартует, пока `JUDGE_SECRE
 ключом Fernet, пока не задан `JUDGE_PUBLIC_ORIGIN` (ровно то, что браузер шлёт в `Origin`: `https://<домен>`), и если
 `JUDGE_PUBLIC_PORT` совпадает с `JUDGE_INTERNAL_PORT`. `X-Forwarded-For` оно учитывает только от 127.0.0.1/::1 (последний
 элемент — его добавляет Caddy); собственная обработка прокси-заголовков uvicorn выключена.
+Проверка входа curl-ом против запущенного приложения: `tools/smoke-public-auth.sh http://127.0.0.1:8000 <ORIGIN>`
+(спрашивает админа, код TOTP, ученика и QR-токен; секреты не печатает; код выхода = число провалов).
 Второй рубеж: внутренний API отвечает 403 на любой запрос с `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`
 (Caddy ставит их всегда), `Forwarded`, `X-Real-IP` и заголовками Cloudflare (`docs/WORKER_PROTOCOL.md`).
 
@@ -197,8 +253,8 @@ alembic upgrade head && alembic check                            # схема pu
 uvicorn app.internal_main:app --host 127.0.0.1 --port 8002 --timeout-keep-alive 75 &   # 8001 занят сервисом
 JUDGE_DEV=1 python -m app.dev_seed --count 3                     # посылки в очередь без публичного API
 JUDGE_DEV=1 python -m app.dev_seed --package problems-examples/sum-of-two --source sol.cpp --language cpp --user 2
-python -m app.admin_cli judgements --last 20
-python -m app.admin_cli create-worker-token smoke | tail -1 > /tmp/judge-token && chmod 600 /tmp/judge-token
+python -m app.judgectl queue judgements --last 20
+(umask 077; python -m app.judgectl worker token create smoke | tail -1 > /tmp/judge-token)
 tools/smoke-internal-api.sh /tmp/judge-token http://127.0.0.1:8002   # протокол воркера curl-ом, код выхода = число провалов
 ```
 `dev_seed` и smoke-скрипт меняют данные: только для `judge_test`. Ручные `runner.cli` (box 100–101) можно запускать

@@ -1,6 +1,6 @@
 # Judge: тестирующая система для школьных контестов
 
-Статус: модули 0-3 готовы (среда, формат задачи и модель данных, раннер, очередь и воркеры) и проверены на реальной установке: systemd, PostgreSQL 16, `isolate` от пользователя `judge`, нагрузка 60 посылок на 5 воркерах. Среда: WSL2 + Ubuntu 24.04 + `isolate`.
+Статус: модули 0-3 готовы (среда, формат задачи и модель данных, раннер, очередь и воркеры) и проверены на реальной установке: systemd, PostgreSQL 16, `isolate` от пользователя `judge`, нагрузка 60 посылок на 5 воркерах. Модуль 4а в работе: готова сессия 4а.1 (аккаунты, вход с 2FA для админов, сессии, консоль `judgectl`). Среда: WSL2 + Ubuntu 24.04 + `isolate`.
 
 ```
 docs/
@@ -11,6 +11,9 @@ docs/
   WORKER.md                   воркеры: параллельность, ядра, дисковый кэш, остановка
   WORKER_PROTOCOL.md          внутренний API воркера (контракт)
   DEPLOY_WSL2.md              systemd-юниты, первый запуск, наблюдаемость
+  AUTH.md                     аккаунты, логины, пароли, сессии, 2FA, QR-вход, перебор, API /api/auth
+  JUDGECTL.md                 консоль владельца сервера: админы, ученики, импорт CSV, очередь, воркеры
+  MODULE_4A.md                спецификация модуля 4а и история решений
   schemas/problem.schema.json JSON Schema для problem.yaml
 backend/app/models.py         модели SQLAlchemy 2.0 (PostgreSQL)
 runner/                       раннер: песочница, компиляция, чекеры, интерактив, вердикты (docs/RUNNER.md)
@@ -24,6 +27,7 @@ tests/                        автотесты (python -m unittest discover -s
 problems-examples/            пять примеров: batch, custom checker, interactive, choice, text_answer
 tools/validate_problem.py     проверка пакета задачи
 tools/smoke-internal-api.sh   проверка внутреннего API curl-ом (dev-база)
+tools/smoke-public-auth.sh    проверка входа (пароль, TOTP, QR, CSRF) curl-ом против публичного приложения
 ```
 
 ## Проверка примеров

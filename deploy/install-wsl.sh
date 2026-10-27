@@ -75,7 +75,7 @@ else
   as_judge /opt/judge/.venv/bin/alembic -c /opt/judge/alembic.ini upgrade head
   if grep -q '^JUDGE_WORKER_TOKEN=CHANGE_ME' /etc/judge/worker.env; then
     name="$(hostname -s)-$(date +%Y%m%d%H%M%S)"
-    token=$(as_judge /opt/judge/.venv/bin/python -m app.admin_cli create-worker-token "$name" | tail -1)
+    token=$(as_judge /opt/judge/.venv/bin/python -m app.judgectl worker token create "$name" | tail -1)
     [[ $token =~ ^jw_[A-Za-z0-9_-]{20,}$ ]] || { echo "unexpected token output"; exit 1; }
     TOKEN="$token" awk '/^JUDGE_WORKER_TOKEN=/{print "JUDGE_WORKER_TOKEN=" ENVIRON["TOKEN"]; next} {print}' \
       /etc/judge/worker.env > /etc/judge/worker.env.new

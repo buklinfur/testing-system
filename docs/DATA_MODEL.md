@@ -77,3 +77,12 @@ auth_failures, auth_lockouts — неудачные попытки входа и
   добавлены `actor_cli` (`cli:<unix-user>`), `object_type`, `object_id`; индексы по `at`, по актору и по объекту.
 * `tests/pg/test_migrations_pg.py` теперь сравнивает с `create_all` ещё и все ограничения (`CHECK`, `UNIQUE`, `FK`),
   а шаги миграции с данными (переименование роли, логины, `audit_log`) проверяются отдельным тестом вверх и вниз.
+* Как этим пользуются (сроки сессий, лимиты перебора, 2FA, QR, список действий аудита): [`AUTH.md`](AUTH.md).
+  Reaper раз в час удаляет из `auth_failures`, `auth_lockouts`, `sessions`, `login_tokens` строки старше
+  `JUDGE_AUTH_RETENTION_DAYS` (30 дней); `audit_log` не чистится никогда.
+
+## Запланировано в 4а.2
+
+Задачи и контесты (`problems.archived`, статусы версий `pending_check` / `ready` / `failed`, `content_sha256`,
+`timing_mode` / `personal_duration`, `contest_problems.points`, `participations.joined_at` и др.) — список решений в
+[`MODULE_4A.md`](MODULE_4A.md), раздел «Отступления и уточнения». До миграции 4а.2 таблицы выше описывают текущую схему.

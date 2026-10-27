@@ -53,6 +53,15 @@ class CsvImportTests(unittest.TestCase):
             parse(b"\x98\x98;\x98\n")  # 0x98 is undefined in cp1251 and invalid UTF-8
         self.assertIn("neither UTF-8 nor cp1251", str(ctx.exception))
 
+    def test_the_class_file_of_the_manual_check(self):
+        """deploy/dev/students-30-cp1251.csv: what the final check of session 4a.1 imports as `judge`."""
+        data = (ROOT / "deploy" / "dev" / "students-30-cp1251.csv").read_bytes()
+        with self.assertRaises(UnicodeDecodeError):
+            data.decode("utf-8")  # really cp1251, as Excel on Windows saves it
+        parsed = parse(data)
+        self.assertEqual((len(parsed.rows), parsed.encoding, parsed.delimiter), (30, "cp1251", ";"))
+        self.assertEqual(parsed.rows[3], Row(5, "Подъячев", "Чеслав"))
+
 
 if __name__ == "__main__":
     unittest.main()
