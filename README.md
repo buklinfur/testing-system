@@ -16,7 +16,8 @@ backend/app/models.py         модели SQLAlchemy 2.0 (PostgreSQL)
 runner/                       раннер: песочница, компиляция, чекеры, интерактив, вердикты (docs/RUNNER.md)
 worker/                       воркер: supervisor, процессы, дисковый кэш, клиент API (docs/WORKER.md)
 protocol/                     общий код бэкенда и воркера (манифест задачи)
-backend/app/                  models, queue, worker_api, internal_main, maintenance (reaper), admin_cli
+backend/app/                  models, queue, worker_api, internal_main, public_main + auth_api (вход), auth/ (аккаунты,
+                              сессии, 2FA), judgectl/ (консоль; admin_cli — старый алиас), maintenance (reaper)
 deploy/                       systemd-юниты, примеры env, install-wsl.sh, setup-postgres.sh
 backend/migrations/           миграции Alembic
 tests/                        автотесты (python -m unittest discover -s tests -t .); tests/pg нужна PostgreSQL (docs/DEPLOY_WSL2.md, раздел 9)
