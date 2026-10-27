@@ -40,7 +40,8 @@ def checked_login(raw: str) -> str:
 
 
 def transliterate(text: str) -> str:
-    """Russian -> latin for logins. Hyphens (double surnames) are kept, other characters dropped."""
+    """Russian -> latin for logins. Hyphens (double surnames) are kept, spaces become hyphens, anything else
+    (apostrophes, dots, accented letters) is dropped."""
     out = []
     for ch in text.strip().lower():
         if ch in TRANSLIT:
@@ -52,13 +53,23 @@ def transliterate(text: str) -> str:
     return re.sub(r"-{2,}", "-", "".join(out)).strip("-")
 
 
+def initial(first_name: str) -> str:
+    """The transliteration of the first usable letter in full: "Пётр" -> "p", "Чеслав" -> "ch", "Яна" -> "ya"."""
+    for ch in first_name:
+        part = transliterate(ch)
+        if part:
+            return part
+    return ""
+
+
 def default_login(surname: str, first_name: str) -> str:
-    """surname.initial, e.g. ("Иванов", "Пётр") -> "ivanov.p". Raises LoginError if nothing usable is left."""
+    """surname.initial, e.g. ("Иванов", "Пётр") -> "ivanov.p", ("Подъячев", "Чеслав") -> "podyachev.ch".
+    Raises LoginError if nothing usable is left."""
     last = transliterate(surname)
-    first = transliterate(first_name)
+    first = initial(first_name)
     if not last:
         raise LoginError(f"cannot make a login from the surname {surname!r}: give the login explicitly")
-    base = f"{last}.{first[0]}" if first else last
+    base = f"{last}.{first}" if first else last
     base = base[:MAX_LOGIN].rstrip(".-_")
     if not is_valid_login(base):  # e.g. shorter than 3 characters
         raise LoginError(f"cannot make a login from {surname!r} {first_name!r}: give the login explicitly")

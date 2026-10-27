@@ -152,11 +152,29 @@ class AuthServiceTests(PgCase):
         self.tick(seconds=1)
         self.assertEqual(self.login("ivanov.p", password).outcome, Outcome.ok)
 
-    def test_admin_limit_is_stricter(self):
-        _admin, password, _secret = self.make_admin()
+    def test_unknown_login_is_locked_like_an_existing_one(self):
+        self.make_student()
+        for _ in range(10):
+            self.login("ivanov.p", "wrong")
+            self.login("nobody.here", "wrong")
+        known, unknown = self.login("ivanov.p", "wrong"), self.login("nobody.here", "wrong")
+        self.assertEqual((known.outcome, unknown.outcome), (Outcome.locked, Outcome.locked))
+        self.assertEqual(known.locked_until, unknown.locked_until)
+        self.assertEqual((known.token, known.user, known.session), (unknown.token, unknown.user, unknown.session))
+        self.assertTrue(users.unlock(self.s, self.cli, "nobody.here", self.now))
+        self.s.commit()
+        self.assertEqual(self.login("nobody.here", "wrong").outcome, Outcome.invalid)
+
+    def test_admin_limit_is_stricter_and_unlock_works_for_admins(self):
+        _admin, password, secret = self.make_admin()
         for _ in range(5):
             self.assertEqual(self.login("boss", "wrong").outcome, Outcome.invalid)
         self.assertEqual(self.login("boss", password).outcome, Outcome.locked)
+        self.assertTrue(users.unlock(self.s, self.cli, "boss", self.now))
+        self.s.commit()
+        r = self.login("boss", password)
+        self.assertEqual(r.outcome, Outcome.ok)
+        self.assertEqual(self.totp_step(r.session, self.code(secret)).outcome, Outcome.ok)
 
     def test_ip_limit(self):
         self.settings = AuthSettings(ip_fail_limit=3)
@@ -408,3 +426,5 @@ class AuthServiceTests(PgCase):
         self.assertIsNone(self.find(token))
         self.assertIsNotNone(self.find(fresh))
         self.assertEqual(self.s.execute(select(func.count()).select_from(AuthFailure)).scalar_one(), 1)
+        audit_rows = self.s.execute(select(AuditLog.at)).scalars().all()
+        self.assertIn(T0, audit_rows)  # the audit log is never pruned (user.create, 61 days old)
