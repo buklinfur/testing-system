@@ -122,8 +122,13 @@ def change_password(db: Session, settings: AuthSettings, now: datetime, *, row: 
     """The user changes their own password: the current password (and for admins a TOTP code) is required.
 
     Other sessions are revoked; this one stays with a new token. Wrong secrets count as login failures.
-    Raises PasswordChangeError (with a message for the user) if the new password breaks the policy.
+    Raises PasswordChangeError (with a message for the user) if the new password breaks the policy; that is
+    checked first, so a refused new password neither costs a failure nor uses up the admin's TOTP code.
     """
+    try:
+        check_policy(new, user.login, user.role)
+    except ValueError as exc:
+        raise PasswordChangeError(str(exc)) from exc
     locked = _lock(db, now, user.login, ip)
     if locked:
         return locked
@@ -140,10 +145,6 @@ def change_password(db: Session, settings: AuthSettings, now: datetime, *, row: 
             ratelimit.record_failure(db, settings, now, login=user.login, ip=ip, kind=AuthFailureKind.totp, admin=True)
             return LoginResult(Outcome.invalid)
         user.totp_last_step = step
-    try:
-        check_policy(new, user.login, user.role)
-    except ValueError as exc:
-        raise PasswordChangeError(str(exc)) from exc
     user.password_hash = hash_password(new)
     user.password_changed_at = now
     revoked = sessions.revoke_all(db, user.id, now, keep_id=row.id)

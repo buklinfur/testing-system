@@ -152,6 +152,11 @@ sudo systemctl restart judge-api-internal judge-reaper judge-worker
 ## 7. Внешний доступ (Caddy)
 
 Caddy (собственный домен `.ru`, модуль 6) проксирует только публичный API (порт 8000, модуль 4). **Порт 8001 в Caddyfile не добавлять.**
+Публичное приложение запускается как `python -m app.public_main` (127.0.0.1:`JUDGE_PUBLIC_PORT`, по умолчанию 8000; юнит
+systemd — модуль 6). Оно не стартует, пока `JUDGE_SECRET_KEY` пуст, равен заглушке из `backend.env.example` или не является
+ключом Fernet, пока не задан `JUDGE_PUBLIC_ORIGIN` (ровно то, что браузер шлёт в `Origin`: `https://<домен>`), и если
+`JUDGE_PUBLIC_PORT` совпадает с `JUDGE_INTERNAL_PORT`. `X-Forwarded-For` оно учитывает только от 127.0.0.1/::1 (последний
+элемент — его добавляет Caddy); собственная обработка прокси-заголовков uvicorn выключена.
 Второй рубеж: внутренний API отвечает 403 на любой запрос с `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`
 (Caddy ставит их всегда), `Forwarded`, `X-Real-IP` и заголовками Cloudflare (`docs/WORKER_PROTOCOL.md`).
 
