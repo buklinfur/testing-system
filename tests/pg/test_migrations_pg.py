@@ -104,3 +104,27 @@ class MigrationTests(PgCase):
             self.assertEqual([tuple(u) for u in users], [("dev-teacher", "teacher"), ("pupil", "student")])
             row = conn.execute(text("SELECT a.action, a.ip_address FROM audit_log a JOIN users u ON u.id = a.user_id")).one()
             self.assertEqual(tuple(row), ("rejudge", "10.0.0.1"))
+
+    def test_accounts_migration_refuses_bad_logins(self):
+        """c13b55a3e4d5 stops before changing anything if a login cannot be made valid by trim + lower."""
+        _schema, engine = self.scratch_schema()
+        long_login = "a" * 33
+        logins = [" Fine.Login ", "ab", "иванов", long_login, "-dash"]
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "4499f58e60ca")
+            for login in logins:
+                conn.execute(text("INSERT INTO users (login, password_hash, display_name, role, is_active) "
+                                  "VALUES (:l, '!', 'X', 'student', true)"), {"l": login})
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "upgrade", "c13b55a3e4d5")
+        message = str(caught.exception)
+        self.assertIn("4 login(s)", message)
+        for login in ("'ab'", "'иванов'", repr(long_login), "'-dash'"):
+            self.assertIn(login, message)
+        self.assertNotIn("Fine.Login", message)
+        with engine.connect() as conn:
+            self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "4499f58e60ca")
+            self.assertEqual(conn.execute(text("SELECT login FROM users ORDER BY id")).scalars().all(), logins)
+            role_labels = conn.execute(text("SELECT enum_range(NULL::role)::text")).scalar_one()
+            self.assertEqual(role_labels, "{teacher,student}")

@@ -6,7 +6,8 @@ Create Date: 2026-10-27 12:15:32.972165
 
 Autogenerate was adjusted by hand:
 * role 'teacher' is renamed to 'admin' in place (existing rows keep their role);
-* logins are lowered and trimmed before the CHECK of the login format is added;
+* logins are lowered and trimmed before the CHECK of the login format is added; if some login would still
+  not match (or is longer than 32), the migration stops and lists them, without changing anything;
 * audit_log columns are renamed, not dropped and re-added, so existing rows survive;
 * the new enum types are created and dropped explicitly, as in the initial migration.
 """
@@ -28,9 +29,21 @@ ENUM_TYPES = (SESSION_STATE_T, AUTH_FAILURE_KIND_T)
 LOGIN_CHECK = "login ~ '^[a-z0-9][a-z0-9._-]{2,31}$'"
 
 
+def check_logins(bind) -> None:
+    """Refuse to migrate if some login would break the new format even after trim + lower: fix them by hand first."""
+    bad = bind.execute(sa.text(
+        "SELECT id, login FROM users WHERE NOT (lower(btrim(login)) ~ '^[a-z0-9][a-z0-9._-]{2,31}$') ORDER BY id"
+    )).all()
+    if bad:
+        listing = ", ".join(f"id={row.id} {row.login!r}" for row in bad)
+        raise RuntimeError(f"{len(bad)} login(s) do not match ^[a-z0-9][a-z0-9._-]{{2,31}}$ even after trim and "
+                           f"lower case; rename them before this migration (nothing was changed): {listing}")
+
+
 def upgrade() -> None:
     """Upgrade schema."""
     bind = op.get_bind()
+    check_logins(bind)  # first: an exception rolls the whole migration back
     for enum_type in ENUM_TYPES:
         enum_type.create(bind, checkfirst=False)
     op.execute("ALTER TYPE role RENAME VALUE 'teacher' TO 'admin'")

@@ -63,7 +63,8 @@ auth_failures, auth_lockouts — неудачные попытки входа и
 
 * Роль `teacher` переименована в `admin` (`ALTER TYPE role RENAME VALUE`, строки сохраняют роль). Ролей две: `admin` и `student`.
 * `users.login`: `varchar(32)`, обычный `UNIQUE` и `CHECK` по формату `^[a-z0-9][a-z0-9._-]{2,31}$` вместо индекса по
-  `lower(login)`; логин хранится в нижнем регистре (миграция приводит существующие). Решение: без `citext`, см.
+  `lower(login)`; логин хранится в нижнем регистре (миграция приводит существующие; если какой-то логин и после
+  `trim`+`lower` не проходит формат, миграция останавливается со списком таких логинов и ничего не меняет). Решение: без `citext`, см.
   `MODULE_4A.md`. Новые поля: `password_changed_at`, `last_login_at`, `last_login_ip`, `totp_secret_enc` (Fernet),
   `totp_enabled_at` (2FA подтверждена кодом), `totp_last_step` (последний принятый 30-секундный шаг: код не принимается дважды).
 * `sessions`: `token_hash` (sha256 токена из cookie), `state` (`mfa_pending` / `active`), `csrf_token`, `last_seen_at`,
