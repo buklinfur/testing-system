@@ -15,18 +15,20 @@ docs/
   JUDGECTL.md                 консоль владельца сервера: админы, ученики, импорт CSV, очередь, воркеры
   MODULE_4A.md                спецификация модуля 4а и история решений
   PROBLEM_IMPORT.md           импорт задач: безопасная распаковка, проверка, версии по содержимому
+  CONTESTS.md                 контесты: contest.yaml, apply и pin, вступление, личный таймер, правила доступа
 backend/app/models.py         модели SQLAlchemy 2.0 (PostgreSQL)
 runner/                       раннер: песочница, компиляция, чекеры, интерактив, вердикты (docs/RUNNER.md)
 worker/                       воркер: supervisor, процессы, дисковый кэш, клиент API (docs/WORKER.md)
 protocol/                     общий код бэкенда, воркера и инструментов: манифест, проверка пакета задачи,
                               языки, schemas/problem.schema.json (JSON Schema для problem.yaml)
 backend/app/                  models, queue, worker_api, internal_main, public_main + auth_api (вход), auth/ (аккаунты,
-                              сессии, 2FA), problems/ (импорт задач), judgectl/ (консоль; admin_cli — старый алиас),
+                              сессии, 2FA), problems/ (импорт задач), contests/ (контесты и правила доступа), judgectl/ (консоль; admin_cli — старый алиас),
                               maintenance (reaper)
 deploy/                       systemd-юниты, примеры env, install-wsl.sh, setup-postgres.sh
 backend/migrations/           миграции Alembic
 tests/                        автотесты (python -m unittest discover -s tests -t .); tests/pg нужна PostgreSQL (docs/DEPLOY_WSL2.md, раздел 9)
 problems-examples/            пять примеров: batch, custom checker, interactive, choice, text_answer
+contests-examples/           примеры contest.yaml: архив-тренировка, олимпиада с личным таймером, урок с заморозкой
 tools/validate_problem.py     проверка пакета задачи (те же проверки, что у импорта)
 tools/pack-problem.sh         zip папки задачи в stdout (тот же фильтр мусора, что у импорта)
 tools/make-bad-archives.py    вредоносные архивы для ручной проверки импорта

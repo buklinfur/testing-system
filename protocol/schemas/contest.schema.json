@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "contest.schema.json",
+  "title": "contest.yaml, format_version 1",
+  "description": "Declarative contest for `judgectl contest apply`. Times without an offset are in JUDGE_TIMEZONE. The state (draft/published/archived) and the invite code are not part of the file. Rules the schema cannot express (end after start, a freeze inside the window and not with a hidden leaderboard, a positive personal duration) are checked by the importer. See docs/CONTESTS.md.",
+  "type": "object",
+  "required": ["format_version", "slug", "title", "starts_at", "problems"],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": { "const": 1 },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "description": { "type": "string", "description": "Markdown shown to participants." },
+    "starts_at": { "$ref": "#/$defs/time" },
+    "ends_at": {
+      "oneOf": [{ "$ref": "#/$defs/time" }, { "type": "null" }],
+      "description": "Absent or null: no end (a practice archive). Allowed with personal timing too: a timed practice."
+    },
+    "timing_mode": { "enum": ["fixed", "personal"], "default": "fixed" },
+    "personal_duration": { "$ref": "#/$defs/duration" },
+    "freeze_at": { "$ref": "#/$defs/time", "description": "Leaderboard freeze; needs ends_at and a leaderboard that is not hidden; not with personal timing." },
+    "scoring_mode": { "enum": ["points", "icpc"], "default": "points" },
+    "icpc_penalty_minutes": { "type": "integer", "minimum": 0, "maximum": 1440, "default": 20 },
+    "leaderboard": { "enum": ["hidden", "visible", "after_end"], "default": "hidden" },
+    "join_policy": { "enum": ["open", "code"], "default": "code" },
+    "allow_upsolving": { "type": "boolean", "default": true },
+    "languages": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z0-9_+-]+$" },
+      "description": "Absent: every language enabled in the system."
+    },
+    "submit_cooldown_sec": { "type": "integer", "minimum": 0, "maximum": 3600, "default": 15 },
+    "max_submissions_per_problem": { "type": ["integer", "null"], "minimum": 1 },
+    "tests_after_end": { "type": "boolean", "default": false },
+    "plagiarism_enabled": { "type": "boolean", "default": false },
+    "problems": { "type": "array", "items": { "$ref": "#/$defs/problem" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "timing_mode": { "const": "personal" } }, "required": ["timing_mode"] },
+      "then": { "required": ["personal_duration"], "not": { "required": ["freeze_at"] } },
+      "else": { "not": { "required": ["personal_duration"] } }
+    }
+  ],
+  "$defs": {
+    "time": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2})?(Z|[+-]\\d{2}:\\d{2})?$",
+      "description": "ISO 8601; without Z or an offset it is local time of JUDGE_TIMEZONE."
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^(?=\\d)(\\d+h)?(\\d+m)?$",
+      "description": "e.g. 90m, 1h30m, 2h; must be positive."
+    },
+    "problem": {
+      "type": "object",
+      "required": ["label", "problem"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,7}$" },
+        "problem": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$", "description": "slug of the problem" },
+        "version": {
+          "type": "integer", "minimum": 1,
+          "description": "Pinned version (must be ready). Absent: keep the current pin; when the problem is added, the latest ready version."
+        },
+        "points": {
+          "type": "number", "exclusiveMinimum": 0, "maximum": 100000,
+          "description": "Overrides the total of the problem; group points are scaled proportionally."
+        }
+      }
+    }
+  }
+}

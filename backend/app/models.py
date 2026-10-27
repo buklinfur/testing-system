@@ -447,7 +447,7 @@ class Contest(Base):
     max_submissions_per_problem: Mapped[Optional[int]] = mapped_column(Integer)
     tests_after_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # show all tests after end
     plagiarism_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # reserved for a hook
-    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))  # null: created from the console
     created_at: Mapped[datetime] = utcnow_column()
 
     problems: Mapped[list[ContestProblem]] = relationship(
