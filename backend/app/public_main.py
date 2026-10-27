@@ -24,7 +24,7 @@ from .auth_api import SAFE_METHODS, router as auth_router
 from .db import get_sessionmaker
 from .settings import Settings
 
-PLACEHOLDER_SECRET = "CHANGE_ME"  # the value in deploy/env/backend.env.example
+PLACEHOLDER_SECRET = "CHANGE_ME"  # the placeholder of JUDGE_SECRET_KEY and JUDGE_PUBLIC_ORIGIN in backend.env.example
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -69,6 +69,9 @@ def check_config(settings: Settings) -> tuple[SecretBox, str]:
             problems.append(str(exc))
     try:
         origin = canonical_origin(settings.public_origin)
+        if PLACEHOLDER_SECRET.lower() in origin:  # https://CHANGE_ME.ru from backend.env.example
+            problems.append(f"JUDGE_PUBLIC_ORIGIN is still the placeholder from backend.env.example ({origin}); "
+                            "set it to the origin browsers use, e.g. https://judge.example.ru")
     except PublicConfigError as exc:
         problems.append(str(exc))
     for name, port in (("JUDGE_PUBLIC_PORT", settings.public_port), ("JUDGE_INTERNAL_PORT", settings.internal_port)):

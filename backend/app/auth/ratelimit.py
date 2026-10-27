@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from ..models import AuthFailure, AuthFailureKind, AuthLockout
@@ -38,6 +38,23 @@ def _failures_since(db: Session, now: datetime, window_s: int, *, login=None, ip
     column, value = (AuthFailure.login, login) if login is not None else (AuthFailure.ip, ip)
     return db.execute(select(func.count()).select_from(AuthFailure)
                       .where(column == value, AuthFailure.at > start, AuthFailure.at <= now)).scalar_one()
+
+
+def current_failures(db: Session, settings: AuthSettings, now: datetime, login: str) -> int:
+    """Failures of a login that count towards its next lockout (the same number record_failure compares)."""
+    return _failures_since(db, now, settings.login_window_s, login=login)
+
+
+def recent_failures(db: Session, login: str, limit: int) -> list[AuthFailure]:
+    """Newest failures of a login first (kept for JUDGE_AUTH_RETENTION_DAYS)."""
+    return list(db.execute(select(AuthFailure).where(AuthFailure.login == login)
+                           .order_by(AuthFailure.at.desc(), AuthFailure.id.desc()).limit(limit)).scalars())
+
+
+def forget_login(db: Session, login: str) -> dict:
+    """Delete every failure and lockout row of a login (used when its user is deleted)."""
+    return {"failures_deleted": db.execute(delete(AuthFailure).where(AuthFailure.login == login)).rowcount,
+            "lockouts_deleted": db.execute(delete(AuthLockout).where(AuthLockout.login == login)).rowcount}
 
 
 def record_failure(db: Session, settings: AuthSettings, now: datetime, *, login: Optional[str], ip: str,

@@ -71,6 +71,15 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(PublicConfigError):
                 canonical_origin(bad)
 
+    def test_origin_placeholder_is_refused(self):
+        for bad in ("https://CHANGE_ME.ru", "https://change_me.ru/"):
+            with self.subTest(origin=bad):
+                self.assertRefused(settings(public_origin=bad), "JUDGE_PUBLIC_ORIGIN is still the placeholder")
+
+    def test_timezone_from_env(self):
+        self.assertEqual(Settings.from_env({"JUDGE_TIMEZONE": "Asia/Novosibirsk"}).timezone, "Asia/Novosibirsk")
+        self.assertEqual(Settings.from_env({"JUDGE_TIMEZONE": ""}).timezone, "UTC")
+
     def test_ports(self):
         self.assertRefused(settings(public_port=8001), "internal worker API port")
         self.assertRefused(settings(public_port=9000, internal_port=9000), "internal worker API port")

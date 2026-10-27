@@ -47,6 +47,7 @@ class Settings:
     public_origin: Optional[str] = None  # JUDGE_PUBLIC_ORIGIN, e.g. https://judge.example.ru: the only Origin accepted
     public_port: int = 8000  # the public app (app.public_main), proxied by Caddy
     internal_port: int = 8001  # the internal worker API; must match --port of judge-api-internal.service
+    timezone: str = "UTC"  # JUDGE_TIMEZONE: judgectl tables and contest.yaml times without an offset; the API is UTC
 
     @classmethod
     def from_env(cls, env: Optional[Mapping] = None) -> "Settings":
@@ -59,6 +60,7 @@ class Settings:
             public_origin=env.get("JUDGE_PUBLIC_ORIGIN") or None,
             public_port=int(env.get("JUDGE_PUBLIC_PORT", d.public_port)),
             internal_port=int(env.get("JUDGE_INTERNAL_PORT", d.internal_port)),
+            timezone=env.get("JUDGE_TIMEZONE") or d.timezone,
             queue=QueueSettings(
                 heartbeat_timeout_s=float(env.get("JUDGE_HEARTBEAT_TIMEOUT_S", q.heartbeat_timeout_s)),
                 max_attempts=int(env.get("JUDGE_MAX_ATTEMPTS", q.max_attempts)),

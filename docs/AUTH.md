@@ -12,9 +12,10 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
 | `admin` (в том числе преподаватели, все равноправны) | только `judgectl admin add` | пароль → код TOTP | обязательна |
 | `student` | `judgectl user add / import` (в 4а.3 — и админский веб-API) | пароль или одноразовый QR | нет |
 
-Консоль — канал владельца сервера (Р2): только она создаёт и отключает админов, сбрасывает им 2FA, выдаёт токены
-воркеров и управляет очередью. Доступ к консоли = доступ к ОС от пользователя `judge`. Пользователи не удаляются
-(на них ссылаются посылки): `is_active = false` отзывает все сессии и QR-токены.
+Консоль — канал владельца сервера (Р2): только она создаёт, отключает и удаляет админов, сбрасывает им 2FA, выдаёт
+токены воркеров и управляет очередью. Доступ к консоли = доступ к ОС от пользователя `judge`. Обычный способ убрать
+пользователя — `is_active = false` (отзывает все сессии и QR-токены): на него ссылаются посылки. Удалить можно только
+созданного по ошибке, у кого нет следов (`judgectl … delete`, `user import-rollback`; [`JUDGECTL.md`](JUDGECTL.md)).
 
 ## 2. Логины
 
@@ -85,7 +86,7 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
   Ключ живёт только в `/etc/judge/backend.env` (640 root:judge) и в git не попадает.
 * Подключение — только в консоли: `judgectl admin add` / `admin reset-2fa` показывают QR (`otpauth://…`) в терминале
   и строку URI, затем просят код из приложения (до 3 попыток). Пока код не подтверждён (`totp_enabled_at` пуст), админ
-  войти не может, а в `judgectl admin list` у него `2FA = pending`. Повторить подключение: `judgectl admin reset-2fa LOGIN`
+  войти не может, а в `judgectl admin list` у него `2FA = pending`. Повторить подключение: `judgectl admin reset-2fa <логин>`
   (новый секрет, все сессии админа отзываются). Кодов восстановления нет (Р13): восстановление — та же команда.
 * Неудачный код считается неудачей входа этого логина (§6) с лимитом админа.
 
@@ -103,16 +104,19 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
   несуществующего логина.
 * Счёт идёт с момента последней блокировки этого логина (IP): неудачи, которые привели к блокировке, после её
   окончания не блокируют снова сразу.
-* **Снятие досрочно:** `judgectl user unlock LOGIN` (любой логин, в том числе несуществующий; админов не трогает),
-  `judgectl user unlock --ip ADDR`, `judgectl admin unlock LOGIN`; сброс пароля тоже снимает блокировку. Снятие
+* **Снятие досрочно:** `judgectl user unlock <логин>` (любой логин, в том числе несуществующий; админов не трогает),
+  `judgectl user unlock --ip <адрес>`, `judgectl admin unlock <логин>`; сброс пароля тоже снимает блокировку. Снятие
   закрывает активную блокировку (`cleared_at`, `cleared_by`) и добавляет закрытую строку-отметку — счётчик начинается
   заново, история неудач не удаляется.
 * Неудача фиксируется (`COMMIT`) до того, как API вернёт ошибку: откат запроса её не стирает.
+* Кто и когда ошибался: `judgectl user failures <логин>` (любой логин, в том числе несуществующий) и
+  `judgectl admin failures <логин>` — время, вид, IP; колонка `FAILS` в `user list` / `admin list` — неудач в текущем
+  окне. Секретов там нет: какой пароль вводили, не хранится нигде.
 * Лимиты и окна настраиваются в env (§9).
 
 ## 7. Вход по QR (только ученики)
 
-* `judgectl user qr-token LOGIN` выпускает одноразовый токен на 7 дней и печатает ссылку
+* `judgectl user qr-token <логин>` выпускает одноразовый токен на 7 дней и печатает ссылку
   `<JUDGE_PUBLIC_ORIGIN>/login/qr#<токен>` и её QR. Токен стоит во фрагменте (`#`), поэтому не попадает ни в логи Caddy,
   ни в `Referer`; фронтенд (модуль 5) отправляет его `POST /api/auth/qr`.
 * Новый токен отменяет прежние; сброс пароля и отключение ученика отменяют все. В БД — только `sha256`.
@@ -134,6 +138,8 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
 * Все ответы с `Cache-Control: no-store`. `/docs`, `/redoc`, `/openapi.json` выключены; маршрутов `/internal/*`
   в публичном приложении нет (404).
 * Ошибки — `{"detail": "<код>"}`; ошибки формата тела — стандартные 422 FastAPI.
+* **Время — всегда UTC, ISO 8601 с `Z`** (`2026-11-26T15:07:59.223443Z`), независимо от часового пояса сервера и
+  соединения с БД. `JUDGE_TIMEZONE` на API не влияет.
 
 | Запрос | Тело | Успех | Ошибки |
 |---|---|---|---|
@@ -147,7 +153,7 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
 Ответ `login`, `totp`, `qr`, `me`, `password`:
 
 ```json
-{"state": "active", "csrf_token": "…", "expires_at": "2026-11-26T15:07:59+00:00",
+{"state": "active", "csrf_token": "…", "expires_at": "2026-11-26T15:07:59.223443Z",
  "user": {"id": 6, "login": "podyachev.ch", "display_name": "Чеслав П.", "role": "student"}}
 ```
 
@@ -159,13 +165,14 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
 | Переменная | По умолчанию | Смысл |
 |---|---|---|
 | `JUDGE_SECRET_KEY` | — (обязательна) | Fernet-ключ для секретов TOTP. Без него (или с заглушкой `CHANGE_ME`) публичное приложение не стартует, а `judgectl admin add/reset-2fa` отказывают до первого вопроса |
-| `JUDGE_PUBLIC_ORIGIN` | — (обязательна) | ровно то, что браузер шлёт в `Origin`: `https://<домен>` без пути; `http` — только для `localhost` |
+| `JUDGE_PUBLIC_ORIGIN` | — (обязательна) | ровно то, что браузер шлёт в `Origin`: `https://<домен>` без пути; `http` — только для `localhost`. Заглушка `https://CHANGE_ME.ru` из шаблона — отказ при старте |
 | `JUDGE_PUBLIC_PORT` / `JUDGE_INTERNAL_PORT` | 8000 / 8001 | порты публичного приложения и внутреннего API; совпадать не могут |
 | `JUDGE_LOGIN_FAIL_LIMIT` / `JUDGE_ADMIN_LOGIN_FAIL_LIMIT` | 10 / 5 | неудач логина за окно до блокировки |
 | `JUDGE_LOGIN_WINDOW_S` / `JUDGE_LOGIN_LOCKOUT_S` | 900 / 900 | окно счёта и длительность блокировки логина |
 | `JUDGE_IP_FAIL_LIMIT` / `JUDGE_IP_WINDOW_S` / `JUDGE_IP_LOCKOUT_S` | 300 / 900 / 900 | то же для IP |
 | `JUDGE_AUTH_RETENTION_DAYS` | 30 | сколько хранить неудачи, закончившиеся блокировки, мёртвые сессии и QR-токены |
 | `JUDGE_TOTP_ISSUER` | `judge` | имя сервиса в приложении-аутентификаторе |
+| `JUDGE_TIMEZONE` | `UTC` | часовой пояс таблиц judgectl и времени без смещения в `contest.yaml`; на API не влияет |
 
 Сроки сессий и QR-токенов (§4, §7) пока заданы в коде (`AuthSettings`).
 
@@ -174,7 +181,7 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
 * `audit_log` (Р18): `at`, `actor_user_id` (веб) или `actor_cli` (`cli:<unix-user>`, плюс `sudo_user` в `details`,
   если команда шла через `sudo -u judge`), `action`, `object_type`, `object_id`, `ip`, `details`. Пароли, токены и
   секреты туда не пишутся. Действия: `auth.login` (вход админа), `auth.change_password` (админ), `user.create`,
-  `user.import`, `user.reset_password`, `user.enable`, `user.disable`, `user.set_login`, `user.unlock`, `ip.unlock`,
+  `user.import`, `user.import_rollback`, `user.delete`, `user.reset_password`, `user.enable`, `user.disable`, `user.set_login`, `user.unlock`, `ip.unlock`,
   `user.qr_token`, `user.enroll_2fa`, `user.reset_2fa`, `user.confirm_2fa`, `worker.token_create`,
   `worker.token_revoke`, `submission.rejudge`, `contest_problem.rejudge`.
 * Reaper (`app.maintenance`) раз в час удаляет записи старше `JUDGE_AUTH_RETENTION_DAYS`: неудачи, закончившиеся

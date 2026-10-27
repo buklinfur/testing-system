@@ -32,7 +32,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = command(admin, "add", accounts.admin_add, "create an admin: password typed twice, then 2FA with a QR code")
     p.add_argument("login")
     p.add_argument("--name", required=True, help="display name")
-    command(admin, "list", accounts.admin_list, "admins with their 2FA state, last login and lockout", json=True)
+    p = command(admin, "list", accounts.admin_list, "active admins with their 2FA state, last login, failures and lockout",
+                json=True)
+    p.add_argument("--all", action="store_true", help="include disabled admins")
+    p = command(admin, "delete", accounts.admin_delete, "delete an admin created by mistake (only without traces)",
+                json=True)
+    p.add_argument("login")
+    p.add_argument("--yes", action="store_true", help="no confirmation (scripts)")
+    p = command(admin, "failures", accounts.admin_failures, "failed logins of an admin (kind, time, IP)", json=True)
+    p.add_argument("login")
+    p.add_argument("--last", type=int, default=20)
     for name, func, text in (("disable", accounts.admin_disable, "disable an admin (ends all sessions)"),
                              ("enable", accounts.admin_enable, "enable an admin again"),
                              ("reset-password", accounts.admin_reset_password,
@@ -52,6 +61,18 @@ def build_parser() -> argparse.ArgumentParser:
                 "create students from CSV: surname;first name[;login][;display name]; all or nothing", json=True)
     p.add_argument("file")
     p.add_argument("--out", required=True, help="new file for logins and passwords (created 0600), or - for stdout")
+    p = command(user, "imports", accounts.user_imports, "past `user import` runs with their ids", json=True)
+    p = command(user, "import-rollback", accounts.user_import_rollback,
+                "delete every user of one import, if none of them has logged in", json=True)
+    p.add_argument("import_id", type=int)
+    p.add_argument("--yes", action="store_true", help="no confirmation (scripts)")
+    p = command(user, "delete", accounts.user_delete, "delete a student created by mistake (only without traces)",
+                json=True)
+    p.add_argument("login")
+    p.add_argument("--yes", action="store_true", help="no confirmation (scripts)")
+    p = command(user, "failures", accounts.user_failures, "failed logins of a login, even an unknown one", json=True)
+    p.add_argument("login")
+    p.add_argument("--last", type=int, default=20)
     p = command(user, "list", accounts.user_list, "students (active ones unless --all)", json=True)
     p.add_argument("--all", action="store_true", help="include disabled students")
     command(user, "reset-password", accounts.user_reset_password,

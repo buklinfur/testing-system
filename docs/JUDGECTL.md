@@ -22,9 +22,11 @@ PYTHONPATH=.:backend python -m app.judgectl --help
 * **Аудит:** каждое изменение пишется в `audit_log` с `actor_cli = cli:<unix-user>` (обычно `cli:judge`), а имя
   человека из `SUDO_USER` — в `details.sudo_user`. Пароли и токены в аудит не попадают.
 * **Вывод:** таблица для человека; `--json` (после имени команды: `judgectl admin list --json`) — для скриптов.
+  Время в таблицах — в часовом поясе `JUDGE_TIMEZONE` (по умолчанию UTC), в `--json` — всегда UTC с `Z`.
   Пароли и токены печатаются **один раз**; пачка паролей — только в новый файл 0600 (или явно в stdout).
 * **Коды выхода:** 0 — успех; 1 — ошибка (`judgectl: <сообщение>` в stderr, ничего не изменено); 2 — неверные
   аргументы; 130 — прервано (Ctrl-C / конец ввода).
+* Необратимые команды (`delete`, `import-rollback`) просят ввести логин или id ещё раз; без терминала нужен `--yes`.
 * Команды, где вводится пароль или код 2FA (`admin add`, `admin reset-password`, `admin reset-2fa`), требуют
   терминал и без него отказывают, ничего не спросив. `admin add` и `admin reset-2fa` без рабочего
   `JUDGE_SECRET_KEY` отказывают тоже до первого вопроса.
@@ -32,16 +34,21 @@ PYTHONPATH=.:backend python -m app.judgectl --help
 ## Группы и команды
 
 ```
-judgectl admin  add LOGIN --name NAME | list | disable LOGIN | enable LOGIN
-                | reset-password LOGIN | reset-2fa LOGIN | unlock LOGIN
-judgectl user   add (--surname S --first-name F | --login L) [--name NAME]
-                | import FILE --out (NEW_FILE | -) | list [--all] | reset-password LOGIN
-                | disable LOGIN | enable LOGIN | unlock (LOGIN | --ip ADDR)
-                | set-login LOGIN NEW_LOGIN | qr-token LOGIN [--no-qr]
+judgectl admin  add <логин> --name "<имя>" | list [--all] | disable <логин> | enable <логин>
+                | reset-password <логин> | reset-2fa <логин> | unlock <логин>
+                | failures <логин> [--last N] | delete <логин> [--yes]
+judgectl user   add (--surname <фамилия> --first-name <имя> | --login <логин>) [--name "<имя в рейтинге>"]
+                | import <файл.csv> --out (<новый-файл> | -) | imports | import-rollback <id> [--yes]
+                | list [--all] | reset-password <логин> | disable <логин> | enable <логин>
+                | unlock (<логин> | --ip <адрес>) | failures <логин> [--last N] | delete <логин> [--yes]
+                | set-login <логин> <новый-логин> | qr-token <логин> [--no-qr]
 judgectl queue  status | reap | judgements [--last N] | events [--last N]
-                | rejudge (--submission ID | --contest-problem ID [--verdicts WA,TL])
-judgectl worker list | token create NAME [--caps cpu,gpu] | token revoke NAME
+                | rejudge (--submission <id> | --contest-problem <id> [--verdicts WA,TL])
+judgectl worker list | token create <имя> [--caps cpu,gpu] | token revoke <имя>
 ```
+
+Значения в `<угловых скобках>` — плейсхолдеры: подставьте своё вместе со скобками. Если скопировать команду как есть,
+bash прочитает `<логин>` как перенаправление из файла и остановится, а не создаст пользователя со словом из примера.
 
 В 4а.2 добавятся `problem`, `contest`, `submission` (в том числе `submission rejudge` вместо `queue rejudge`) и
 общий `status`.
@@ -50,30 +57,42 @@ judgectl worker list | token create NAME [--caps cpu,gpu] | token revoke NAME
 
 | Команда | Что делает |
 |---|---|
-| `add LOGIN --name NAME` | Пароль вводится дважды без эха (≥ 12 символов, правила — [`AUTH.md`](AUTH.md) §3; 3 попытки, потом отказ без изменений). Админ создаётся, затем подключается 2FA: QR в терминале + строка `otpauth://…`, код из приложения (3 попытки). Если код так и не подтверждён, админ остаётся с `2FA = pending`, войти не может, команда завершается с кодом 1 и подсказкой `reset-2fa` |
-| `list` | Логин, имя, активен ли, **состояние 2FA** (`confirmed` / `pending` — секрет выдан, код не подтверждён / `none`), последний вход и IP, блокировка до |
-| `reset-2fa LOGIN` | Новый секрет с QR, подтверждение кодом; все сессии админа отзываются. Это же — **повтор неподтверждённого подключения** |
-| `reset-password LOGIN` | Новый пароль дважды без эха; сессии отзываются, блокировка снимается |
-| `disable` / `enable LOGIN` | Отключение отзывает все сессии; удаления нет |
-| `unlock LOGIN` | Снять блокировку перебора и обнулить счётчик |
+| `add <логин> --name "<имя>"` | Пароль вводится дважды без эха (≥ 12 символов, правила — [`AUTH.md`](AUTH.md) §3; 3 попытки, потом отказ без изменений). Админ создаётся, затем подключается 2FA: QR в терминале + строка `otpauth://…`, код из приложения (3 попытки). Если код так и не подтверждён, админ остаётся с `2FA = pending`, войти не может, команда завершается с кодом 1 и подсказкой `reset-2fa` |
+| `list [--all]` | Активные админы (`--all` — и отключённые): логин, имя, **состояние 2FA** (`confirmed` / `pending` — секрет выдан, код не подтверждён / `none`), последний вход и IP, `FAILS` — неудач в текущем окне (до блокировки — 5), блокировка до |
+| `reset-2fa <логин>` | Новый секрет с QR, подтверждение кодом; все сессии админа отзываются. Это же — **повтор неподтверждённого подключения** |
+| `reset-password <логин>` | Новый пароль дважды без эха; сессии отзываются, блокировка снимается |
+| `disable` / `enable <логин>` | Отключение отзывает все сессии |
+| `delete <логин> [--yes]` | Удалить админа, созданного по ошибке, — только если у него нет следов (ниже). Подтверждение — ввести логин ещё раз; `--yes` для скриптов |
+| `failures <логин> [--last N]` | Неудачи входа админа: время, вид (`password` / `totp`), IP; сколько из них идёт в счёт блокировки |
+| `unlock <логин>` | Снять блокировку перебора и обнулить счётчик |
 
 Команды группы `admin` отказывают для ученика и наоборот (с подсказкой, какой группой пользоваться).
 
 Код TOTP, которым подтвердили подключение, второй раз не принимается: для первого входа дождитесь следующего кода.
 
+**Удаление (`admin delete`, `user delete`, `user import-rollback`)** — только для созданных по ошибке. Отказ, если на
+пользователя что-то ссылается: задачи (владелец), контесты (создатель), участия, посылки, запрошенные им перепроверки,
+записи аудита от его имени (любое действие в вебе, в том числе вход админа). Отказ перечисляет найденное и подсказывает
+`disable`. Вместе с пользователем удаляются его сессии, QR-токены, неудачи входа и блокировки по его логину; логин
+освобождается. В аудит пишется `user.delete` (логин, имя, роль, что удалено вместе с ним) или `user.import_rollback`.
+
 ### user — ученики
 
 | Команда | Что делает |
 |---|---|
-| `add --surname S --first-name F [--login L] [--name NAME]` | Логин — `L` или `фамилия.инициал` (см. [`AUTH.md`](AUTH.md) §2), имя в рейтинге — `NAME` или «Имя Ф.». Сгенерированный пароль печатается один раз |
-| `import FILE --out NEW_FILE` | Пачка из CSV (ниже) |
-| `list [--all]` | Активные ученики (`--all` — и отключённые), последний вход, блокировка |
-| `reset-password LOGIN` | Новый сгенерированный пароль (печатается один раз); сессии и QR-токены отзываются, блокировка снимается |
-| `disable` / `enable LOGIN` | Отключение отзывает сессии и QR-токены |
-| `unlock LOGIN` | Снять блокировку логина — **любого, в том числе несуществующего** (неудачи считаются и для них); для админа отказ с подсказкой `admin unlock` |
-| `unlock --ip ADDR` | Снять блокировку IP (например, весь класс за одним школьным адресом); аудит `ip.unlock` |
-| `set-login LOGIN NEW_LOGIN` | Сменить логин (по просьбе ученика); формат как у любого логина |
-| `qr-token LOGIN [--no-qr]` | Одноразовая ссылка входа на 7 дней (`<JUDGE_PUBLIC_ORIGIN>/login/qr#<токен>`) и её QR; новый токен отменяет прежний. Без `JUDGE_PUBLIC_ORIGIN` печатается только токен |
+| `add --surname <фамилия> --first-name <имя> [--login <логин>] [--name "<имя в рейтинге>"]` | Логин — заданный или `фамилия.инициал` (см. [`AUTH.md`](AUTH.md) §2), имя в рейтинге — заданное или «Имя Ф.». Сгенерированный пароль печатается один раз |
+| `import <файл.csv> --out <новый-файл>` | Пачка из CSV (ниже); печатает в stderr id импорта |
+| `imports` | Прошлые импорты: id, время, файл, сколько пользователей, кто запускал, откачен ли |
+| `import-rollback <id> [--yes]` | Удалить всех пользователей импорта — только если никто из них не входил и ни у кого нет следов; иначе отказ со списком вошедших. Подтверждение — ввести id ещё раз |
+| `list [--all]` | Активные ученики (`--all` — и отключённые), последний вход, `FAILS` (неудач в текущем окне, до блокировки — 10), блокировка |
+| `reset-password <логин>` | Новый сгенерированный пароль (печатается один раз); сессии и QR-токены отзываются, блокировка снимается |
+| `disable` / `enable <логин>` | Отключение отзывает сессии и QR-токены |
+| `delete <логин> [--yes]` | Удалить ученика, созданного по ошибке, — только без следов (ниже) |
+| `failures <логин> [--last N]` | Неудачи входа — для **любого** логина, в том числе несуществующего (так видно, что ученик ошибается в логине); для админа отказ с подсказкой `admin failures` |
+| `unlock <логин>` | Снять блокировку логина — **любого, в том числе несуществующего** (неудачи считаются и для них); для админа отказ с подсказкой `admin unlock` |
+| `unlock --ip <адрес>` | Снять блокировку IP (например, весь класс за одним школьным адресом); аудит `ip.unlock` |
+| `set-login <логин> <новый-логин>` | Сменить логин (по просьбе ученика); формат как у любого логина |
+| `qr-token <логин> [--no-qr]` | Одноразовая ссылка входа на 7 дней (`<JUDGE_PUBLIC_ORIGIN>/login/qr#<токен>`) и её QR; новый токен отменяет прежний. Без `JUDGE_PUBLIC_ORIGIN` печатается только токен |
 
 #### Импорт CSV (`user import`)
 
@@ -93,7 +112,7 @@ judgectl worker list | token create NAME [--caps cpu,gpu] | token revoke NAME
 * Пример: [`deploy/dev/students-30-cp1251.csv`](../deploy/dev/students-30-cp1251.csv) (30 учеников, cp1251).
 
 ```bash
-j .venv/bin/python -m app.judgectl user import /var/lib/judge/7b.csv --out /var/lib/judge/7b-passwords.csv
+j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv --out /var/lib/judge/<класс>-пароли.csv
 ```
 
 ### queue — очередь проверки
@@ -114,8 +133,8 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/7b.csv --out /var/
 | Команда | Что делает |
 |---|---|
 | `list` | Воркеры: состояние, возраст heartbeat, текущее задание, ядра, число проверок, capabilities |
-| `token create NAME [--caps cpu,gpu]` | Новый токен воркера. Токен — **последняя строка** stdout (скрипты берут его `| tail -1`), показывается один раз |
-| `token revoke NAME` | Отозвать живой токен; если такого нет — ошибка |
+| `token create <имя> [--caps cpu,gpu]` | Новый токен воркера. Токен — **последняя строка** stdout (скрипты берут его `| tail -1`), показывается один раз |
+| `token revoke <имя>` | Отозвать живой токен; если такого нет — ошибка |
 
 ## Старое имя: `app.admin_cli`
 
@@ -124,7 +143,7 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/7b.csv --out /var/
 
 | admin_cli | judgectl |
 |---|---|
-| `create-worker-token NAME [--caps]` | `worker token create NAME [--caps]` |
-| `revoke-worker-token NAME` | `worker token revoke NAME` |
+| `create-worker-token <имя> [--caps]` | `worker token create <имя> [--caps]` |
+| `revoke-worker-token <имя>` | `worker token revoke <имя>` |
 | `status` | `queue status` + `worker list` |
 | `reap`, `judgements`, `events`, `rejudge …` | `queue reap`, `queue judgements`, `queue events`, `queue rejudge …` |

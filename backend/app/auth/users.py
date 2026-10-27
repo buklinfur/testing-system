@@ -8,10 +8,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from ..models import Role, User
+from ..models import (AuditLog, Contest, Judgement, LoginToken, Participation, Problem, Role, Submission, User,
+                      UserSession)
+from ..timeutil import iso_utc
 from . import audit, login_tokens, ratelimit, sessions
 from .logins import LoginError, checked_login, default_display_name, default_login, unique_login
 from .passwords import PasswordPolicyError, check_policy, generate_password, hash_password
@@ -149,7 +151,7 @@ def issue_login_token(db: Session, actor: audit.Actor, user: User, settings, now
     except login_tokens.LoginTokenError as exc:
         raise UserError(str(exc)) from exc
     audit.record(db, actor, "user.qr_token", now, object_type="user", object_id=user.id,
-                 details={"expires_at": expires.isoformat()})
+                 details={"expires_at": iso_utc(expires)})
     return token, expires
 
 
@@ -182,3 +184,95 @@ def confirm_totp(db: Session, actor: audit.Actor, user: User, box: SecretBox, co
     user.totp_enabled_at = now
     audit.record(db, actor, "user.confirm_2fa", now, object_type="user", object_id=user.id)
     return True
+
+
+# ----------------------------------------------------------------------------- deletion (R9 refined, MODULE_4A 5.5)
+# Everything that would keep a trace of a user. A user with any of them is only disabled, never deleted.
+TRACES = (
+    ("problems owned", Problem.owner_id),
+    ("contests created", Contest.created_by),
+    ("contest participations", Participation.user_id),
+    ("submissions", Submission.user_id),
+    ("rejudges requested", Judgement.requested_by),
+    ("audit records as actor (web actions or logins)", AuditLog.actor_user_id),
+)
+
+
+def traces(db: Session, user: User) -> dict:
+    """{what: count} of everything that references the user (empty: the user can be deleted)."""
+    found = {}
+    for label, column in TRACES:
+        n = db.execute(select(func.count()).select_from(column.table).where(column == user.id)).scalar_one()
+        if n:
+            found[label] = n
+    return found
+
+
+def _describe(found: dict) -> str:
+    return ", ".join(f"{label}: {n}" for label, n in found.items())
+
+
+def _erase(db: Session, user: User) -> dict:
+    """Delete the user with its sessions, QR tokens and the failures / lockouts of its login (no audit here)."""
+    removed = {"sessions_deleted": db.execute(delete(UserSession).where(UserSession.user_id == user.id)).rowcount,
+               "qr_tokens_deleted": db.execute(delete(LoginToken).where(LoginToken.user_id == user.id)).rowcount}
+    removed.update(ratelimit.forget_login(db, user.login))
+    db.delete(user)
+    db.flush()
+    return removed
+
+
+def delete_user(db: Session, actor: audit.Actor, user: User, now: datetime) -> dict:
+    """Delete a user created by mistake. Refused (UserError) if anything references it: then disable instead."""
+    found = traces(db, user)
+    if found:
+        raise UserError(f"{user.login} cannot be deleted, it has traces ({_describe(found)}); "
+                        f"disable it instead")
+    user_id, details = user.id, {"login": user.login, "display_name": user.display_name, "role": user.role.value}
+    details.update(_erase(db, user))
+    audit.record(db, actor, "user.delete", now, object_type="user", object_id=user_id, details=details)
+    return details
+
+
+def imports(db: Session) -> list[AuditLog]:
+    """`user import` runs, newest first (their audit rows: id, time, file, logins)."""
+    return list(db.execute(select(AuditLog).where(AuditLog.action == "user.import")
+                           .order_by(AuditLog.id.desc())).scalars())
+
+
+def rolled_back_imports(db: Session) -> set:
+    rows = db.execute(select(AuditLog.object_id).where(AuditLog.action == "user.import_rollback")).scalars()
+    return {int(x) for x in rows if x and x.isdigit()}
+
+
+def import_rollback(db: Session, actor: audit.Actor, import_id: int, now: datetime) -> list:
+    """Delete every user of one `user import`, if none of them has logged in or left any trace. Returns logins."""
+    row = db.get(AuditLog, import_id)
+    if row is None or row.action != "user.import":
+        raise UserError(f"no user import with id {import_id} (see: judgectl user imports)")
+    if import_id in rolled_back_imports(db):
+        raise UserError(f"import {import_id} was already rolled back")
+    ids = (row.details or {}).get("user_ids")
+    if ids:
+        found = list(db.execute(select(User).where(User.id.in_(ids)).order_by(User.id)).scalars())
+    else:  # imports of session 4a.1 recorded only logins
+        found = list(db.execute(select(User).where(User.login.in_((row.details or {}).get("logins", [])),
+                                                   User.role == Role.student).order_by(User.id)).scalars())
+    if not found:
+        raise UserError(f"import {import_id}: none of its users exists any more")
+    logged_in = [u.login for u in found if u.last_login_at is not None
+                 or db.execute(select(UserSession.id).where(UserSession.user_id == u.id)).first() is not None]
+    if logged_in:
+        raise UserError(f"import {import_id} cannot be rolled back, these users have logged in: "
+                        f"{', '.join(logged_in)} (disable them instead)")
+    with_traces = {u.login: traces(db, u) for u in found}
+    with_traces = {login: t for login, t in with_traces.items() if t}
+    if with_traces:
+        raise UserError(f"import {import_id} cannot be rolled back, these users have traces: "
+                        + "; ".join(f"{login} ({_describe(t)})" for login, t in with_traces.items()))
+    logins = [u.login for u in found]
+    for u in found:
+        _erase(db, u)
+    audit.record(db, actor, "user.import_rollback", now, object_type="audit_log", object_id=import_id,
+                 details={"logins": logins, "missing": len(ids or (row.details or {}).get("logins", [])) - len(logins)})
+    return logins

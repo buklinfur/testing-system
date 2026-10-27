@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from .auth import flows, sessions
 from .auth.flows import LoginResult, Outcome
 from .models import SessionState, User, UserSession
+from .timeutil import iso_utc
 
 COOKIE = "__Host-session"
 CSRF_HEADER = "x-csrf-token"
@@ -140,7 +141,7 @@ def user_out(user: User) -> dict:
 def session_out(row: UserSession, user: User) -> dict:
     """What the frontend needs: the state, the CSRF token for unsafe requests and, once active, the user."""
     active = row.state == SessionState.active
-    return {"state": row.state.value, "csrf_token": row.csrf_token, "expires_at": row.expires_at.isoformat(),
+    return {"state": row.state.value, "csrf_token": row.csrf_token, "expires_at": iso_utc(row.expires_at),
             "user": user_out(user) if active else None}
 
 

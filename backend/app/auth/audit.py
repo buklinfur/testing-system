@@ -31,9 +31,11 @@ def cli_actor() -> Actor:
 
 
 def record(db: Session, actor: Actor, action: str, now: datetime, *, object_type: Optional[str] = None,
-           object_id: Any = None, details: Optional[dict] = None) -> None:
+           object_id: Any = None, details: Optional[dict] = None) -> AuditLog:
     details = dict(details or {})
     if actor.sudo_user:
         details["sudo_user"] = actor.sudo_user
-    db.add(AuditLog(at=now, actor_user_id=actor.user_id, actor_cli=actor.cli, action=action, object_type=object_type,
-                    object_id=None if object_id is None else str(object_id), ip=actor.ip, details=details))
+    row = AuditLog(at=now, actor_user_id=actor.user_id, actor_cli=actor.cli, action=action, object_type=object_type,
+                   object_id=None if object_id is None else str(object_id), ip=actor.ip, details=details)
+    db.add(row)
+    return row

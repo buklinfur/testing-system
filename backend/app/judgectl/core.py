@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Iterator, TextIO
+from typing import Callable, Iterator, Optional, TextIO
 
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,7 @@ from ..auth.passwords import MIN_LENGTH, PasswordPolicyError, check_policy
 from ..auth.totp import SecretBox, TotpConfigError
 from ..models import Role
 from ..settings import Settings
+from ..timeutil import TimezoneError, display, iso_utc, zone
 
 PASSWORD_ATTEMPTS = 3
 
@@ -75,15 +76,36 @@ class Context:
         except TotpConfigError as exc:
             raise CliError(str(exc)) from exc
 
+    @property
+    def tz(self):
+        """JUDGE_TIMEZONE for tables (--json is always UTC)."""
+        try:
+            return zone(self.settings.timezone)
+        except TimezoneError as exc:
+            raise CliError(str(exc)) from exc
+
+    def time(self, value: Optional[datetime]) -> str:
+        return display(value, self.tz)
+
     def require_terminal(self, what: str) -> None:
         if not self.interactive():
             raise CliError(f"{what} needs an interactive terminal: the password and the 2FA code are typed in")
 
 
+def confirm(ctx: Context, expected: str, what: str, yes: bool) -> None:
+    """An irreversible step: the operator types `expected` again (or passes --yes in scripts)."""
+    if yes:
+        return
+    if not ctx.interactive():
+        raise CliError(f"{what} cannot be undone: confirm it in a terminal or pass --yes")
+    if ctx.input(f"{what} cannot be undone. Type {expected} to confirm: ").strip() != expected:
+        raise CliError("not confirmed, nothing changed")
+
+
 # ----------------------------------------------------------------------------- output
 def jsonable(value):
     if isinstance(value, datetime):
-        return value.isoformat()
+        return iso_utc(value)
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, dict):
@@ -97,13 +119,13 @@ def emit_json(ctx: Context, data) -> None:
     ctx.print(json.dumps(jsonable(data), ensure_ascii=False, indent=2))
 
 
-def cell(value) -> str:
+def cell(value, tz=timezone.utc) -> str:
     if value is None:
         return "-"
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, datetime):
-        return value.astimezone().strftime("%Y-%m-%d %H:%M")
+        return display(value, tz)
     if isinstance(value, Enum):
         return str(value.value)
     return str(value)
@@ -114,7 +136,8 @@ def table(ctx: Context, rows: list[dict], columns: list[tuple[str, str]]) -> Non
     if not rows:
         ctx.print("(none)")
         return
-    cells = [[cell(row.get(key)) for key, _ in columns] for row in rows]
+    tz = ctx.tz
+    cells = [[cell(row.get(key), tz) for key, _ in columns] for row in rows]
     widths = [max([len(header)] + [len(line[i]) for line in cells]) for i, (_, header) in enumerate(columns)]
     for line in [[header for _, header in columns]] + cells:
         ctx.print("  ".join(text.ljust(width) for text, width in zip(line, widths)).rstrip())

@@ -94,6 +94,9 @@ class PublicAuthApiTests(PgCase):
         me = b.get("/api/auth/me")
         self.assertEqual((me.status_code, me.json()["user"]["id"]), (200, user.id))
         self.assertEqual(me.headers["cache-control"], "no-store")
+        # always UTC with Z, whatever the time zone of the database connection (it was +07:00 in /me before 4a.2)
+        self.assertTrue(body["expires_at"].endswith("Z"), body["expires_at"])
+        self.assertEqual(me.json()["expires_at"], body["expires_at"])
         self.assertEqual(self.browser().get("/api/auth/me").status_code, 401)  # another browser, no cookie
 
     def test_activity_slides_the_session_and_the_cookie(self):

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from ..auth import audit, ratelimit, totp, users
 from ..models import AuthLockout, Role, User
 from . import csvimport
-from .core import CliError, Context, ask_new_password, emit_json, open_private_new, show
+from .core import CliError, Context, ask_new_password, confirm, emit_json, open_private_new, show
 
 CODE_ATTEMPTS = 3
 OUT_HEADER = ["фамилия", "имя", "логин", "пароль", "display_name"]
@@ -120,16 +120,26 @@ def admin_reset_password(ctx: Context, args) -> int:
     return 0
 
 
+def _fails(ctx: Context, db: Session, login: str, now: datetime) -> int:
+    return ratelimit.current_failures(db, ctx.settings.auth, now, login)
+
+
 def admin_list(ctx: Context, args) -> int:
+    """Active admins (--all: disabled ones too); FAILS counts towards the next lockout (limit: admin one)."""
     with ctx.session() as db:
         now = ctx.clock()
         locks = _locks(db, now)
+        query = select(User).where(User.role == Role.admin).order_by(User.login)
+        if not args.all:
+            query = query.where(User.is_active.is_(True))
         rows = [{"login": u.login, "display_name": u.display_name, "active": u.is_active,
                  "two_factor": two_factor_state(u), "last_login_at": u.last_login_at, "last_login_ip": u.last_login_ip,
-                 "locked_until": locks.get(u.login), "created_at": u.created_at}
-                for u in db.execute(select(User).where(User.role == Role.admin).order_by(User.login)).scalars()]
+                 "failures": _fails(ctx, db, u.login, now), "locked_until": locks.get(u.login),
+                 "created_at": u.created_at}
+                for u in db.execute(query).scalars()]
     show(ctx, rows, [("login", "LOGIN"), ("display_name", "NAME"), ("active", "ACTIVE"), ("two_factor", "2FA"),
-                     ("last_login_at", "LAST LOGIN"), ("last_login_ip", "FROM"), ("locked_until", "LOCKED UNTIL")])
+                     ("last_login_at", "LAST LOGIN"), ("last_login_ip", "FROM"), ("failures", "FAILS"),
+                     ("locked_until", "LOCKED UNTIL")])
     return 0
 
 
@@ -204,8 +214,11 @@ def user_import(ctx: Context, args) -> int:
                 user, password = created[i]
                 results.append({"surname": row.surname, "first_name": row.first_name, "login": user.login,
                                 "password": password, "display_name": user.display_name})
-            audit.record(db, ctx.actor, "user.import", now, object_type="file", object_id=Path(args.file).name,
-                         details={"count": len(results), "encoding": parsed.encoding, "logins": [r["login"] for r in results]})
+            entry = audit.record(db, ctx.actor, "user.import", now, object_type="file", object_id=Path(args.file).name,
+                         details={"count": len(results), "encoding": parsed.encoding, "logins": [r["login"] for r in results],
+                                  "user_ids": [created[i][0].id for i in range(len(parsed.rows))]})
+            db.flush()
+            import_id = entry.id
             if handle is not None:
                 writer = csv.writer(handle, delimiter=";")
                 writer.writerow(OUT_HEADER)
@@ -219,6 +232,7 @@ def user_import(ctx: Context, args) -> int:
             handle.close()
             os.unlink(args.out)
         raise
+    ctx.note(f"import id {import_id}; undo while nobody has logged in: judgectl user import-rollback {import_id}")
     if handle is None:
         if ctx.json:
             emit_json(ctx, results)
@@ -227,7 +241,8 @@ def user_import(ctx: Context, args) -> int:
             for r in results:
                 ctx.print(";".join([r["surname"], r["first_name"], r["login"], r["password"], r["display_name"]]))
     elif ctx.json:
-        emit_json(ctx, {"created": len(results), "out": args.out, "logins": [r["login"] for r in results]})
+        emit_json(ctx, {"import_id": import_id, "created": len(results), "out": args.out,
+                        "logins": [r["login"] for r in results]})
     else:
         ctx.print(f"{len(results)} students created ({parsed.encoding}, '{parsed.delimiter}'); "
                   f"logins and passwords are in {args.out} (0600, the passwords are nowhere else)")
@@ -242,10 +257,11 @@ def user_list(ctx: Context, args) -> int:
         if not args.all:
             query = query.where(User.is_active.is_(True))
         rows = [{"login": u.login, "display_name": u.display_name, "active": u.is_active,
-                 "last_login_at": u.last_login_at, "locked_until": locks.get(u.login), "created_at": u.created_at}
+                 "last_login_at": u.last_login_at, "failures": _fails(ctx, db, u.login, now),
+                 "locked_until": locks.get(u.login), "created_at": u.created_at}
                 for u in db.execute(query).scalars()]
     show(ctx, rows, [("login", "LOGIN"), ("display_name", "NAME"), ("active", "ACTIVE"),
-                     ("last_login_at", "LAST LOGIN"), ("locked_until", "LOCKED UNTIL")])
+                     ("last_login_at", "LAST LOGIN"), ("failures", "FAILS"), ("locked_until", "LOCKED UNTIL")])
     return 0
 
 
@@ -314,6 +330,87 @@ def user_qr_token(ctx: Context, args) -> int:
         return 0
     if url and not args.no_qr:
         _print_qr(ctx, url)
-    ctx.print(f"{user.login}: valid until {expires.astimezone():%Y-%m-%d %H:%M}, one use")
+    ctx.print(f"{user.login}: valid until {ctx.time(expires)} ({ctx.settings.timezone}), one use")
     ctx.print(url or token)
     return 0
+
+
+# ----------------------------------------------------------------------------- deletion, imports, failures
+def _delete(ctx: Context, args, role: Role) -> int:
+    with ctx.session() as db:
+        user = _user(db, args.login, role)
+        login, found = user.login, users.traces(db, user)
+    if found:  # refuse before asking for a confirmation that could not help
+        raise CliError(f"{login} cannot be deleted, it has traces ({', '.join(f'{k}: {n}' for k, n in found.items())}); "
+                       f"disable it instead: judgectl {'admin' if role == Role.admin else 'user'} disable {login}")
+    confirm(ctx, login, f"Deleting {login}", args.yes)
+    with ctx.session() as db:
+        details = users.delete_user(db, ctx.actor, _user(db, login, role), ctx.clock())
+    if ctx.json:
+        emit_json(ctx, details)
+    else:
+        ctx.print(f"{login} deleted (sessions: {details['sessions_deleted']}, QR tokens: {details['qr_tokens_deleted']}, "
+                  f"failures: {details['failures_deleted']}, lockouts: {details['lockouts_deleted']})")
+    return 0
+
+
+def admin_delete(ctx: Context, args) -> int:
+    return _delete(ctx, args, Role.admin)
+
+
+def user_delete(ctx: Context, args) -> int:
+    return _delete(ctx, args, Role.student)
+
+
+def user_imports(ctx: Context, args) -> int:
+    with ctx.session() as db:
+        undone = users.rolled_back_imports(db)
+        rows = [{"id": r.id, "at": r.at, "file": r.object_id, "count": (r.details or {}).get("count"),
+                 "by": r.actor_cli + (f" ({r.details['sudo_user']})" if (r.details or {}).get("sudo_user") else ""),
+                 "rolled_back": r.id in undone} for r in users.imports(db)]
+    show(ctx, rows, [("id", "ID"), ("at", "AT"), ("file", "FILE"), ("count", "USERS"), ("by", "BY"),
+                     ("rolled_back", "ROLLED BACK")])
+    return 0
+
+
+def user_import_rollback(ctx: Context, args) -> int:
+    confirm(ctx, str(args.import_id), f"Deleting every user of import {args.import_id}", args.yes)
+    with ctx.session() as db:
+        logins = users.import_rollback(db, ctx.actor, args.import_id, ctx.clock())
+    if ctx.json:
+        emit_json(ctx, {"import_id": args.import_id, "deleted": logins})
+    else:
+        ctx.print(f"import {args.import_id} rolled back: {len(logins)} users deleted")
+    return 0
+
+
+def _failures(ctx: Context, args, role: Optional[Role]) -> int:
+    """role=None: any login that is not an admin (failures exist for unknown logins too)."""
+    login = args.login.strip().lower()
+    with ctx.session() as db:
+        user = users.find_by_login(db, login)
+        if role == Role.admin:
+            _user(db, login, Role.admin)
+        elif user is not None and user.role == Role.admin:
+            raise CliError(f"{login!r} is an admin: use `judgectl admin failures`")
+        now = ctx.clock()
+        rows = [{"at": f.at, "kind": f.kind, "ip": f.ip} for f in ratelimit.recent_failures(db, login, args.last)]
+        counting = _fails(ctx, db, login, now)
+        locked = _locks(db, now).get(login)
+    limit = ctx.settings.auth.admin_login_fail_limit if role == Role.admin else ctx.settings.auth.login_fail_limit
+    if ctx.json:
+        emit_json(ctx, {"login": login, "counting": counting, "limit": limit, "locked_until": locked,
+                        "failures": rows})
+        return 0
+    show(ctx, rows, [("at", "AT"), ("kind", "KIND"), ("ip", "IP")])
+    ctx.print(f"{login}: {counting} of {limit} failures towards a lockout"
+              + (f"; locked until {ctx.time(locked)}" if locked else ""))
+    return 0
+
+
+def admin_failures(ctx: Context, args) -> int:
+    return _failures(ctx, args, Role.admin)
+
+
+def user_failures(ctx: Context, args) -> int:
+    return _failures(ctx, args, None)
