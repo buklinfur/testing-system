@@ -121,6 +121,18 @@ class PublicAuthApiTests(PgCase):
         self.assertEqual(b.get("/api/auth/me").status_code, 401)
         self.assertEqual(b.post("/api/auth/logout").status_code, 204)  # nothing to revoke: just clears
 
+    def test_logged_out_token_is_dead_even_when_sent_by_hand(self):
+        _user, password = self.make_student()
+        b = self.browser()
+        r = self.login(b, "ivanov.p", password)
+        token = SimpleCookie(r.headers["set-cookie"])[COOKIE].value
+        self.assertEqual(b.post("/api/auth/logout", headers=self.csrf(r)).status_code, 204)
+        manual = TestClient(self.app, base_url="https://testserver", headers={"Origin": ORIGIN, "Cookie": f"{COOKIE}={token}"})
+        me = manual.get("/api/auth/me")
+        self.assertEqual((me.status_code, me.json()["detail"]), (401, "not_authenticated"))
+        self.assertEqual(manual.post("/api/auth/password", headers=self.csrf(r), json={
+            "current_password": password, "new_password": "brand-new-secret"}).status_code, 401)
+
     def test_unsafe_requests_need_origin_and_csrf(self):
         _user, password = self.make_student()
         b = self.browser()
@@ -166,6 +178,51 @@ class PublicAuthApiTests(PgCase):
         self.s.commit()
         self.assertEqual(self.login(b, "ivanov.p", password).status_code, 200)
         self.assertEqual(self.login(b, "nobody.here", password).status_code, 429)
+
+    def test_locked_login_refuses_even_the_right_password(self):
+        _user, password = self.make_student()
+        _admin, admin_password, _secret = self.make_admin()
+        for _ in range(10):
+            self.login(self.browser(), "ivanov.p", "wrong")
+        for _ in range(5):
+            self.login(self.browser(), "boss", "wrong")
+        for login, pw in (("ivanov.p", password), ("boss", admin_password)):
+            r = self.login(self.browser(), login, pw)
+            self.assertEqual((r.status_code, r.json()["detail"]), (429, "locked"))
+            self.assertNotIn("set-cookie", r.headers)
+
+    def test_wrong_current_password_in_a_password_change_counts_and_locks(self):
+        _user, password = self.make_student()
+        b = self.browser()
+        r = self.login(b, "ivanov.p", password)
+        body = {"current_password": "not-my-password", "new_password": "brand-new-secret"}
+        for _ in range(10):
+            self.assertEqual(b.post("/api/auth/password", headers=self.csrf(r), json=body).status_code, 403)
+        kinds = self.s.execute(select(AuthFailure.login, AuthFailure.kind)).all()
+        self.assertEqual([(login, k.value) for login, k in kinds], [("ivanov.p", "password")] * 10)
+        locked = b.post("/api/auth/password", headers=self.csrf(r),
+                        json={"current_password": password, "new_password": "brand-new-secret"})
+        self.assertEqual((locked.status_code, locked.json()["detail"]), (429, "locked"))
+        self.assertEqual(self.login(self.browser(), "ivanov.p", password).status_code, 429)
+        self.assertEqual(b.get("/api/auth/me").status_code, 200)  # the session itself is not revoked
+        users.unlock(self.s, self.cli, "ivanov.p", self.now)
+        self.s.commit()
+        self.assertEqual(b.post("/api/auth/password", headers=self.csrf(r),
+                                json={"current_password": password, "new_password": "brand-new-secret"}).status_code, 200)
+
+    def test_wrong_totp_in_an_admin_password_change_counts_and_locks(self):
+        _admin, password, secret = self.make_admin()
+        b = self.browser()
+        r = self.admin_login(b, password, secret)
+        body = {"current_password": password, "new_password": "another-long-passphrase", "totp_code": "000000"}
+        for _ in range(5):
+            self.assertEqual(b.post("/api/auth/password", headers=self.csrf(r), json=body).status_code, 403)
+        kinds = self.s.execute(select(AuthFailure.kind)).scalars().all()
+        self.assertEqual([k.value for k in kinds], ["totp"] * 5)
+        self.tick(seconds=30)
+        locked = b.post("/api/auth/password", headers=self.csrf(r), json={**body, "totp_code": self.code(secret)})
+        self.assertEqual(locked.status_code, 429)
+        self.assertEqual(self.login(self.browser(), "boss", password).status_code, 429)
 
     def test_client_ip_comes_from_forwarded_for_only_behind_a_local_proxy(self):
         self.make_student()
