@@ -14,7 +14,7 @@ Key ideas (see docs/PROBLEM_FORMAT.md and docs/DATA_MODEL.md):
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -27,6 +27,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Interval,
     MetaData,
     Numeric,
     String,
@@ -69,9 +70,11 @@ class AuthFailureKind(str, enum.Enum):
 
 
 class VersionStatus(str, enum.Enum):
-    draft = "draft"
-    published = "published"
-    archived = "archived"
+    """Every version is immutable from its import on; the status only says whether it may be used (R30)."""
+
+    pending_check = "pending_check"  # imported, the check by a worker (session 4a.4) has not finished
+    ready = "ready"  # may be pinned in contests
+    failed = "failed"  # the check found a problem (check_report); never pinned
 
 
 class ProblemType(str, enum.Enum):
@@ -108,9 +111,26 @@ class ProgramRole(str, enum.Enum):
     solution = "solution"
 
 
-class ContestMode(str, enum.Enum):
-    practice = "practice"  # open-ended, no timer
-    timed = "timed"  # start/end window and/or individual timer
+class TimingMode(str, enum.Enum):
+    fixed = "fixed"  # one window [starts_at, ends_at] for everybody
+    personal = "personal"  # each participant presses "start" inside the window and gets personal_duration
+
+
+class LeaderboardMode(str, enum.Enum):
+    hidden = "hidden"
+    visible = "visible"
+    after_end = "after_end"  # after ends_at
+
+
+class ContestState(str, enum.Enum):
+    draft = "draft"  # admins only
+    published = "published"
+    archived = "archived"
+
+
+class JoinPolicy(str, enum.Enum):
+    open = "open"  # any student joins with a button
+    code = "code"  # with invite_code (or the link /join/<code>)
 
 
 class ScoringMode(str, enum.Enum):
@@ -291,6 +311,7 @@ class Problem(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     created_at: Mapped[datetime] = utcnow_column()
 
     versions: Mapped[list[ProblemVersion]] = relationship(back_populates="problem", order_by="ProblemVersion.version")
@@ -303,19 +324,24 @@ class ProblemVersion(Base):
     problem_id: Mapped[int] = mapped_column(ForeignKey("problems.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[VersionStatus] = mapped_column(
-        pg_enum(VersionStatus, "version_status"), nullable=False, default=VersionStatus.draft
+        pg_enum(VersionStatus, "version_status"), nullable=False, default=VersionStatus.pending_check
     )
     type: Mapped[ProblemType] = mapped_column(pg_enum(ProblemType, "problem_type"), nullable=False)
     titles: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)  # {"ru": "..."}
     statements: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)  # {"ru": "markdown"}
     # normalized problem.yaml (limits, io, checker, feedback, questions, answers, ...)
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    package_sha256: Mapped[Optional[str]] = mapped_column(ForeignKey("blobs.sha256"))
-    # digest of the worker manifest (protocol/manifest.py); stored once the version is published, because
-    # a published version never changes. Null for drafts: the manifest is rebuilt on demand.
+    package_sha256: Mapped[Optional[str]] = mapped_column(ForeignKey("blobs.sha256"))  # the uploaded zip, if any
+    # digest of the worker manifest (protocol/manifest.py), the worker's cache key; a version never changes,
+    # so it is stored once
     manifest_sha256: Mapped[Optional[str]] = mapped_column(String(64))
-    created_at: Mapped[datetime] = utcnow_column()
-    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # identity of the content (R29): sha256 over the sorted "path + sha256" of every package file, junk excluded.
+    # Null for versions made by dev_seed before session 4a.2 (no file list).
+    content_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    files: Mapped[Optional[dict[str, str]]] = mapped_column(JSONB)  # {path: sha256} of every package file
+    imported_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))  # null: console or dev_seed
+    check_report: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB)  # the worker check (session 4a.4)
+    created_at: Mapped[datetime] = utcnow_column()  # = imported at
 
     problem: Mapped[Problem] = relationship(back_populates="versions")
     groups: Mapped[list[TestGroup]] = relationship(
@@ -323,7 +349,10 @@ class ProblemVersion(Base):
     )
     programs: Mapped[list[Program]] = relationship(back_populates="version", cascade="all, delete-orphan")
 
-    __table_args__ = (UniqueConstraint("problem_id", "version", name="uq_problem_versions_problem_version"),)
+    __table_args__ = (
+        UniqueConstraint("problem_id", "version", name="uq_problem_versions_problem_version"),
+        UniqueConstraint("problem_id", "content_sha256", name="uq_problem_versions_problem_content"),
+    )
 
 
 class TestGroup(Base):
@@ -386,24 +415,38 @@ class Program(Base):
 
 # --------------------------------------------------------------------------- contests
 class Contest(Base):
+    """A contest (R19-R21). A practice archive is a contest without ends_at. `state` and `invite_code` are managed
+    by commands, not by contest.yaml (docs/CONTESTS.md)."""
+
     __tablename__ = "contests"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description_md: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    mode: Mapped[ContestMode] = mapped_column(pg_enum(ContestMode, "contest_mode"), nullable=False)
+    state: Mapped[ContestState] = mapped_column(pg_enum(ContestState, "contest_state"), nullable=False,
+                                                default=ContestState.draft)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # null: no end (practice)
+    timing_mode: Mapped[TimingMode] = mapped_column(pg_enum(TimingMode, "timing_mode"), nullable=False,
+                                                    default=TimingMode.fixed)
+    personal_duration: Mapped[Optional[timedelta]] = mapped_column(Interval)  # only with timing_mode = personal
+    freeze_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # leaderboard freeze; not personal
     scoring_mode: Mapped[ScoringMode] = mapped_column(
         pg_enum(ScoringMode, "scoring_mode"), nullable=False, default=ScoringMode.points
     )
-    starts_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    duration_minutes: Mapped[Optional[int]] = mapped_column(Integer)  # individual timer from first entry
-    leaderboard_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    freeze_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # leaderboard freeze
     icpc_penalty_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
-    join_code: Mapped[Optional[str]] = mapped_column(String(32))  # students join with it; null = open to any account
-    plagiarism_check: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # reserved for later
+    leaderboard: Mapped[LeaderboardMode] = mapped_column(pg_enum(LeaderboardMode, "leaderboard_mode"), nullable=False,
+                                                         default=LeaderboardMode.hidden)
+    join_policy: Mapped[JoinPolicy] = mapped_column(pg_enum(JoinPolicy, "join_policy"), nullable=False,
+                                                    default=JoinPolicy.code)
+    invite_code: Mapped[Optional[str]] = mapped_column(String(32), unique=True)
+    allow_upsolving: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    languages: Mapped[Optional[list[str]]] = mapped_column(JSONB)  # null: every enabled language
+    submit_cooldown_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    max_submissions_per_problem: Mapped[Optional[int]] = mapped_column(Integer)
+    tests_after_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # show all tests after end
+    plagiarism_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # reserved for a hook
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = utcnow_column()
 
@@ -411,22 +454,48 @@ class Contest(Base):
         back_populates="contest", order_by="ContestProblem.position", cascade="all, delete-orphan"
     )
 
+    __table_args__ = (
+        CheckConstraint("(timing_mode = 'personal') = (personal_duration IS NOT NULL)", name="personal_duration"),
+        CheckConstraint("personal_duration IS NULL OR personal_duration > interval '0'",
+                        name="personal_duration_positive"),
+        CheckConstraint("timing_mode <> 'personal' OR freeze_at IS NULL", name="no_freeze_with_personal"),
+        CheckConstraint("ends_at IS NULL OR ends_at > starts_at", name="window"),
+        CheckConstraint("join_policy <> 'code' OR invite_code IS NOT NULL", name="invite_code"),
+        CheckConstraint("submit_cooldown_sec >= 0 AND icpc_penalty_minutes >= 0", name="non_negative"),
+        CheckConstraint("max_submissions_per_problem IS NULL OR max_submissions_per_problem > 0",
+                        name="max_submissions"),
+    )
+
 
 class ContestProblem(Base):
-    """A problem inside a contest, pinned to a concrete version."""
+    """A problem inside a contest, pinned to a concrete version (R22).
+
+    It is identified by the problem; the label is an attribute that may change. A problem removed from
+    contest.yaml while it has submissions stays as a hidden row (students do not see it, the leaderboard
+    ignores it); uniqueness of the problem and of the label holds among the rows that are not hidden.
+    """
 
     __tablename__ = "contest_problems"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     contest_id: Mapped[int] = mapped_column(ForeignKey("contests.id", ondelete="CASCADE"), nullable=False)
+    problem_id: Mapped[int] = mapped_column(ForeignKey("problems.id"), nullable=False)
     problem_version_id: Mapped[int] = mapped_column(ForeignKey("problem_versions.id"), nullable=False)
     label: Mapped[str] = mapped_column(String(8), nullable=False)  # A, B, C ...
     position: Mapped[int] = mapped_column(Integer, nullable=False)
+    points: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))  # overrides the problem total; groups scale
+    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     contest: Mapped[Contest] = relationship(back_populates="problems")
     problem_version: Mapped[ProblemVersion] = relationship()
 
-    __table_args__ = (UniqueConstraint("contest_id", "label", name="uq_contest_problems_contest_label"),)
+    __table_args__ = (
+        Index("uq_contest_problems_contest_label", "contest_id", "label", unique=True,
+              postgresql_where=text("NOT hidden")),
+        Index("uq_contest_problems_contest_problem", "contest_id", "problem_id", unique=True,
+              postgresql_where=text("NOT hidden")),
+        CheckConstraint("points IS NULL OR points > 0", name="points_positive"),
+    )
 
 
 class Participation(Base):
@@ -435,7 +504,8 @@ class Participation(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     contest_id: Mapped[int] = mapped_column(ForeignKey("contests.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    started_at: Mapped[datetime] = utcnow_column()  # start of the individual timer
+    joined_at: Mapped[datetime] = utcnow_column()
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # personal timing: "start"
 
     __table_args__ = (UniqueConstraint("contest_id", "user_id", name="uq_participations_contest_user"),)
 
@@ -459,7 +529,7 @@ class Submission(Base):
 
     __table_args__ = (
         Index("ix_submissions_user_created", "user_id", "created_at"),
-        Index("ix_submissions_contest_problem", "contest_problem_id"),
+        Index("ix_submissions_contest_problem_user_created", "contest_problem_id", "user_id", "created_at"),
     )
 
 

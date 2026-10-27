@@ -52,7 +52,7 @@ class DevSeedTests(PgCase):
         self.tmp = Path(tmp.name)
         self.blobs = BlobStore(self.tmp / "blobs")
         self.admin = self.s.get(User, self.seed["admin"].id)
-        for key, name in dev_seed.LANGUAGES:
+        for key, name in dev_seed.SYSTEM_LANGUAGES:
             dev_seed._get_or_create(self.s, dev_seed.Language, {"key": key}, name=name, config={})
         self.s.commit()  # main() works in its own session: uncommitted rows here would block it forever
 

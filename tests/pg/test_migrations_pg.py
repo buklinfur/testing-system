@@ -128,3 +128,237 @@ class MigrationTests(PgCase):
             self.assertEqual(conn.execute(text("SELECT login FROM users ORDER BY id")).scalars().all(), logins)
             role_labels = conn.execute(text("SELECT enum_range(NULL::role)::text")).scalar_one()
             self.assertEqual(role_labels, "{teacher,student}")
+
+    # ---------------------------------------------------------------- 6bc3b8bd1c68: problems and contests (4a.2)
+    LEGACY = """
+        INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
+          (1, 'dev-teacher', '!', 'Dev Teacher', 'admin', true), (2, 'pupil', '!', 'P', 'student', true);
+        INSERT INTO problems (id, slug, owner_id) VALUES (1, 'sum', 1), (2, 'pair', 1);
+        INSERT INTO problem_versions (id, problem_id, version, status, type, titles, statements, config, published_at)
+        VALUES (1, 1, 1, 'published', 'batch', '{}', '{}', '{}', now()),
+               (2, 1, 2, 'draft', 'batch', '{}', '{}', '{}', NULL),
+               (3, 2, 1, 'archived', 'batch', '{}', '{}', '{}', NULL);
+        INSERT INTO contests (id, slug, title, mode, starts_at, ends_at, duration_minutes, leaderboard_enabled,
+                              freeze_at, join_code, plagiarism_check, created_by, created_at, description_md, scoring_mode, icpc_penalty_minutes) VALUES
+          (1, 'dev', 'practice', 'practice', NULL, NULL, NULL, false, NULL, NULL, false, 1, '2026-10-01 10:00+00', '', 'points', 20),
+          (2, 'olymp', 'personal', 'timed', '2026-11-10 09:00+00', '2026-11-10 18:00+00', 90, true, NULL, 'ABC123',
+           true, 1, '2026-10-01 10:00+00', '', 'points', 20),
+          (3, 'frozen', 'fixed', 'timed', '2026-11-11 09:00+00', '2026-11-11 12:00+00', NULL, true,
+           '2026-11-11 11:00+00', NULL, false, 1, '2026-10-01 10:00+00', '', 'points', 20),
+          (4, 'blank', 'blank code', 'practice', '2026-11-01 09:00+00', NULL, NULL, false, NULL, '  ', false, 1,
+           '2026-10-01 10:00+00', '', 'points', 20);
+        INSERT INTO contest_problems (id, contest_id, problem_version_id, label, position) VALUES
+          (1, 1, 1, 'P1', 0), (2, 1, 2, 'P2', 1), (3, 1, 3, 'P3', 2), (4, 2, 1, 'A', 0);
+        INSERT INTO participations (contest_id, user_id, started_at) VALUES
+          (1, 2, '2026-10-05 08:00+00'), (2, 2, '2026-11-10 09:30+00');
+        INSERT INTO languages (key, name, enabled, config) VALUES ('python', 'Python (dev)', true, '{"x": 1}');
+    """
+
+    def contests(self, conn, columns):
+        return {r[0]: tuple(r[1:]) for r in conn.execute(text(f"SELECT slug, {columns} FROM contests ORDER BY id"))}
+
+    def test_problems_contests_migration_maps_every_case_up_and_down(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "c13b55a3e4d5")
+            for statement in self.LEGACY.split(";"):
+                if statement.strip():
+                    conn.execute(text(statement))
+            self.alembic(conn, "upgrade", "6bc3b8bd1c68")
+
+            # version statuses: published -> ready, draft -> pending_check, archived -> ready
+            rows = conn.execute(text("SELECT id, status::text FROM problem_versions ORDER BY id")).all()
+            self.assertEqual([tuple(r) for r in rows], [(1, "ready"), (2, "pending_check"), (3, "ready")])
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM problems WHERE archived")).scalar_one(), 0)
+            got = self.contests(conn, "state::text, timing_mode::text, extract(epoch FROM personal_duration)::int, "
+                                      "leaderboard::text, join_policy::text, invite_code, plagiarism_enabled, "
+                                      "to_char(starts_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), "
+                                      "freeze_at IS NOT NULL, allow_upsolving, submit_cooldown_sec")
+            self.assertEqual(got, {
+                # no starts_at -> created_at; practice -> fixed; leaderboard off -> hidden; no code -> open
+                "dev": ("published", "fixed", None, "hidden", "open", None, False, "2026-10-01 10:00", False, True, 15),
+                # duration -> personal; leaderboard on -> visible; code -> code + invite_code; plagiarism kept
+                "olymp": ("published", "personal", 5400, "visible", "code", "ABC123", True, "2026-11-10 09:00", False,
+                          True, 15),
+                # a freeze without a personal timer stays
+                "frozen": ("published", "fixed", None, "visible", "open", None, False, "2026-11-11 09:00", True, True, 15),
+                # a blank join code means open
+                "blank": ("published", "fixed", None, "hidden", "open", None, False, "2026-11-01 09:00", False, True, 15),
+            })
+            # contest problems: problem_id from the version; the older version of `sum` in `dev` becomes hidden
+            rows = conn.execute(text("SELECT id, problem_id, label, hidden FROM contest_problems ORDER BY id")).all()
+            self.assertEqual([tuple(r) for r in rows], [(1, 1, "P1", True), (2, 1, "P2", False), (3, 2, "P3", False),
+                                                        (4, 1, "A", False)])
+            # participations: joined_at = old started_at; started_at kept only in the personal contest
+            rows = conn.execute(text("""SELECT c.slug, to_char(joined_at AT TIME ZONE 'UTC', 'MM-DD HH24:MI'),
+                                               to_char(started_at AT TIME ZONE 'UTC', 'MM-DD HH24:MI')
+                                        FROM participations p JOIN contests c ON c.id = p.contest_id ORDER BY c.id""")).all()
+            self.assertEqual([tuple(r) for r in rows], [("dev", "10-05 08:00", None), ("olymp", "11-10 09:30", "11-10 09:30")])
+            # languages: the existing row is kept as it was, the missing ones are added
+            rows = conn.execute(text("SELECT key, name FROM languages ORDER BY key")).all()
+            self.assertEqual([tuple(r) for r in rows], [("c", "C"), ("cpp", "C++"), ("python", "Python (dev)")])
+            self.assertEqual(conn.execute(text("SELECT login, role::text FROM users WHERE id = 1")).one()[:],
+                             ("dev-teacher", "admin"))
+            # the rules hold for new rows
+            for bad in ("UPDATE contests SET freeze_at = starts_at WHERE slug = 'olymp'",
+                        "UPDATE contests SET personal_duration = interval '0' WHERE slug = 'olymp'",
+                        "UPDATE contests SET timing_mode = 'personal' WHERE slug = 'dev'",
+                        "UPDATE contests SET join_policy = 'code' WHERE slug = 'dev'",
+                        "UPDATE contest_problems SET hidden = false WHERE id = 1"):
+                with self.subTest(bad=bad), self.assertRaises(Exception):
+                    with conn.begin_nested():
+                        conn.execute(text(bad))
+
+            # cases only the new schema can hold, for the way down
+            conn.execute(text("UPDATE problem_versions SET status = 'failed' WHERE id = 3"))
+            conn.execute(text("""INSERT INTO contests (id, slug, title, description_md, state, starts_at, timing_mode,
+                                   personal_duration, scoring_mode, icpc_penalty_minutes, leaderboard, join_policy,
+                                   allow_upsolving, submit_cooldown_sec, tests_after_end, plagiarism_enabled, created_by)
+                                 VALUES (5, 'short', 's', '', 'draft', now(), 'personal', interval '90 seconds', 'points', 20,
+                                   'after_end', 'open', true, 15, false, false, 1)"""))
+            self.alembic(conn, "downgrade", "c13b55a3e4d5")
+
+            rows = conn.execute(text("""SELECT id, status::text, published_at IS NOT NULL FROM problem_versions
+                                        ORDER BY id""")).all()
+            # ready -> published (published_at = created_at), pending_check -> draft, failed -> archived
+            self.assertEqual([tuple(r) for r in rows], [(1, "published", True), (2, "draft", False), (3, "archived", False)])
+            got = self.contests(conn, "mode::text, duration_minutes, leaderboard_enabled, join_code, plagiarism_check, "
+                                      "to_char(starts_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')")
+            self.assertEqual(got, {
+                "dev": ("practice", None, False, None, False, "2026-10-01 10:00"),  # starts_at stays filled
+                "olymp": ("timed", 90, True, "ABC123", True, "2026-11-10 09:00"),
+                "frozen": ("timed", None, True, None, False, "2026-11-11 09:00"),  # fixed with an end -> timed
+                "blank": ("practice", None, False, None, False, "2026-11-01 09:00"),
+                "short": ("timed", 2, True, None, False, got["short"][5]),  # 90 s -> 2 minutes; after_end -> true
+            })
+            rows = conn.execute(text("SELECT c.slug, p.started_at IS NOT NULL FROM participations p "
+                                     "JOIN contests c ON c.id = p.contest_id ORDER BY c.id")).all()
+            self.assertEqual([tuple(r) for r in rows], [("dev", True), ("olymp", True)])  # started_at = joined_at
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM contest_problems")).scalar_one(), 4)
+            self.alembic(conn, "upgrade", "head")  # and up again
+
+    def test_problems_contests_migration_refuses_contradictions(self):
+        """6bc3b8bd1c68 stops before changing anything when contests contradict the new rules."""
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "c13b55a3e4d5")
+            conn.execute(text("INSERT INTO users (id, login, password_hash, display_name, role, is_active) "
+                              "VALUES (1, 'admin', '!', 'A', 'admin', true)"))
+            conn.execute(text("""
+                INSERT INTO contests (slug, title, mode, starts_at, ends_at, duration_minutes, leaderboard_enabled,
+                                      freeze_at, join_code, plagiarism_check, created_by, created_at, description_md, scoring_mode, icpc_penalty_minutes) VALUES
+                  ('fine', 'ok', 'timed', '2026-11-10 09:00+00', '2026-11-10 12:00+00', NULL, false, NULL, 'AAA', false, 1, now(), '', 'points', 20),
+                  ('frozen-personal', 'x', 'timed', '2026-11-10 09:00+00', '2026-11-10 12:00+00', 60, true,
+                   '2026-11-10 11:00+00', NULL, false, 1, now(), '', 'points', 20),
+                  ('zero', 'x', 'timed', '2026-11-10 09:00+00', NULL, 0, false, NULL, NULL, false, 1, now(), '', 'points', 20),
+                  ('backwards', 'x', 'timed', '2026-11-10 09:00+00', '2026-11-10 08:00+00', NULL, false, NULL, NULL,
+                   false, 1, now(), '', 'points', 20),
+                  ('no-start', 'x', 'timed', NULL, '2020-01-01 00:00+00', NULL, false, NULL, NULL, false, 1,
+                   '2026-10-01 00:00+00', '', 'points', 20),
+                  ('twin-a', 'x', 'practice', NULL, NULL, NULL, false, NULL, 'SAME', false, 1, now(), '', 'points', 20),
+                  ('twin-b', 'x', 'practice', NULL, NULL, NULL, false, NULL, ' SAME ', false, 1, now(), '', 'points', 20)"""))
+            before = conn.execute(text("SELECT * FROM contests ORDER BY id")).all()
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "upgrade", "6bc3b8bd1c68")
+        message = str(caught.exception)
+        self.assertIn("6 contest(s) contradict", message)
+        for slug, why in (("frozen-personal", "freeze with a personal timer"), ("zero", "not positive"),
+                          ("backwards", "not after the start"), ("no-start", "not after the start"),
+                          ("twin-a", "used by another contest"), ("twin-b", "used by another contest")):
+            self.assertRegex(message, rf"'{slug}': [^;]*{why}")
+        self.assertNotIn("'fine'", message)
+        self.assertIn("nothing was changed", message)
+        with engine.connect() as conn:
+            self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "c13b55a3e4d5")
+            self.assertEqual(conn.execute(text("SELECT * FROM contests ORDER BY id")).all(), before)
+            self.assertEqual(conn.execute(text("SELECT enum_range(NULL::version_status)::text")).scalar_one(),
+                             "{draft,published,archived}")
+            self.assertEqual(conn.execute(text("SELECT to_regtype('timing_mode')")).scalar_one(), None)
+
+    def test_problems_contests_downgrade_refuses_a_label_used_twice(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "c13b55a3e4d5")
+            for statement in self.LEGACY.split(";"):
+                if statement.strip():
+                    conn.execute(text(statement))
+            self.alembic(conn, "upgrade", "6bc3b8bd1c68")
+            conn.execute(text("UPDATE contest_problems SET label = 'P2' WHERE id = 1"))  # hidden row, same label
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "downgrade", "c13b55a3e4d5")
+        self.assertIn("dev P2", str(caught.exception))
+        with engine.connect() as conn:
+            self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "6bc3b8bd1c68")
+
+    def test_dev_contest_and_dev_teacher_of_module_3_survive_and_dev_seed_reuses_them(self):
+        """What dev_seed left in the production database during module 3, migrated, then dev_seed again."""
+        import contextlib
+        import io
+        import json
+        import os
+        import tempfile
+        from unittest import mock
+
+        from sqlalchemy.orm import sessionmaker
+
+        from app import db, dev_seed
+
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "c13b55a3e4d5")
+            for statement in """
+                INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
+                  (1, 'dev-teacher', '!', 'Dev Teacher', 'admin', true),
+                  (2, 'dev-student-1', '!', 'Dev Student 1', 'student', true);
+                INSERT INTO languages (key, name, enabled, config) VALUES ('python', 'Python 3', true, '{}'),
+                  ('c', 'C', true, '{}'), ('cpp', 'C++', true, '{}');
+                INSERT INTO blobs (sha256, size_bytes) VALUES (repeat('c', 64), 1);
+                INSERT INTO problems (id, slug, owner_id) VALUES (1, 'dev-sum', 1);
+                INSERT INTO problem_versions (id, problem_id, version, status, type, titles, statements, config,
+                                              published_at, manifest_sha256)
+                  VALUES (1, 1, 1, 'published', 'batch', '{"ru": "old"}', '{}', '{}', now(), repeat('d', 64));
+                INSERT INTO contests (id, slug, title, description_md, mode, scoring_mode, icpc_penalty_minutes,
+                                      leaderboard_enabled, plagiarism_check, created_by, created_at)
+                  VALUES (1, 'dev', 'Dev contest', '', 'practice', 'points', 20, false, false, 1, '2026-10-20 10:00+00');
+                INSERT INTO contest_problems (id, contest_id, problem_version_id, label, position) VALUES (1, 1, 1, 'P1', 0);
+                INSERT INTO submissions (id, user_id, contest_problem_id, language_key, source_sha256, is_archive)
+                  VALUES (1, 2, 1, 'python', repeat('c', 64), false);
+                SELECT setval('users_id_seq', 2); SELECT setval('problems_id_seq', 1);
+                SELECT setval('problem_versions_id_seq', 1); SELECT setval('contests_id_seq', 1);
+                SELECT setval('contest_problems_id_seq', 1); SELECT setval('submissions_id_seq', 1)
+            """.split(";"):
+                if statement.strip():
+                    conn.execute(text(statement))
+            self.alembic(conn, "upgrade", "head")
+
+            row = conn.execute(text("""SELECT id, state::text, timing_mode::text, join_policy::text, ends_at,
+                                              to_char(starts_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')
+                                       FROM contests WHERE slug = 'dev'""")).one()
+            self.assertEqual(tuple(row), (1, "published", "fixed", "open", None, "2026-10-20 10:00"))
+            self.assertEqual(tuple(conn.execute(text("SELECT id, role::text FROM users WHERE login = 'dev-teacher'")).one()),
+                             (1, "admin"))
+            self.assertEqual(conn.execute(text("SELECT status::text FROM problem_versions WHERE id = 1")).scalar_one(), "ready")
+
+        with tempfile.TemporaryDirectory() as blobs:
+            env = {"JUDGE_DEV": "1", "JUDGE_BLOB_DIR": blobs}
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, env), mock.patch.object(db, "get_sessionmaker", lambda: sessionmaker(engine)), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(dev_seed.main(["--count", "1"]), 0)
+        made = json.loads(out.getvalue())[0]
+        with engine.connect() as conn:
+            # the same contest and the same admin are reused; no second dev contest or dev-teacher
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM contests")).scalar_one(), 1)
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM users WHERE role = 'admin'")).scalar_one(), 1)
+            # dev-sum got a new version (the old one has no tests); its old entry is hidden with its submission kept
+            rows = conn.execute(text("""SELECT cp.id, cp.label, cp.hidden, pv.version FROM contest_problems cp
+                                        JOIN problem_versions pv ON pv.id = cp.problem_version_id ORDER BY cp.id""")).all()
+            self.assertEqual([tuple(r) for r in rows], [(1, "P1", True, 1), (2, "P2", False, 2)])
+            self.assertEqual(made["contest_problem_id"], 2)
+            self.assertEqual(conn.execute(text("SELECT contest_problem_id FROM submissions WHERE id = 1")).scalar_one(), 1)
+            status = conn.execute(text("SELECT status::text FROM judgements WHERE id = :j"), {"j": made["judgement_id"]})
+            self.assertEqual(status.scalar_one(), "queued")
+            owner = conn.execute(text("SELECT p.owner_id FROM problems p WHERE slug = 'dev-sum'")).scalar_one()
+            self.assertEqual(owner, 1)

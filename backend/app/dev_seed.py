@@ -3,11 +3,12 @@
     JUDGE_DEV=1 python -m app.dev_seed [--package DIR] [--source FILE] [--language python|c|cpp]
                                        [--archive] [--entry main.py] [--user N] [--count 1]
 
-* `--package DIR`: a problem package (problems-examples/...). It becomes a published problem version;
+* `--package DIR`: a problem package (problems-examples/...). It becomes a ready problem version;
   importing the same content again reuses the latest version, changed content creates a new one
-  (published versions are never modified). Without `--package` a built-in batch problem "dev-sum"
+  (versions are never modified). Without `--package` a built-in batch problem "dev-sum"
   (a + b, two hidden tests) is used.
-* Each problem gets its own pinned entry in the practice contest "dev".
+* Each problem gets one entry in the practice contest "dev" (open, no end), pinned to the newest version seeded;
+  an entry pinned to an older version is hidden (its submissions stay).
 * `--user N`: the submissions belong to student `dev-student-N` (created on demand), default 1.
 * `--source` / `--archive` / `--entry`: the solution (a zip for `--archive`); without `--source` a correct
   Python a + b solution is sent. Code-less problems (choice, text_answer) are not supported here.
@@ -39,14 +40,15 @@ from sqlalchemy.orm import Session, selectinload
 from . import queue as q
 from .blobstore import BlobStore
 from .db import session_scope
+from protocol.languages import SYSTEM_LANGUAGES
+
 from .models import (
-    Blob, Contest, ContestMode, ContestProblem, Feedback, Language, Problem, ProblemType, ProblemVersion, Program,
-    ProgramRole, Role, Scoring, Submission, TestCase, TestGroup, User, VersionStatus, Visibility,
+    Blob, Contest, ContestProblem, ContestState, Feedback, JoinPolicy, Language, Problem, ProblemType, ProblemVersion,
+    Program, ProgramRole, Role, Scoring, Submission, TestCase, TestGroup, User, VersionStatus, Visibility,
 )
 from .settings import Settings
 
 CONTEST_SLUG = "dev"
-LANGUAGES = (("python", "Python 3"), ("c", "C"), ("cpp", "C++"))
 DEFAULT_SOURCE = b"a, b = map(int, input().split())\nprint(a + b)\n"
 
 
@@ -175,20 +177,20 @@ def _student(session: Session, n: int) -> User:
 
 
 def ensure_version(session: Session, blobs: BlobStore, pkg: PackageData, owner: User) -> ProblemVersion:
-    """The latest published version with this content, or a new published version."""
+    """The latest ready version with this content, or a new ready version."""
     problem = _get_or_create(session, Problem, {"slug": pkg.slug}, owner_id=owner.id)
     latest = session.execute(
         select(ProblemVersion).where(ProblemVersion.problem_id == problem.id,
-                                     ProblemVersion.status == VersionStatus.published)
+                                     ProblemVersion.status == VersionStatus.ready)
         .options(selectinload(ProblemVersion.groups).selectinload(TestGroup.tests), selectinload(ProblemVersion.programs))
         .order_by(ProblemVersion.version.desc()).limit(1)).scalar_one_or_none()
     if latest is not None and _version_fingerprint(latest) == _package_fingerprint(pkg):
         return latest
     number = (session.execute(select(func.max(ProblemVersion.version))
                               .where(ProblemVersion.problem_id == problem.id)).scalar() or 0) + 1
-    version = ProblemVersion(problem_id=problem.id, version=number, status=VersionStatus.published,
+    version = ProblemVersion(problem_id=problem.id, version=number, status=VersionStatus.ready,
                              type=ProblemType(pkg.type), titles=pkg.titles, statements=pkg.statements,
-                             config=pkg.config, published_at=datetime.now(timezone.utc))
+                             config=pkg.config)
     session.add(version)
     session.flush()
     for position, g in enumerate(pkg.groups):
@@ -209,17 +211,25 @@ def ensure_version(session: Session, blobs: BlobStore, pkg: PackageData, owner: 
 
 
 def ensure_contest_problem(session: Session, version: ProblemVersion, admin: User) -> ContestProblem:
-    """An entry of the "dev" contest pinned to this version (one per version)."""
-    contest = _get_or_create(session, Contest, {"slug": CONTEST_SLUG}, title="Dev contest", mode=ContestMode.practice,
-                             created_by=admin.id)
+    """The entry of this problem in the "dev" contest, pinned to this version. If the visible entry is pinned to
+    another version, it is hidden (its submissions keep their version) and a new one takes its place."""
+    contest = _get_or_create(session, Contest, {"slug": CONTEST_SLUG}, title="Dev contest",
+                             starts_at=datetime.now(timezone.utc), state=ContestState.published,
+                             join_policy=JoinPolicy.open, created_by=admin.id)
     cp = session.execute(select(ContestProblem).where(ContestProblem.contest_id == contest.id,
-                                                      ContestProblem.problem_version_id == version.id)).scalars().first()
-    if cp is None:
-        count = session.execute(select(func.count()).select_from(ContestProblem)
-                                .where(ContestProblem.contest_id == contest.id)).scalar_one()
-        cp = ContestProblem(contest_id=contest.id, problem_version_id=version.id, label=f"P{count + 1}", position=count)
-        session.add(cp)
+                                                      ContestProblem.problem_id == version.problem_id,
+                                                      ContestProblem.hidden.is_(False))).scalar_one_or_none()
+    if cp is not None and cp.problem_version_id == version.id:
+        return cp
+    if cp is not None:
+        cp.hidden = True
         session.flush()
+    count = session.execute(select(func.count()).select_from(ContestProblem)
+                            .where(ContestProblem.contest_id == contest.id)).scalar_one()
+    cp = ContestProblem(contest_id=contest.id, problem_id=version.problem_id, problem_version_id=version.id,
+                        label=f"P{count + 1}", position=count)
+    session.add(cp)
+    session.flush()
     return cp
 
 
@@ -243,7 +253,7 @@ def main(argv=None) -> int:
     source = args.source.read_bytes() if args.source else DEFAULT_SOURCE
     out = []
     with session_scope() as session:
-        for key, name in LANGUAGES:
+        for key, name in SYSTEM_LANGUAGES:
             _get_or_create(session, Language, {"key": key}, name=name, config={})
         # the login predates the admin role; kept so that existing dev databases reuse the same row
         admin = _get_or_create(session, User, {"login": "dev-teacher"}, password_hash="!",

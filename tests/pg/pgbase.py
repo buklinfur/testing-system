@@ -10,6 +10,7 @@ import os
 import sys
 import unittest
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -34,7 +35,7 @@ if URL and HAVE_SA:
 
     from app import queue as q
     from app.models import (
-        Base, Blob, Contest, ContestMode, ContestProblem, Language, Problem, ProblemType, ProblemVersion, Role,
+        Base, Blob, Contest, ContestProblem, ContestState, JoinPolicy, Language, Problem, ProblemType, ProblemVersion, Role,
         Submission, TestCase, TestGroup, User, VersionStatus,
     )
 
@@ -81,7 +82,7 @@ class PgCase(unittest.TestCase):
         problem = Problem(slug="sum", owner_id=admin.id)
         s.add(problem)
         s.flush()
-        version = ProblemVersion(problem_id=problem.id, version=1, status=VersionStatus.published, type=ProblemType.batch,
+        version = ProblemVersion(problem_id=problem.id, version=1, status=VersionStatus.ready, type=ProblemType.batch,
                                  titles={"ru": "S"}, statements={"ru": ""}, config={"limits": {"time_ms": 1000}})
         s.add(version)
         s.flush()
@@ -90,10 +91,12 @@ class PgCase(unittest.TestCase):
         s.flush()
         tests = [TestCase(group_id=group.id, position=i, name=f"t{i}", input_sha256="a" * 64, answer_sha256="b" * 64) for i in range(2)]
         s.add_all(tests)
-        contest = Contest(slug="c", title="C", mode=ContestMode.practice, created_by=admin.id)
+        contest = Contest(slug="c", title="C", starts_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          state=ContestState.published, join_policy=JoinPolicy.open, created_by=admin.id)
         s.add(contest)
         s.flush()
-        cp = ContestProblem(contest_id=contest.id, problem_version_id=version.id, label="A", position=0)
+        cp = ContestProblem(contest_id=contest.id, problem_id=problem.id, problem_version_id=version.id, label="A",
+                            position=0)
         s.add(cp)
         s.commit()
         return {"admin": admin, "version": version, "cp": cp, "tests": tests}

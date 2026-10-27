@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from ..models import (AuditLog, Contest, Judgement, LoginToken, Participation, Problem, Role, Submission, User,
+from ..models import (AuditLog, Contest, Judgement, LoginToken, Participation, Problem, ProblemVersion, Role, Submission, User,
                       UserSession)
 from ..timeutil import iso_utc
 from . import audit, login_tokens, ratelimit, sessions
@@ -190,6 +190,7 @@ def confirm_totp(db: Session, actor: audit.Actor, user: User, box: SecretBox, co
 # Everything that would keep a trace of a user. A user with any of them is only disabled, never deleted.
 TRACES = (
     ("problems owned", Problem.owner_id),
+    ("problem versions imported", ProblemVersion.imported_by),
     ("contests created", Contest.created_by),
     ("contest participations", Participation.user_id),
     ("submissions", Submission.user_id),
