@@ -53,7 +53,7 @@ judgectl submission show <id>
 judgectl queue  status | reap | judgements [--last N] | events [--last N]
                 | rejudge (--submission <id> | --contest-problem <id>) [--verdicts WA,TL]     # устарело
 judgectl worker list | token create <имя> [--caps cpu,gpu] | token revoke <имя>
-judgectl status
+judgectl status [--details]
 ```
 
 **Файлы для `judge`.** judgectl работает от `judge`, а он не читает ваш домашний каталог. Поэтому архив задачи и
@@ -186,7 +186,7 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 
 ### status — состояние установки
 
-`judgectl status` (и `--json`), код выхода 1, если база недоступна или не на последней миграции:
+`judgectl status [--details]` (и `--json`), код выхода 1, если база недоступна или не на последней миграции:
 
 * база и миграция (`alembic_version` против головы миграций в коде: «run the migrations», если отстаёт);
 * воркеры онлайн и занятые, длина очереди и уровень загрузки;
@@ -195,6 +195,10 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 * хранилище блобов: файлы, строки `blobs`; **файлы без строки** (остались от импорта, который не зафиксировался —
   ничего не удаляется, сборщик — модуль 6), **строки без файла** (файлы пропали из `JUDGE_BLOB_DIR` — тревога), строки,
   на которые ничего не ссылается.
+* `--details` — для каждой строки без файла: кто на неё ссылается (`задача@версия test группа/тест (input|answer)`,
+  `… program роль имя`, `… file путь`, `… uploaded zip`, `submission id (логин, контест метка)`) или «nothing refers to
+  it». Так видно, остатки ли это модуля 3 (например, тесты `dev-sum@1`, записанные `dev_seed` в другой каталог блобов)
+  или пропали файлы новых данных.
 
 ## Старое имя: `app.admin_cli`
 

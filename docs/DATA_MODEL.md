@@ -81,7 +81,7 @@ auth_failures, auth_lockouts — неудачные попытки входа и
   Reaper раз в час удаляет из `auth_failures`, `auth_lockouts`, `sessions`, `login_tokens` строки старше
   `JUDGE_AUTH_RETENTION_DAYS` (30 дней); `audit_log` не чистится никогда.
 
-## Изменения модуля 4а.2 (миграция `6bc3b8bd1c68`)
+## Изменения модуля 4а.2 (миграции `6bc3b8bd1c68` → `9e2f4a7c1b30` → `4d8a1c2e9f57`)
 
 Решения — [`MODULE_4A.md`](MODULE_4A.md) §5.6; перенос существующих данных проверяет `tests/pg/test_migrations_pg.py`
 (вверх и вниз по каждому случаю).

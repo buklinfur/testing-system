@@ -157,6 +157,42 @@ WHERE NOT EXISTS (SELECT 1 FROM test_cases t WHERE t.input_sha256 = b.sha256 OR 
 """
 
 
+# who refers to a blob: one row per reference, as (sha256, text)
+BLOB_REFERENCES = """
+SELECT t.input_sha256 AS sha, p.slug || '@' || v.version || ' test ' || g.name || '/' || t.name || ' (input)' AS what
+  FROM test_cases t JOIN test_groups g ON g.id = t.group_id JOIN problem_versions v ON v.id = g.version_id
+  JOIN problems p ON p.id = v.problem_id WHERE t.input_sha256 = ANY(:shas)
+UNION ALL
+SELECT t.answer_sha256, p.slug || '@' || v.version || ' test ' || g.name || '/' || t.name || ' (answer)'
+  FROM test_cases t JOIN test_groups g ON g.id = t.group_id JOIN problem_versions v ON v.id = g.version_id
+  JOIN problems p ON p.id = v.problem_id WHERE t.answer_sha256 = ANY(:shas)
+UNION ALL
+SELECT pr.source_sha256, p.slug || '@' || v.version || ' program ' || pr.role || ' ' || pr.name
+  FROM programs pr JOIN problem_versions v ON v.id = pr.version_id JOIN problems p ON p.id = v.problem_id
+  WHERE pr.source_sha256 = ANY(:shas)
+UNION ALL
+SELECT v.package_sha256, p.slug || '@' || v.version || ' uploaded zip'
+  FROM problem_versions v JOIN problems p ON p.id = v.problem_id WHERE v.package_sha256 = ANY(:shas)
+UNION ALL
+SELECT f.value, p.slug || '@' || v.version || ' file ' || f.key
+  FROM problem_versions v JOIN problems p ON p.id = v.problem_id, jsonb_each_text(coalesce(v.files, '{}'::jsonb)) f
+  WHERE f.value = ANY(:shas)
+UNION ALL
+SELECT s.source_sha256, 'submission ' || s.id || ' (' || u.login || ', ' || c.slug || ' ' || cp.label || ')'
+  FROM submissions s JOIN users u ON u.id = s.user_id JOIN contest_problems cp ON cp.id = s.contest_problem_id
+  JOIN contests c ON c.id = cp.contest_id WHERE s.source_sha256 = ANY(:shas)
+ORDER BY 1, 2
+"""
+
+
+def blob_references(db, shas) -> dict:
+    """sha256 -> what refers to it (empty list: nothing)."""
+    found = {sha: [] for sha in shas}
+    for sha, what in db.execute(text(BLOB_REFERENCES), {"shas": list(shas)}).all():
+        found[sha].append(what)
+    return found
+
+
 def blob_files(root: Path) -> set:
     """sha256 names of the files in the blob store (<root>/ab/<sha256>)."""
     if not root.is_dir():
@@ -209,6 +245,10 @@ def status(ctx: Context, args) -> int:
         files = blob_files(Path(ctx.settings.blob_dir))
         out["blobs"] = {"files": len(files), "rows": len(rows), "files_without_row": len(files - rows),
                         "rows_without_file": len(rows - files), "rows_unreferenced": out.pop("blob_rows_unreferenced")}
+        if getattr(args, "details", False) and rows - files:
+            with ctx.session() as db:
+                refs = blob_references(db, sorted(rows - files))
+            out["blobs"]["missing_files"] = [{"sha256": sha, "referenced_by": what} for sha, what in refs.items()]
     if ctx.json:
         emit_json(ctx, out)
         return 1 if bad else 0
@@ -230,4 +270,12 @@ def status(ctx: Context, args) -> int:
         ctx.print(f"  rows without a file     {b['rows_without_file']}" + ("  (!) files are missing from "
                                                                          f"{ctx.settings.blob_dir}" if b["rows_without_file"] else ""))
         ctx.print(f"  rows referenced by nothing {b['rows_unreferenced']}")
+        if b.get("missing_files"):
+            ctx.print("rows without a file (--details):")
+            for item in b["missing_files"]:
+                refs = item["referenced_by"] or ["nothing refers to it"]
+                more = f" (+{len(refs) - 5} more)" if len(refs) > 5 else ""
+                ctx.print(f"  {item['sha256'][:12]}  " + "; ".join(refs[:5]) + more)
+        elif b["rows_without_file"]:
+            ctx.print("  (judgectl status --details: what refers to them)")
     return 1 if bad else 0

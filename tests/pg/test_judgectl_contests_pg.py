@@ -217,6 +217,20 @@ class JudgectlContestTests(PgCase):
         b = data["blobs"]
         self.assertEqual((b["files_without_row"], b["rows_without_file"] - before["rows_without_file"],
                           b["rows_unreferenced"] - before["rows_unreferenced"]), (1, 2, 1))
+        sub = Submission(user_id=self.student(1).id, contest_problem_id=self.seed["cp"].id, language_key="python",
+                         source_sha256="c" * 64)  # the seed's blob c...c has no file either
+        self.s.add(sub)
+        self.s.commit()
+        details = {m["sha256"]: m["referenced_by"]
+                   for m in json.loads(self.run_cli("status", "--details", "--json")[1])["blobs"]["missing_files"]}
+        self.assertEqual(details[some], ["sum-of-two@1 file statement/ru.md"])
+        self.assertEqual(details["f" * 64], [])
+        self.assertIn("sum@1 test main/t0 (input)", details["a" * 64])
+        self.assertIn(f"submission {sub.id} (student1, c A)", details["c" * 64])
+        shown = self.run_cli("status", "--details")[1]
+        self.assertIn(f"{'f' * 12}  nothing refers to it", shown)
+        self.assertIn(f"{some[:12]}  sum-of-two@1 file statement/ru.md", shown)
+        self.assertIn("judgectl status --details", self.run_cli("status")[1])  # the hint without --details
         text_out = self.run_cli("status", origin=None)[1]
         self.assertIn("files without a row     1", text_out)
         self.assertIn("JUDGE_PUBLIC_ORIGIN is not set", text_out)

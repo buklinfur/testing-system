@@ -172,6 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = groups.add_parser("status", help="database, migrations, workers, queue, configuration, blob store",
                           parents=[common])
     p.set_defaults(func=ops.status)
+    p.add_argument("--details", action="store_true",
+                   help="for blob rows without a file: what refers to them (problem@version, submission, program)")
     return parser
 
 

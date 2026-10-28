@@ -169,6 +169,18 @@ j .venv/bin/python -m app.judgectl worker list   # воркеров пока н�
 `redteam` от `judge` важнее, чем от вашего пользователя: `judge` может читать пароль базы и токен (`/etc/judge`),
 все тесты (`/var/lib/judge/blobs`) и кэш с ответами (`/var/cache/judge`); программа в песочнице не должна видеть ничего из этого.
 
+### Задачи и контесты (модуль 4а.2)
+
+`judge` не читает ваш домашний каталог, поэтому пакеты и `contest.yaml` передаются через stdin (`-`):
+
+```bash
+tools/pack-problem.sh problems-examples/sum-of-two | j .venv/bin/python -m app.judgectl problem import -
+j .venv/bin/python -m app.judgectl contest apply - < contests-examples/practice.yaml
+j .venv/bin/python -m app.judgectl contest publish practice
+```
+
+Подробно: [`PROBLEM_IMPORT.md`](PROBLEM_IMPORT.md), [`CONTESTS.md`](CONTESTS.md), [`JUDGECTL.md`](JUDGECTL.md).
+
 ## 4. Запуск
 
 ```bash
@@ -201,6 +213,7 @@ journalctl -u judge-worker -u judge-api-internal -u judge-reaper --since -5min -
 | Логи | `journalctl -u judge-worker -u judge-api-internal -u judge-reaper -f` (группа `adm` читает без sudo) |
 | Метрики Prometheus | `curl http://127.0.0.1:8001/internal/metrics` (опционально защитить `JUDGE_METRICS_TOKEN`) |
 | JSON: загрузка, метрики, воркеры | `curl http://127.0.0.1:8001/internal/status` (одна транзакция: все числа из одного момента) |
+| Всё сразу | `j .venv/bin/python -m app.judgectl status --details` (база и миграция, воркеры, очередь, конфигурация, блобы без файлов и кто на них ссылается) |
 | Воркеры в консоли | `j .venv/bin/python -m app.judgectl worker list` (и `queue status`) |
 | Последние проверки | `j .venv/bin/python -m app.judgectl queue judgements --last 20` (вердикт, первый провал, вид TL, попытки, воркер или IE) |
 | История очереди | `j .venv/bin/python -m app.judgectl queue events --last 30` (регистрации, `released`, `requeued`, `gave_up`, с воркером; 14 дней) |
