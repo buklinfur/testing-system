@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.judgectl.csvimport import CsvImportError, Row, parse  # noqa: E402
+from app.auth.csvimport import CsvImportError, Row, parse  # noqa: E402
 
 CLASS = "Фамилия;Имя;Логин;Имя в рейтинге\r\nИванов;Пётр;;\r\nЩукина;Яна;yana.sh;Яна Щ. (7Б)\r\n\r\nПодъячев;Чеслав\r\n"
 

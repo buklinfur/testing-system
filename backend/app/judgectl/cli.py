@@ -16,7 +16,7 @@ from ..timeutil import TimezoneError
 from protocol.problem_package import PackageError
 from . import accounts, contests, ops, problems, submissions
 from .core import CliError, Context
-from .csvimport import CsvImportError
+from ..auth.csvimport import CsvImportError
 
 
 def build_parser() -> argparse.ArgumentParser:

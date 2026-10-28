@@ -19,7 +19,8 @@ from ..auth.passwords import MIN_LENGTH, PasswordPolicyError, check_policy
 from ..auth.totp import SecretBox, TotpConfigError
 from ..models import Role
 from ..settings import Settings
-from ..timeutil import TimezoneError, display, iso_utc, zone
+from ..jsonable import plain
+from ..timeutil import TimezoneError, display, zone
 
 PASSWORD_ATTEMPTS = 3
 
@@ -141,18 +142,7 @@ def spool(stream: BinaryIO, dest, limit: int, what: str) -> int:
 
 
 # ----------------------------------------------------------------------------- output
-def jsonable(value):
-    if isinstance(value, datetime):
-        return iso_utc(value)
-    if isinstance(value, Enum):
-        return value.value
-    if isinstance(value, Decimal):
-        return str(value)  # scores: exact, as stored (numeric(8, 2))
-    if isinstance(value, dict):
-        return {k: jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [jsonable(v) for v in value]
-    return value
+jsonable = plain  # one conversion for judgectl --json and the admin API (app/jsonable.py)
 
 
 def emit_json(ctx: Context, data) -> None:

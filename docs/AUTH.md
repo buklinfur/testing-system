@@ -184,7 +184,7 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
   если команда шла через `sudo -u judge`), `action`, `object_type`, `object_id`, `ip`, `details`. Пароли, токены и
   секреты туда не пишутся. Действия: `auth.login` (вход админа), `auth.change_password` (админ), `user.create`,
   `user.import`, `user.import_rollback`, `user.delete`, `user.reset_password`, `user.enable`, `user.disable`, `user.set_login`, `user.unlock`, `ip.unlock`,
-  `user.qr_token`, `user.enroll_2fa`, `user.reset_2fa`, `user.confirm_2fa`, `worker.token_create`,
+  `user.qr_tokens` (пачка токенов: список id учеников; токены не пишутся), `user.enroll_2fa`, `user.reset_2fa`, `user.confirm_2fa`, `worker.token_create`,
   `worker.token_revoke`, `submission.rejudge`, `contest_problem.rejudge`.
 * Reaper (`app.maintenance`) раз в час удаляет записи старше `JUDGE_AUTH_RETENTION_DAYS`: неудачи, закончившиеся
   блокировки, истёкшие и отозванные сессии, использованные/отменённые/истёкшие QR-токены. **`audit_log` не чистится.**

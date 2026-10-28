@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..api_errors import ApiError
 from ..auth import audit
 from ..auth_api import Current, _session, client_ip, get_db
+from ..jsonable import plain
 from ..models import Role
 
 DEFAULT_LIMIT, MAX_LIMIT = 50, 200
@@ -50,7 +51,7 @@ def paginate(db: Session, query, id_column, pg: Page, out: Callable) -> dict:
     more = len(rows) > pg.limit
     rows = rows[:pg.limit]
     items = [out(row) for row in rows]
-    return {"items": items, "next_cursor": _row_id(rows[-1], id_column) if more and rows else None}
+    return plain({"items": items, "next_cursor": _row_id(rows[-1], id_column) if more and rows else None})
 
 
 def _row_id(row, id_column):

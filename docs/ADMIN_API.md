@@ -69,3 +69,31 @@ Caddy. Код: [`backend/app/admin_api/`](../backend/app/admin_api).
 | Метод и путь | Ответ |
 |---|---|
 | `GET /api/admin/me` | `{state, csrf_token, expires_at, user}` — админ этой сессии; первый запрос админского интерфейса |
+
+### 5.1. Пользователи
+
+Всё идёт через `app.auth.users` — те же функции, что у `judgectl user …` ([`JUDGECTL.md`](JUDGECTL.md)). **Админы
+здесь только для чтения**: любое действие над админом — 403 `admin_in_console`. Пользователь в ответах:
+`{id, login, display_name, role, active, created_at, last_login_at, last_login_ip, failures, locked_until,
+two_factor (только у админов)}`; хешей и секретов нет.
+
+| Метод и путь | Тело / параметры | Ответ | Ошибки |
+|---|---|---|---|
+| `GET /users` | `q` (часть логина или имени, без учёта регистра; `%` и `_` — обычные буквы), `role=student\|admin`, `active`, `locked`, курсор | список пользователей | 422 |
+| `GET /users/{id}` | — | пользователь | 404 `user_not_found` |
+| `GET /users/{id}/failures` | `limit` (до 200) | `{login, counting, limit, locked_until, items: [{at, kind, ip}]}` | 404 |
+| `POST /users` | `{surname, first_name, login?, display_name?}` | 201 `{user, password}` — **пароль только здесь** | 409 `login_taken`, 422 `login_invalid` / `display_name_required` / `invalid_request` |
+| `POST /users/import` | тело — список класса (`text/csv`, ≤ 1 МБ, формат и кодировки — [`JUDGECTL.md`](JUDGECTL.md)), `?dry_run=true` | 201 `{import_id, users: [{surname, first_name, login, password, display_name}]}`; при `Accept: text/csv` — тот же CSV, что пишет judgectl (BOM, `;`, `attachment; filename="students-import-<id>.csv"`); `dry_run` — 200 `{dry_run, users}` без паролей, ничего не пишется | 413, 415, 422 `csv_invalid` + `problems` с номерами строк (в том числе занятые в базе логины), ничего не создано |
+| `GET /users/imports` | курсор | `{items: [{id, at, file, count, by_user_id, by_console, rolled_back}]}` | — |
+| `POST /users/imports/{id}/rollback` | `{confirm_import_id}` = id | `{import_id, deleted: [logins]}` | 404 `import_not_found`, 409 `already_rolled_back` / `users_logged_in` (+ `logins`) / `has_traces` (+ `traces`), 422 `confirmation_mismatch` |
+| `POST /users/{id}/reset-password` | — | `{user, password}` — новый пароль один раз; сессии и QR-токены отозваны, блокировка снята | 403, 404 |
+| `POST /users/{id}/disable` / `enable` | — | пользователь (отключение отзывает сессии и QR-токены) | 403, 404 |
+| `PUT /users/{id}/login` | `{login}` | пользователь | 403, 404, 409 `login_taken`, 422 `login_invalid` |
+| `POST /users/{id}/unlock` | — | `{login, was_locked}` | 403, 404 |
+| `POST /logins/{login}/unlock` | — | `{login, was_locked}` — любой логин, и несуществующий | 403 для логина админа |
+| `POST /ips/unlock` | `{ip}` | `{ip, was_locked}` | 422 `invalid_ip` |
+| `POST /users/{id}/delete` | `{confirm_login}` = логин | 204 | 403, 404, 409 `has_traces` + `traces` (`{"submissions": 1, …}`: тогда только отключить), 422 `confirmation_mismatch` |
+| `POST /users/qr-tokens` | `{user_ids: [...]}` (1–200, повторы убираются) | `{tokens: [{user_id, login, display_name, url, expires_at}]}`; `url` = `<JUDGE_PUBLIC_ORIGIN>/login/qr#<токен>`; новый токен отменяет прежний; **одна запись аудита `user.qr_tokens` на пачку** со списком id | 404 `user_not_found` + `problems`, 403 (админ в списке), 422 `qr_not_allowed` (отключённый ученик) — ни одного токена не выдано |
+
+Пароли и QR-токены есть только в ответе, который их создал (`no-store`); в `audit_log` и в логи они не попадают —
+это проверяет тест вместе с кодами TOTP.

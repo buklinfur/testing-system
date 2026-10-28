@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from ..auth_api import Current, session_out
+from . import users
 from .deps import admin_session
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(admin_session)])
@@ -18,3 +19,6 @@ UPLOADS: frozenset = frozenset({("POST", "/api/admin/problems"), ("POST", "/api/
 def me(cur: Current = Depends(admin_session)):
     """The admin behind this session (and its CSRF token): the first call of the admin web UI."""
     return session_out(cur.row, cur.user)
+
+
+router.include_router(users.router)

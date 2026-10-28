@@ -6,23 +6,19 @@ written to a new 0600 file by `user import`) and stored only as hashes.
 """
 from __future__ import annotations
 
-import csv
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import segno
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..auth import audit, ratelimit, totp, users
-from ..models import AuthLockout, Role, User
-from . import csvimport
+from ..auth import audit, csvimport, ratelimit, totp, users
+from ..models import Role, User
 from .core import CliError, Context, ask_new_password, confirm, emit_json, open_private_new, show
 
 CODE_ATTEMPTS = 3
-OUT_HEADER = ["фамилия", "имя", "логин", "пароль", "display_name"]
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -35,18 +31,8 @@ def _user(db: Session, login: str, role: Role) -> User:
     return user
 
 
-def _locks(db: Session, now: datetime) -> dict:
-    """login -> end of its active brute-force lockout."""
-    rows = db.execute(select(AuthLockout.login, func.max(AuthLockout.until))
-                      .where(AuthLockout.login.is_not(None), AuthLockout.cleared_at.is_(None), AuthLockout.until > now)
-                      .group_by(AuthLockout.login)).all()
-    return dict(rows)
-
-
-def two_factor_state(user: User) -> str:
-    if user.totp_enabled_at is not None:
-        return "confirmed"
-    return "pending" if user.totp_secret_enc else "none"
+_locks = users.active_locks
+two_factor_state = users.two_factor_state
 
 
 def _print_qr(ctx: Context, text: str) -> None:
@@ -128,15 +114,9 @@ def admin_list(ctx: Context, args) -> int:
     """Active admins (--all: disabled ones too); FAILS counts towards the next lockout (limit: admin one)."""
     with ctx.session() as db:
         now = ctx.clock()
-        locks = _locks(db, now)
-        query = select(User).where(User.role == Role.admin).order_by(User.login)
-        if not args.all:
-            query = query.where(User.is_active.is_(True))
-        rows = [{"login": u.login, "display_name": u.display_name, "active": u.is_active,
-                 "two_factor": two_factor_state(u), "last_login_at": u.last_login_at, "last_login_ip": u.last_login_ip,
-                 "failures": _fails(ctx, db, u.login, now), "locked_until": locks.get(u.login),
-                 "created_at": u.created_at}
-                for u in db.execute(query).scalars()]
+        locks = users.active_locks(db, now)
+        query = users.users_query(role=Role.admin, active=None if args.all else True).order_by(User.login)
+        rows = [users.describe(db, u, ctx.settings.auth, now, locks) for u in db.execute(query).scalars()]
     show(ctx, rows, [("login", "LOGIN"), ("display_name", "NAME"), ("active", "ACTIVE"), ("two_factor", "2FA"),
                      ("last_login_at", "LAST LOGIN"), ("last_login_ip", "FROM"), ("failures", "FAILS"),
                      ("locked_until", "LOCKED UNTIL")])
@@ -195,35 +175,11 @@ def user_import(ctx: Context, args) -> int:
         raise CliError(f"cannot read {args.file}: {exc.strerror}") from exc
     parsed = csvimport.parse(data)
     handle = None if args.out == "-" else open_private_new(args.out)  # before any change: refuse early
-    results = []
     try:
         with ctx.session() as db:
-            now = ctx.clock()
-            created, problems = {}, []
-            # explicit logins first, so a generated one never takes a login asked for further down
-            for i, row in sorted(enumerate(parsed.rows), key=lambda pair: pair[1].login is None):
-                try:
-                    created[i] = users.create_student(db, ctx.actor, now, surname=row.surname,
-                                                      first_name=row.first_name, login=row.login,
-                                                      display_name=row.display_name)
-                except users.UserError as exc:
-                    problems.append((row.line, f"line {row.line}: {exc}"))
-            if problems:
-                raise csvimport.CsvImportError([text for _, text in sorted(problems)])
-            for i, row in enumerate(parsed.rows):
-                user, password = created[i]
-                results.append({"surname": row.surname, "first_name": row.first_name, "login": user.login,
-                                "password": password, "display_name": user.display_name})
-            entry = audit.record(db, ctx.actor, "user.import", now, object_type="file", object_id=Path(args.file).name,
-                         details={"count": len(results), "encoding": parsed.encoding, "logins": [r["login"] for r in results],
-                                  "user_ids": [created[i][0].id for i in range(len(parsed.rows))]})
-            db.flush()
-            import_id = entry.id
+            import_id, results = users.import_students(db, ctx.actor, parsed, ctx.clock(), Path(args.file).name)
             if handle is not None:
-                writer = csv.writer(handle, delimiter=";")
-                writer.writerow(OUT_HEADER)
-                for r in results:
-                    writer.writerow([r["surname"], r["first_name"], r["login"], r["password"], r["display_name"]])
+                handle.write(csvimport.result_csv(results))
                 handle.flush()
                 os.fsync(handle.fileno())
                 handle.close()
@@ -237,9 +193,7 @@ def user_import(ctx: Context, args) -> int:
         if ctx.json:
             emit_json(ctx, results)
         else:
-            ctx.print(";".join(OUT_HEADER))
-            for r in results:
-                ctx.print(";".join([r["surname"], r["first_name"], r["login"], r["password"], r["display_name"]]))
+            ctx.out.write(csvimport.result_csv(results).replace("\r\n", "\n"))
     elif ctx.json:
         emit_json(ctx, {"import_id": import_id, "created": len(results), "out": args.out,
                         "logins": [r["login"] for r in results]})
@@ -252,14 +206,9 @@ def user_import(ctx: Context, args) -> int:
 def user_list(ctx: Context, args) -> int:
     with ctx.session() as db:
         now = ctx.clock()
-        locks = _locks(db, now)
-        query = select(User).where(User.role == Role.student).order_by(User.login)
-        if not args.all:
-            query = query.where(User.is_active.is_(True))
-        rows = [{"login": u.login, "display_name": u.display_name, "active": u.is_active,
-                 "last_login_at": u.last_login_at, "failures": _fails(ctx, db, u.login, now),
-                 "locked_until": locks.get(u.login), "created_at": u.created_at}
-                for u in db.execute(query).scalars()]
+        locks = users.active_locks(db, now)
+        query = users.users_query(role=Role.student, active=None if args.all else True).order_by(User.login)
+        rows = [users.describe(db, u, ctx.settings.auth, now, locks) for u in db.execute(query).scalars()]
     show(ctx, rows, [("login", "LOGIN"), ("display_name", "NAME"), ("active", "ACTIVE"),
                      ("last_login_at", "LAST LOGIN"), ("failures", "FAILS"), ("locked_until", "LOCKED UNTIL")])
     return 0
@@ -290,9 +239,7 @@ def user_unlock(ctx: Context, args) -> int:
     with ctx.session() as db:
         now = ctx.clock()
         if args.ip is not None:
-            was = ratelimit.unlock(db, now, ctx.actor.label, ip=args.ip)
-            audit.record(db, ctx.actor, "ip.unlock", now, object_type="ip", object_id=args.ip,
-                         details={"was_locked": was})
+            was = users.unlock_ip(db, ctx.actor, args.ip, now)
             subject = f"IP {args.ip}"
         else:
             user = users.find_by_login(db, args.login)
@@ -319,7 +266,7 @@ def user_qr_token(ctx: Context, args) -> int:
 
     with ctx.session() as db:
         user = _user(db, args.login, Role.student)
-        token, expires = users.issue_login_token(db, ctx.actor, user, ctx.settings.auth, ctx.clock())
+        (_u, token, expires), = users.issue_login_tokens(db, ctx.actor, [user], ctx.settings.auth, ctx.clock())
     try:
         url = f"{canonical_origin(ctx.settings.public_origin)}/login/qr#{token}"
     except PublicConfigError:

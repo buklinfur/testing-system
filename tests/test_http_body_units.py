@@ -158,11 +158,19 @@ class BodyLimitTests(unittest.TestCase):
                 body = Body(40)
                 status, _h, _out = call(self.app, method, path, body)
                 self.assertEqual((status, body.taken), (413, JSON_LIMIT // CHUNK + 1))
-        for method, path in sorted(UPLOADS):  # the exact pairs: the middleware leaves the body to the handler
+        seen = []
+
+        async def handler(scope, receive, send):  # stands for the upload handler: what did it get?
+            seen.append(body.taken)
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        layer = BodyLimitMiddleware(handler, exempt=UPLOADS)
+        for method, path in sorted(UPLOADS):  # the exact pairs: the body reaches the handler untouched
             with self.subTest(exact=path):
                 body = Body(40)
-                status, _h, _out = call(self.app, method, path, body)
-                self.assertNotEqual((status, body.taken), (413, JSON_LIMIT // CHUNK + 1))
+                status, _h, _out = call(layer, method, path, body)
+                self.assertEqual((status, seen[-1]), (200, 0))
 
 
 @unittest.skipUnless(HAVE_API, "needs fastapi and httpx")

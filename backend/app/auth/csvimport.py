@@ -1,4 +1,5 @@
-"""Parsing the class list for `judgectl user import` (R7). Pure: no database, no files.
+"""The class list of `judgectl user import` and POST /api/admin/users/import (R7): parsing, and the result file.
+Pure: no database, no files.
 
     фамилия;имя[;логин][;display_name]
 
@@ -112,3 +113,18 @@ def parse(data: bytes) -> Parsed:
     if problems:
         raise CsvImportError(problems)
     return Parsed(rows, encoding, delimiter)
+
+
+# ----------------------------------------------------------------------------- the result: logins and passwords
+OUT_HEADER = ["фамилия", "имя", "логин", "пароль", "display_name"]
+
+
+def result_csv(results: list) -> str:
+    """The result of an import as Excel on Windows opens it: ';', CRLF, a BOM (the caller adds it when writing
+    bytes: encoding utf-8-sig). `results`: dicts with surname, first_name, login, password, display_name."""
+    out = io.StringIO()
+    writer = csv.writer(out, delimiter=";", lineterminator="\r\n")
+    writer.writerow(OUT_HEADER)
+    for r in results:
+        writer.writerow([r["surname"], r["first_name"], r["login"], r["password"], r["display_name"]])
+    return out.getvalue()
