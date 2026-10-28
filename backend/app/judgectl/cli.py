@@ -9,8 +9,12 @@ from ..auth.audit import cli_actor
 from ..auth.logins import LoginError
 from ..auth.totp import TotpConfigError
 from ..auth.users import UserError
+from ..contests.service import ContestError
+from ..contests.spec import ContestSpecError
 from ..settings import Settings
-from . import accounts, ops
+from ..timeutil import TimezoneError
+from protocol.problem_package import PackageError
+from . import accounts, contests, ops, problems, submissions
 from .core import CliError, Context
 from .csvimport import CsvImportError
 
@@ -97,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--last", type=int, default=20)
     p = command(queue, "events", ops.queue_events, "newest queue events first", json=True)
     p.add_argument("--last", type=int, default=30)
-    p = command(queue, "rejudge", ops.queue_rejudge, "rejudge one submission or a whole contest problem", json=True)
+    p = command(queue, "rejudge", ops.queue_rejudge, "deprecated: judgectl submission rejudge", json=True)
     p.add_argument("--submission", type=int)
     p.add_argument("--contest-problem", type=int)
     p.add_argument("--verdicts", default="", help="with --contest-problem: only these current verdicts, e.g. WA,TL")
@@ -111,6 +115,63 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("--caps", default="cpu")
     command(token, "revoke", ops.worker_token_revoke, "revoke a worker token").add_argument("name")
+
+    problem = groups.add_parser("problem", help="problems and their versions").add_subparsers(
+        dest="cmd", required=True, metavar="COMMAND")
+    p = command(problem, "import", problems.problem_import,
+                "import a package: a folder, a zip, or - for a zip on stdin (tools/pack-problem.sh <folder> | ...)",
+                json=True)
+    p.add_argument("source")
+    p.add_argument("--dry-run", action="store_true", help="every check, nothing written")
+    p = command(problem, "list", problems.problem_list, "problems with their latest version", json=True)
+    p.add_argument("--all", action="store_true", help="include archived problems")
+    command(problem, "versions", problems.problem_versions, "versions of a problem", json=True).add_argument("slug")
+    command(problem, "show", problems.problem_show, "one version: groups, programs (<slug> or <slug>@<version>)",
+            json=True).add_argument("ref")
+    command(problem, "archive", problems.problem_archive, "archive: no more imports or pins").add_argument("slug")
+    command(problem, "unarchive", problems.problem_unarchive, "undo archive").add_argument("slug")
+
+    contest = groups.add_parser("contest", help="contests").add_subparsers(dest="cmd", required=True, metavar="COMMAND")
+    p = command(contest, "apply", contests.contest_apply, "make a contest what contest.yaml says (- for stdin)",
+                json=True)
+    p.add_argument("file")
+    p.add_argument("--dry-run", action="store_true", help="show the changes, write nothing")
+    p = command(contest, "list", contests.contest_list, "contests (not archived unless --all)", json=True)
+    p.add_argument("--all", action="store_true")
+    command(contest, "show", contests.contest_show, "settings, invite code, problems", json=True).add_argument("slug")
+    command(contest, "publish", contests.contest_publish, "make it visible to students").add_argument("slug")
+    command(contest, "archive", contests.contest_archive, "read-only for its participants").add_argument("slug")
+    p = command(contest, "pin", contests.contest_pin, "pin another (ready) version of a problem", json=True)
+    p.add_argument("contest")
+    p.add_argument("label")
+    p.add_argument("version", type=int)
+    choice = p.add_mutually_exclusive_group(required=True)
+    choice.add_argument("--rejudge", dest="rejudge", action="store_true", help="rejudge every submission of it")
+    choice.add_argument("--no-rejudge", dest="rejudge", action="store_false", help="keep the old results")
+    code = contest.add_parser("code", help="invite codes").add_subparsers(dest="code_cmd", required=True,
+                                                                         metavar="COMMAND")
+    command(code, "regenerate", contests.contest_code_regenerate, "a new invite code; the old one stops working",
+            json=True).add_argument("slug")
+    command(contest, "participants", contests.contest_participants, "who joined and started",
+            json=True).add_argument("slug")
+
+    submission = groups.add_parser("submission", help="submissions").add_subparsers(dest="cmd", required=True,
+                                                                                    metavar="COMMAND")
+    command(submission, "show", submissions.submission_show, "one submission with every judgement and test",
+            json=True).add_argument("id", type=int)
+    p = command(submission, "rejudge", submissions.submission_rejudge,
+                "rejudge: --id N | --contest <slug> --problem <label> | --contest-problem-id N | "
+                "--problem-version <slug>@<v>", json=True)
+    p.add_argument("--id", type=int)
+    p.add_argument("--contest")
+    p.add_argument("--problem", help="the label in the contest")
+    p.add_argument("--contest-problem-id", type=int)
+    p.add_argument("--problem-version", help="<slug>@<version>: every contest problem pinned to it")
+    p.add_argument("--verdicts", default="", help="only submissions whose current verdict is one of these, e.g. WA,TL")
+
+    p = groups.add_parser("status", help="database, migrations, workers, queue, configuration, blob store",
+                          parents=[common])
+    p.set_defaults(func=ops.status)
     return parser
 
 
@@ -126,7 +187,8 @@ def main(argv: Optional[list] = None, ctx: Optional[Context] = None) -> int:
     ctx.json = getattr(args, "json", False)
     try:
         return args.func(ctx, args)
-    except (CliError, UserError, LoginError, TotpConfigError, CsvImportError) as exc:
+    except (CliError, UserError, LoginError, TotpConfigError, CsvImportError, PackageError, ContestError,
+            ContestSpecError, TimezoneError) as exc:
         print(f"judgectl: {exc}", file=ctx.err)
         return 1
     except (KeyboardInterrupt, EOFError):

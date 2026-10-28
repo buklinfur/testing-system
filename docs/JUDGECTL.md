@@ -42,16 +42,30 @@ judgectl user   add (--surname <фамилия> --first-name <имя> | --login 
                 | list [--all] | reset-password <логин> | disable <логин> | enable <логин>
                 | unlock (<логин> | --ip <адрес>) | failures <логин> [--last N] | delete <логин> [--yes]
                 | set-login <логин> <новый-логин> | qr-token <логин> [--no-qr]
+judgectl problem import (<папка> | <файл.zip> | -) [--dry-run] | list [--all] | versions <slug>
+                | show <slug>[@<версия>] | archive <slug> | unarchive <slug>
+judgectl contest apply (<contest.yaml> | -) [--dry-run] | list [--all] | show <slug> | publish <slug>
+                | archive <slug> | pin <контест> <метка> <версия> (--rejudge | --no-rejudge)
+                | code regenerate <slug> | participants <slug>
+judgectl submission show <id>
+                | rejudge (--id <id> | --contest <slug> --problem <метка> | --contest-problem-id <id>
+                           | --problem-version <slug>@<версия>) [--verdicts WA,TL]
 judgectl queue  status | reap | judgements [--last N] | events [--last N]
-                | rejudge (--submission <id> | --contest-problem <id> [--verdicts WA,TL])
+                | rejudge (--submission <id> | --contest-problem <id>) [--verdicts WA,TL]     # устарело
 judgectl worker list | token create <имя> [--caps cpu,gpu] | token revoke <имя>
+judgectl status
+```
+
+**Файлы для `judge`.** judgectl работает от `judge`, а он не читает ваш домашний каталог. Поэтому архив задачи и
+`contest.yaml` удобнее отдавать через stdin (`-`): файл открывает ваша оболочка, `judge` читает уже открытый поток:
+
+```bash
+tools/pack-problem.sh problems-examples/sum-of-two | j .venv/bin/python -m app.judgectl problem import -
+j .venv/bin/python -m app.judgectl contest apply - < contests-examples/practice.yaml
 ```
 
 Значения в `<угловых скобках>` — плейсхолдеры: подставьте своё вместе со скобками. Если скопировать команду как есть,
 bash прочитает `<логин>` как перенаправление из файла и остановится, а не создаст пользователя со словом из примера.
-
-В 4а.2 добавятся `problem`, `contest`, `submission` (в том числе `submission rejudge` вместо `queue rejudge`) и
-общий `status`.
 
 ### admin — администраторы (только здесь, Р2)
 
@@ -123,10 +137,7 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | `reap` | Вернуть в очередь задания потерянных воркеров сейчас, не дожидаясь reaper |
 | `judgements [--last N]` | Последние проверки: вердикт, первый провал, вид TL, попытки, воркер, внутренняя ошибка |
 | `events [--last N]` | Журнал очереди (регистрации, `released`, `requeued`, `gave_up`; 14 дней) |
-| `rejudge --submission ID` | Перепроверить посылку |
-| `rejudge --contest-problem ID [--verdicts WA,TL]` | Перепроверить все посылки задачи контеста (или только с этими текущими вердиктами) |
-
-Перепроверки пишутся в аудит (`submission.rejudge`, `contest_problem.rejudge`). Поведение очереди — [`QUEUE.md`](QUEUE.md).
+| `rejudge --submission <id> \| --contest-problem <id> [--verdicts …]` | **Устарело:** пишет в stderr новую команду и выполняет `submission rejudge --id \| --contest-problem-id` |
 
 ### worker — воркеры
 
@@ -135,6 +146,55 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | `list` | Воркеры: состояние, возраст heartbeat, текущее задание, ядра, число проверок, capabilities |
 | `token create <имя> [--caps cpu,gpu]` | Новый токен воркера. Токен — **последняя строка** stdout (скрипты берут его `| tail -1`), показывается один раз |
 | `token revoke <имя>` | Отозвать живой токен; если такого нет — ошибка |
+
+### problem — задачи ([`PROBLEM_IMPORT.md`](PROBLEM_IMPORT.md))
+
+| Команда | Что делает |
+|---|---|
+| `import <папка> \| <файл.zip> \| -` | Импорт пакета: все проверки, затем «imported as vN» или «already exists as vN» (то же содержимое — ничего не пишется). `-` — zip на stdin (`tools/pack-problem.sh <папка> \| …`). Отказ — все причины сразу, код 1 |
+| `import … --dry-run` | Все проверки без записи: «would be imported as vN» или «already exists as vN» |
+| `list [--all]` | Задачи с последней версией, её статусом и числом версий; архивные — только с `--all` |
+| `versions <slug>` | Все версии: статус, время импорта, начало `content_sha256`, число файлов, в скольких контестах закреплена, из zip или из папки |
+| `show <slug>[@<версия>]` | Версия (по умолчанию последняя): названия, группы (баллы, оценивание, видимость, число тестов), программы жюри и эталоны с ожидаемым вердиктом |
+| `archive` / `unarchive <slug>` | Архивная задача не принимает импорт и новые закрепления; контесты, где она уже есть, не меняются |
+
+### contest — контесты ([`CONTESTS.md`](CONTESTS.md))
+
+| Команда | Что делает |
+|---|---|
+| `apply <contest.yaml> \| -` | Привести контест к файлу; печатает каждое изменение или «no changes». Новый контест — `draft`. Предупреждения (например, при `open → code` снова действует старый код) — в stderr |
+| `apply … --dry-run` | Показать изменения и откатить всё (в том числе созданный код и аудит) |
+| `list [--all]` | Контесты: состояние, режим времени, окно, число задач и участников; архивные — с `--all` |
+| `show <slug>` | Настройки, окно в `JUDGE_TIMEZONE`, **код приглашения**, задачи с версиями (и скрытые) |
+| `publish` / `archive <slug>` | `draft`/`archived` → `published`; → `archived` (только чтение для участников) |
+| `pin <контест> <метка> <версия> --rejudge \| --no-rejudge` | Закрепить другую `ready`-версию; выбор обязателен: перепроверить все посылки задачи или оставить старые результаты |
+| `code regenerate <slug>` | Новый код приглашения, старый перестаёт работать |
+| `participants <slug>` | Кто вступил и когда нажал «Начать» |
+
+### submission — посылки
+
+| Команда | Что делает |
+|---|---|
+| `show <id>` | Посылка: ученик, контест, задача, язык; все проверки (причина, статус, вердикт, баллы, версия, актуальная, попытки, внутренняя ошибка) и тесты актуальной проверки — **включая скрытые** (это вид админа) |
+| `rejudge --id <id>` | Перепроверить посылку (новая проверка, история сохраняется; [`QUEUE.md`](QUEUE.md)) |
+| `rejudge --contest <slug> --problem <метка>` | Все посылки задачи контеста |
+| `rejudge --contest-problem-id <id>` | То же по внутреннему id (для старого синтаксиса и скриптов) |
+| `rejudge --problem-version <slug>@<версия>` | Все посылки всех задач контестов, закреплённых на этой версии (и скрытых) |
+| `--verdicts WA,TL` | Только посылки с этими текущими вердиктами (не с `--id`) |
+
+Аудит: `submission.rejudge`, `contest_problem.rejudge` (на каждую задачу контеста).
+
+### status — состояние установки
+
+`judgectl status` (и `--json`), код выхода 1, если база недоступна или не на последней миграции:
+
+* база и миграция (`alembic_version` против головы миграций в коде: «run the migrations», если отстаёт);
+* воркеры онлайн и занятые, длина очереди и уровень загрузки;
+* конфигурация публичного приложения (`JUDGE_SECRET_KEY`, `JUDGE_PUBLIC_ORIGIN`, порты) — те же проверки, что при
+  его запуске; `JUDGE_TIMEZONE`;
+* хранилище блобов: файлы, строки `blobs`; **файлы без строки** (остались от импорта, который не зафиксировался —
+  ничего не удаляется, сборщик — модуль 6), **строки без файла** (файлы пропали из `JUDGE_BLOB_DIR` — тревога), строки,
+  на которые ничего не ссылается.
 
 ## Старое имя: `app.admin_cli`
 
@@ -146,4 +206,5 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | `create-worker-token <имя> [--caps]` | `worker token create <имя> [--caps]` |
 | `revoke-worker-token <имя>` | `worker token revoke <имя>` |
 | `status` | `queue status` + `worker list` |
-| `reap`, `judgements`, `events`, `rejudge …` | `queue reap`, `queue judgements`, `queue events`, `queue rejudge …` |
+| `reap`, `judgements`, `events` | `queue reap`, `queue judgements`, `queue events` |
+| `rejudge --submission <id> \| --contest-problem <id> [--verdicts …]` | `submission rejudge --id <id> \| --contest-problem-id <id> [--verdicts …]` |

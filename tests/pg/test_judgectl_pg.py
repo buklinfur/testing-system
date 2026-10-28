@@ -290,7 +290,9 @@ class JudgectlTests(PgCase):
         self.assertIn("queue_length", out)
         self.assertIn("judgectl queue status && judgectl worker list", err)
         self.assertEqual(admin_cli.translate(["judgements", "--last", "3"]), [["queue", "judgements", "--last", "3"]])
-        self.assertEqual(admin_cli.translate(["rejudge", "--submission", "4"]), [["queue", "rejudge", "--submission", "4"]])
+        self.assertEqual(admin_cli.translate(["rejudge", "--submission", "4"]), [["submission", "rejudge", "--id", "4"]])
+        self.assertEqual(admin_cli.translate(["rejudge", "--contest-problem", "5", "--verdicts", "WA"]),
+                         [["submission", "rejudge", "--contest-problem-id", "5", "--verdicts", "WA"]])
         self.assertEqual(admin_cli.translate(["revoke-worker-token", "w1"]), [["worker", "token", "revoke", "w1"]])
 
     # ---------------------------------------------------------------- deletion, import rollback, failures (4a.2 stage 1)

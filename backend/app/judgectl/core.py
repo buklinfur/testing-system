@@ -8,8 +8,9 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
-from typing import Callable, Iterator, Optional, TextIO
+from typing import BinaryIO, Callable, Iterator, Optional, TextIO
 
 from sqlalchemy.orm import Session
 
@@ -35,6 +36,10 @@ def _stderr() -> TextIO:
     return sys.stderr
 
 
+def _stdin() -> BinaryIO:
+    return sys.stdin.buffer
+
+
 @dataclass
 class Context:
     """Everything a command touches; tests replace the database, the terminal and the clock."""
@@ -46,6 +51,7 @@ class Context:
     err: TextIO = field(default_factory=_stderr)
     getpass: Callable[[str], str] = _getpass.getpass
     input: Callable[[str], str] = input
+    stdin: BinaryIO = field(default_factory=_stdin)  # `-` as a file argument: a zip or a contest.yaml piped in
     interactive: Callable[[], bool] = lambda: sys.stdin.isatty() and sys.stdout.isatty()
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     json: bool = False  # --json of the current command
@@ -102,12 +108,32 @@ def confirm(ctx: Context, expected: str, what: str, yes: bool) -> None:
         raise CliError("not confirmed, nothing changed")
 
 
+def read_input(ctx: Context, source: str, limit: int, what: str) -> bytes:
+    """The bytes of a file argument, or of stdin for `-` (how a user hands a file to judgectl running as judge)."""
+    if source == "-":
+        data = ctx.stdin.read(limit + 1)
+        if not data:
+            raise CliError(f"nothing on stdin: pipe {what} into it")
+    else:
+        try:
+            with open(source, "rb") as f:
+                data = f.read(limit + 1)
+        except OSError as exc:
+            raise CliError(f"cannot read {source}: {exc.strerror} (judgectl runs as judge: give the file on stdin "
+                           f"with `-`)") from exc
+    if len(data) > limit:
+        raise CliError(f"{source}: bigger than {limit // (1024 * 1024)} MB")
+    return data
+
+
 # ----------------------------------------------------------------------------- output
 def jsonable(value):
     if isinstance(value, datetime):
         return iso_utc(value)
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, Decimal):
+        return str(value)  # scores: exact, as stored (numeric(8, 2))
     if isinstance(value, dict):
         return {k: jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):

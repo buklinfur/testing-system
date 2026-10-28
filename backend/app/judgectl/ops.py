@@ -1,11 +1,17 @@
-"""judgectl queue ... and judgectl worker ...: what app.admin_cli did in module 3 (R33)."""
+"""judgectl queue ..., judgectl worker ... (what app.admin_cli did in module 3, R33) and judgectl status."""
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from pathlib import Path
+from typing import Optional
+
+from sqlalchemy import func, select, text, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from .. import queue as q
 from ..auth import audit
-from ..models import Judgement, Problem, ProblemVersion, QueueEvent, Submission, TestResult, User, Worker, WorkerToken
+from ..blobstore import valid_sha256
+from ..models import (Blob, Judgement, Problem, ProblemVersion, QueueEvent, Submission, TestResult, User, Worker,
+                      WorkerToken)
 from .core import CliError, Context, emit_json, show
 
 
@@ -34,26 +40,24 @@ def queue_reap(ctx: Context, args) -> int:
 
 
 def queue_rejudge(ctx: Context, args) -> int:
-    """Old flags of admin_cli for now; `judgectl submission rejudge` arrives in session 4a.2."""
+    """Deprecated alias (module 4a.1 flags) of `judgectl submission rejudge`."""
+    new = ["submission", "rejudge"]
+    if args.submission is not None:
+        new += ["--id", str(args.submission)]
+    if args.contest_problem is not None:
+        new += ["--contest-problem-id", str(args.contest_problem)]
+    if args.verdicts:
+        new += ["--verdicts", args.verdicts]
+    ctx.note("queue rejudge is deprecated, use: judgectl " + " ".join(new))
     if (args.submission is None) == (args.contest_problem is None):
         raise CliError("give --submission ID or --contest-problem ID")
-    with ctx.session() as db:
-        now = ctx.clock()
-        if args.submission is not None:
-            outcome = q.request_rejudge(db, args.submission)
-            result = {"submission": args.submission, "kind": outcome.kind, "judgement": outcome.judgement.id}
-            audit.record(db, ctx.actor, "submission.rejudge", now, object_type="submission",
-                         object_id=args.submission, details={"kind": outcome.kind})
-        else:
-            verdicts = [v for v in args.verdicts.split(",") if v] or None
-            result = q.rejudge_contest_problem(db, args.contest_problem, only_current_verdicts=verdicts)
-            audit.record(db, ctx.actor, "contest_problem.rejudge", now, object_type="contest_problem",
-                         object_id=args.contest_problem, details={"verdicts": verdicts, "result": result})
-    if ctx.json:
-        emit_json(ctx, result)
-    else:
-        ctx.print(result["kind"] if args.submission is not None else result)
-    return 0
+    from argparse import Namespace
+
+    from .submissions import submission_rejudge
+
+    return submission_rejudge(ctx, Namespace(id=args.submission, contest=None, problem=None,
+                                             contest_problem_id=args.contest_problem, problem_version=None,
+                                             verdicts=args.verdicts or None))
 
 
 def queue_judgements(ctx: Context, args) -> int:
@@ -139,3 +143,91 @@ def worker_token_revoke(ctx: Context, args) -> int:
         audit.record(db, ctx.actor, "worker.token_revoke", now, object_type="worker_token", object_id=args.name)
     ctx.print(f"revoked: {args.name}")
     return 0
+
+
+# ----------------------------------------------------------------------------- status
+UNREFERENCED_BLOBS = """
+SELECT count(*) FROM blobs b
+WHERE NOT EXISTS (SELECT 1 FROM test_cases t WHERE t.input_sha256 = b.sha256 OR t.answer_sha256 = b.sha256)
+  AND NOT EXISTS (SELECT 1 FROM programs p WHERE p.source_sha256 = b.sha256)
+  AND NOT EXISTS (SELECT 1 FROM submissions s WHERE s.source_sha256 = b.sha256)
+  AND NOT EXISTS (SELECT 1 FROM problem_versions v WHERE v.package_sha256 = b.sha256)
+  AND NOT EXISTS (SELECT 1 FROM problem_versions v, jsonb_each_text(coalesce(v.files, '{}'::jsonb)) f
+                  WHERE f.value = b.sha256)
+"""
+
+
+def blob_files(root: Path) -> set:
+    """sha256 names of the files in the blob store (<root>/ab/<sha256>)."""
+    if not root.is_dir():
+        return set()
+    return {p.name for sub in root.iterdir() if sub.is_dir() for p in sub.iterdir() if valid_sha256(p.name)}
+
+
+def migration_head() -> Optional[str]:
+    from alembic.script import ScriptDirectory
+
+    from .. import __file__ as app_init
+
+    return ScriptDirectory(str(Path(app_init).resolve().parent.parent / "migrations")).get_current_head()
+
+
+def config_problems(settings) -> list:
+    from ..public_main import PublicConfigError, check_config  # here: the rest of judgectl needs no FastAPI
+
+    try:
+        check_config(settings)
+    except PublicConfigError as exc:
+        return [line.strip(" -") for line in str(exc).splitlines()[1:]]
+    return []
+
+
+def status(ctx: Context, args) -> int:
+    """One look at the installation: database and migrations, workers and queue, configuration, the blob store.
+    Exit code 1 if the database is unreachable or not at the newest migration."""
+    out, bad = {}, False
+    try:
+        with ctx.session() as db:
+            q.read_one_moment(db)
+            has_table = db.execute(text("SELECT to_regclass('alembic_version') IS NOT NULL")).scalar()
+            out["migration"] = db.execute(text("SELECT version_num FROM alembic_version")).scalar() if has_table else None
+            snap = q.load_snapshot(db, ctx.settings.queue).to_dict()
+            out["queue"] = {k: snap[k] for k in ("level", "queue_length", "workers_online", "workers_busy")}
+            out["workers_known"] = db.execute(select(func.count()).select_from(Worker)).scalar_one()
+            rows = set(db.execute(select(Blob.sha256)).scalars())
+            out["blob_rows_unreferenced"] = db.execute(text(UNREFERENCED_BLOBS)).scalar_one()
+        out["database"] = "ok"
+    except SQLAlchemyError as exc:
+        out["database"] = f"unreachable: {exc.__class__.__name__}: {str(exc).splitlines()[0][:160]}"
+        rows, bad = None, True
+    out["migration_head"] = migration_head()
+    if out["database"] == "ok" and out["migration"] != out["migration_head"]:
+        bad = True
+    out["config_problems"] = config_problems(ctx.settings)
+    out["timezone"] = ctx.settings.timezone
+    if rows is not None:
+        files = blob_files(Path(ctx.settings.blob_dir))
+        out["blobs"] = {"files": len(files), "rows": len(rows), "files_without_row": len(files - rows),
+                        "rows_without_file": len(rows - files), "rows_unreferenced": out.pop("blob_rows_unreferenced")}
+    if ctx.json:
+        emit_json(ctx, out)
+        return 1 if bad else 0
+    ctx.print(f"database      {out['database']}")
+    if "migration" in out:
+        same = out["migration"] == out["migration_head"]
+        ctx.print(f"migration     {out['migration'] or 'none'}" + ("" if same else f"  (code expects "
+                                                                                  f"{out['migration_head']}: run the migrations)"))
+        ctx.print(f"workers       {out['queue']['workers_online']} online, {out['queue']['workers_busy']} busy "
+                  f"({out['workers_known']} known)")
+        ctx.print(f"queue         {out['queue']['queue_length']} waiting, load {out['queue']['level']}")
+    ctx.print("config        " + ("ok" if not out["config_problems"] else "; ".join(out["config_problems"])))
+    ctx.print(f"timezone      {out['timezone']} (judgectl tables; the API is UTC)")
+    if "blobs" in out:
+        b = out["blobs"]
+        ctx.print(f"blobs         {b['files']} files, {b['rows']} rows")
+        ctx.print(f"  files without a row     {b['files_without_row']}  (left by imports that did not commit; "
+                  "not deleted: a collector is module 6)")
+        ctx.print(f"  rows without a file     {b['rows_without_file']}" + ("  (!) files are missing from "
+                                                                         f"{ctx.settings.blob_dir}" if b["rows_without_file"] else ""))
+        ctx.print(f"  rows referenced by nothing {b['rows_unreferenced']}")
+    return 1 if bad else 0

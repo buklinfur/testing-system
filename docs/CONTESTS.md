@@ -11,7 +11,10 @@
 | [`backend/app/contests/access.py`](../backend/app/contests/access.py) | правила доступа — чистые функции (Р25) |
 | [`contests-examples/`](../contests-examples) | примеры: архив-тренировка, олимпиада с личным таймером, урок с заморозкой |
 
-Команды `judgectl contest …` появятся на этапе 5 сессии 4а.2.
+Команды — `judgectl contest …` ([`JUDGECTL.md`](JUDGECTL.md)): `apply` (файл или stdin, `--dry-run`), `show` (с
+кодом приглашения), `publish`, `archive`, `pin … --rejudge | --no-rejudge`, `code regenerate`, `participants`.
+Посылку «как ученик» до API 4б делает `dev_seed --contest <slug> --label <метка>` (только dev): вступает с кодом
+контеста, нажимает «Начать» в личном контесте и проходит `can_submit`; отказ правил останавливает его с причиной.
 
 ## 1. `contest.yaml`
 

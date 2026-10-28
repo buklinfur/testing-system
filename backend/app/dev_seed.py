@@ -9,12 +9,16 @@
   batch problem "dev-sum" (a + b, two hidden tests) is written to a temporary folder and imported the same way.
 * Each problem gets one entry in the practice contest "dev" (open, no end), pinned to the newest version seeded;
   an entry pinned to an older version is hidden (its submissions stay).
+* `--contest SLUG --label L`: instead of the "dev" contest, submit to problem L of a real (published) contest the way
+  a student will through the API of 4b: the student joins (with the contest's invite code), presses "start" in a
+  personal contest, and every submission goes through access.can_submit (window, upsolving, cooldown, limit,
+  language). A refusal stops dev_seed with its reason and exit code 1. Not with --package.
 * `--user N`: the submissions belong to student `dev-student-N` (created on demand), default 1.
 * `--source` / `--archive` / `--entry`: the solution (a zip for `--archive`); without `--source` a correct
   Python a + b solution is sent. Code-less problems (choice, text_answer) are not supported here.
 
-Prints a JSON list of {submission_id, judgement_id, problem_version_id, contest_problem_id, import} (import:
-"created" or "exists"). Files go to JUDGE_BLOB_DIR. Refuses to run without JUDGE_DEV=1.
+Prints a JSON list of {submission_id, judgement_id, problem_version_id, contest_problem_id, import, counted}
+(import: "created" or "exists", null with --contest; counted: false for upsolving). Files go to JUDGE_BLOB_DIR. Refuses to run without JUDGE_DEV=1.
 """
 from __future__ import annotations
 
@@ -35,6 +39,7 @@ from protocol.problem_package import PackageError
 from . import queue as q
 from .auth import audit
 from .blobstore import BlobStore
+from .contests import access, service
 from .db import session_scope
 from .models import Contest, ContestProblem, ContestState, JoinPolicy, Language, ProblemType, ProblemVersion, Role, \
     Submission, User
@@ -115,6 +120,42 @@ def ensure_contest_problem(session: Session, version: ProblemVersion, admin: Use
     return cp
 
 
+def submit_to_contest(session: Session, blobs: BlobStore, args, student: User, source: bytes) -> list:
+    """Join, start (personal timing) and submit as a student would; stops at the first refusal of the rules."""
+    contest = service.get_contest(session, args.contest)
+    cp = service.visible_row(session, contest, args.label)
+    now = datetime.now(timezone.utc)
+    part = service.participation_of(session, contest, student)
+    if part is None:
+        part = service.join(session, student, contest, now, contest.invite_code)
+        print(f"dev_seed: {student.login} joined {contest.slug}", file=sys.stderr)
+    if access.can_start(student, contest, part, now):
+        service.start(session, student, contest, now)
+        print(f"dev_seed: {student.login} pressed start", file=sys.stderr)
+    source_sha = store_blob(session, blobs, source)
+    out = []
+    for _ in range(args.count):
+        now = datetime.now(timezone.utc)
+        last = session.execute(select(func.max(Submission.created_at)).where(
+            Submission.user_id == student.id, Submission.contest_problem_id == cp.id)).scalar()
+        window = access.contest_window_for(contest, part)
+        counted = service.counted_submissions(session, cp.id, student.id, window.start, window.end) if window else 0
+        decision = access.can_submit(student, contest, cp, part, now, language=args.language,
+                                     last_submission_at=last, counted_submissions=counted)
+        if not decision:
+            wait = f" (retry in {decision.retry_after_s} s)" if decision.retry_after_s else ""
+            print(f"dev_seed: refused by the access rules: {decision.reason}{wait}", file=sys.stderr)
+            break
+        sub = Submission(user_id=student.id, contest_problem_id=cp.id, language_key=args.language,
+                         source_sha256=source_sha, is_archive=args.archive, entry_file=args.entry, created_at=now)
+        session.add(sub)
+        session.flush()
+        j = q.enqueue(session, sub)
+        out.append({"submission_id": sub.id, "judgement_id": j.id, "problem_version_id": cp.problem_version_id,
+                    "contest_problem_id": cp.id, "import": None, "counted": decision.counted})
+    return out
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="dev_seed")
     parser.add_argument("--package", type=Path, help="problem package directory (default: built-in dev-sum)")
@@ -124,7 +165,13 @@ def main(argv=None) -> int:
     parser.add_argument("--entry", help="entry file inside the archive (interpreted languages)")
     parser.add_argument("--user", type=int, default=1, help="student number: dev-student-N")
     parser.add_argument("--count", type=int, default=1)
+    parser.add_argument("--contest", help="slug of a published contest (with --label): through the access rules")
+    parser.add_argument("--label", help="the problem's label in --contest")
     args = parser.parse_args(argv)
+    if (args.contest is None) != (args.label is None):
+        parser.error("--contest and --label go together")
+    if args.contest and args.package:
+        parser.error("--contest submits to a pinned version: not with --package")
     if os.environ.get("JUDGE_DEV") != "1":
         print("dev_seed writes test data: set JUDGE_DEV=1", file=sys.stderr)
         return 2
@@ -139,6 +186,15 @@ def main(argv=None) -> int:
         # the login predates the admin role; kept so that existing dev databases reuse the same row
         admin = _get_or_create(session, User, {"login": "dev-teacher"}, password_hash="!",
                                display_name="Dev Teacher", role=Role.admin)
+        if args.contest:
+            student = _student(session, args.user)
+            try:
+                out = submit_to_contest(session, blobs, args, student, source)
+            except service.ContestError as exc:
+                print(f"dev_seed: {exc}", file=sys.stderr)
+                return 1
+            print(json.dumps(out))
+            return 0 if len(out) == args.count else 1
         try:
             result = import_dir(session, blobs, args.package, admin) if args.package else import_builtin(session, blobs, admin)
         except PackageError as exc:
@@ -159,7 +215,7 @@ def main(argv=None) -> int:
             session.flush()
             j = q.enqueue(session, sub)
             out.append({"submission_id": sub.id, "judgement_id": j.id, "problem_version_id": version.id,
-                        "contest_problem_id": cp.id, "import": result.kind})
+                        "contest_problem_id": cp.id, "import": result.kind, "counted": True})
     print(json.dumps(out))
     return 0
 

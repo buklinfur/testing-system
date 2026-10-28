@@ -14,7 +14,8 @@
 | [`tools/pack-problem.sh`](../tools/pack-problem.sh) | zip папки задачи в stdout с тем же фильтром мусора |
 | [`tools/make-bad-archives.py`](../tools/make-bad-archives.py) | вредоносные архивы для ручной проверки импорта |
 
-Команда `judgectl problem import` появится на этапе 5 сессии 4а.2; сейчас импорт вызывают `dev_seed` и тесты.
+Импорт из консоли — `judgectl problem import` ([`JUDGECTL.md`](JUDGECTL.md)): папка, zip или zip на stdin, `--dry-run`
+проверяет всё и ничего не пишет. `dev_seed` импортирует тем же путём.
 
 ## 1. Безопасная распаковка (Р27)
 

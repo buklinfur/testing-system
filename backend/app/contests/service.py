@@ -234,6 +234,8 @@ def pin(db: Session, actor: audit.Actor, contest: Contest, label: str, version_n
         now: datetime) -> dict:
     """R22: pin another (ready) version; with rejudge every submission of the problem is judged again."""
     row = visible_row(db, contest, label)
+    if db.get(Problem, row.problem_id).archived:
+        raise ContestError(f"{label}: the problem is archived: unarchive it to pin another version")
     version = db.execute(select(ProblemVersion).where(ProblemVersion.problem_id == row.problem_id,
                                                       ProblemVersion.version == version_no)).scalar_one_or_none()
     if version is None:

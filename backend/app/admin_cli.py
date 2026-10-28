@@ -3,8 +3,9 @@
     python -m app.admin_cli create-worker-token NAME [--caps cpu,gpu]   -> judgectl worker token create
     python -m app.admin_cli revoke-worker-token NAME                    -> judgectl worker token revoke
     python -m app.admin_cli status                                      -> judgectl queue status + worker list
-    python -m app.admin_cli reap | judgements [--last N] | events [--last N]
-                            | rejudge --submission N | --contest-problem N [--verdicts WA,TL]   -> judgectl queue ...
+    python -m app.admin_cli reap | judgements [--last N] | events [--last N]                    -> judgectl queue ...
+    python -m app.admin_cli rejudge --submission N | --contest-problem N [--verdicts WA,TL]
+                                -> judgectl submission rejudge --id N | --contest-problem-id N [--verdicts ...]
 """
 from __future__ import annotations
 
@@ -15,7 +16,8 @@ from .judgectl.cli import main as judgectl
 
 RENAMED = {"create-worker-token": ["worker", "token", "create"], "revoke-worker-token": ["worker", "token", "revoke"],
            "reap": ["queue", "reap"], "judgements": ["queue", "judgements"], "events": ["queue", "events"],
-           "rejudge": ["queue", "rejudge"]}
+           "rejudge": ["submission", "rejudge"]}
+REJUDGE_FLAGS = {"--submission": "--id", "--contest-problem": "--contest-problem-id"}
 
 
 def translate(argv: list) -> list:
@@ -25,6 +27,8 @@ def translate(argv: list) -> list:
     cmd, rest = argv[0], list(argv[1:])
     if cmd == "status":
         return [["queue", "status"] + rest, ["worker", "list"] + rest]
+    if cmd == "rejudge":
+        return [RENAMED[cmd] + [REJUDGE_FLAGS.get(arg, arg) for arg in rest]]
     if cmd in RENAMED:
         return [RENAMED[cmd] + rest]
     return [argv]  # let judgectl report it

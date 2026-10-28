@@ -41,14 +41,17 @@ class ImportFailed(PackageError):
 
 @dataclass
 class ImportResult:
-    kind: str  # "created" | "exists"
-    problem: Problem
-    version: ProblemVersion
+    kind: str  # "created" | "exists" | "new" (dry run: would be created; nothing written)
+    slug: str
+    number: int  # the version number (existing, created or to be created)
+    content_sha256: str
+    problem: Optional[Problem] = None
+    version: Optional[ProblemVersion] = None  # None in a dry run of new content
     warnings: list = field(default_factory=list)
 
     def describe(self) -> str:
-        what = "imported as" if self.kind == "created" else "already exists as"
-        return f"{self.problem.slug}: {what} v{self.version.version}"
+        what = {"created": "imported as", "exists": "already exists as", "new": "would be imported as"}[self.kind]
+        return f"{self.slug}: {what} v{self.number}"
 
 
 def store_blob(db: Session, blobs: BlobStore, data: bytes) -> str:
@@ -77,8 +80,9 @@ def _program_name(ref: problem_package.ProgramRef) -> str:
 
 def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor: audit.Actor, now: datetime, *,
                    archive: Optional[bytes] = None, directory: Optional[Path] = None, source_name: str = "",
-                   owner_id: Optional[int] = None) -> ImportResult:
-    """Import one package given as zip bytes or as a folder. ImportFailed (a PackageError) if it is refused."""
+                   owner_id: Optional[int] = None, dry_run: bool = False) -> ImportResult:
+    """Import one package given as zip bytes or as a folder. ImportFailed (a PackageError) if it is refused.
+    dry_run: every check, but nothing is written (no blob, no row); kind "new" or "exists"."""
     if (archive is None) == (directory is None):
         raise ValueError("give either archive or directory")
     with tempfile.TemporaryDirectory(prefix="judge-import-") as tmp:
@@ -104,8 +108,12 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
             same = db.execute(select(ProblemVersion).where(ProblemVersion.problem_id == problem.id,
                                                            ProblemVersion.content_sha256 == digest)).scalar_one_or_none()
             if same is not None:
-                return ImportResult("exists", problem, same, pkg.warnings)
-        else:
+                return ImportResult("exists", pkg.slug, same.version, digest, problem, same, pkg.warnings)
+        if dry_run:
+            last = db.execute(select(func.max(ProblemVersion.version))
+                              .where(ProblemVersion.problem_id == problem.id)).scalar() if problem is not None else None
+            return ImportResult("new", pkg.slug, (last or 0) + 1, digest, problem, None, pkg.warnings)
+        if problem is None:
             problem = Problem(slug=pkg.slug, owner_id=owner_id if owner_id is not None else actor.user_id)
             db.add(problem)
             db.flush()
@@ -142,4 +150,4 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
                               "source": source_name or ("zip" if archive is not None else "directory"),
                               "package_sha256": package_sha})
         db.flush()
-        return ImportResult("created", problem, version, pkg.warnings)
+        return ImportResult("created", pkg.slug, number, digest, problem, version, pkg.warnings)
