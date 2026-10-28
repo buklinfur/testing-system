@@ -19,8 +19,11 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from . import api_errors
+from .admin_api import UPLOADS, router as admin_router
 from .auth.totp import SecretBox, TotpConfigError
 from .auth_api import SAFE_METHODS, router as auth_router
+from .http_body import JSON_LIMIT, BodyLimitMiddleware
 from .db import get_sessionmaker
 from .settings import Settings
 
@@ -100,12 +103,15 @@ def create_public_app(settings: Optional[Settings] = None, session_factory=None,
     async def same_origin_only(request: Request, call_next):
         # R15: an unsafe request from another site (or without Origin at all) never reaches a handler
         if request.method not in SAFE_METHODS and request.headers.get("origin") != origin:
-            return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+            return JSONResponse(api_errors.error_body("origin_not_allowed"), status_code=403)
         response = await call_next(request)
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 
+    app.add_middleware(BodyLimitMiddleware, limit=JSON_LIMIT, exempt=UPLOADS)  # outermost: before anything reads
+    api_errors.install(app)
     app.include_router(auth_router)
+    app.include_router(admin_router)
     return app
 
 

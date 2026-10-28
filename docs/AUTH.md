@@ -137,7 +137,9 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
   прокси-заголовков в uvicorn выключена.
 * Все ответы с `Cache-Control: no-store`. `/docs`, `/redoc`, `/openapi.json` выключены; маршрутов `/internal/*`
   в публичном приложении нет (404).
-* Ошибки — `{"detail": "<код>"}`; ошибки формата тела — стандартные 422 FastAPI.
+* Ошибки — единый формат всего публичного приложения ([`ADMIN_API.md`](ADMIN_API.md) §2): `{"detail": "<код>",
+  "message"?: "…", "problems"?: [...]}`; ошибки формата тела — 422 `invalid_request` с `problems`, тело больше 1 МБ —
+  413 `too_large`.
 * **Время — всегда UTC, ISO 8601 с `Z`** (`2026-11-26T15:07:59.223443Z`), независимо от часового пояса сервера и
   соединения с БД. `JUDGE_TIMEZONE` на API не влияет.
 
@@ -148,7 +150,7 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
 | `POST /qr` | `{"token"}` | 200 + cookie, `state=active` | 401 `invalid_credentials`, 429 |
 | `POST /logout` | — ; CSRF, если сессия жива | 204, cookie стирается | 403 CSRF |
 | `GET /me` | — | 200 | 401 `not_authenticated` / `mfa_required` |
-| `POST /password` | `{"current_password", "new_password", "totp_code"}` (`totp_code` — админам); CSRF | 200 + новая cookie | 401 нет сессии, 403 `csrf_token_required`, 403 `invalid_credentials` (сессия цела), 422 нарушение правил (текст для человека), 429 |
+| `POST /password` | `{"current_password", "new_password", "totp_code"}` (`totp_code` — админам); CSRF | 200 + новая cookie | 401 нет сессии, 403 `csrf_token_required`, 403 `invalid_credentials` (сессия цела), 422 `password_policy` (+ `message` для человека), 429 |
 
 Ответ `login`, `totp`, `qr`, `me`, `password`:
 

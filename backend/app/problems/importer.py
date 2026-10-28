@@ -1,6 +1,6 @@
 """The one way a problem version is created (R26): package -> checks -> canonical files -> blobs + ProblemVersion.
 
-    import_package(db, blobs, limits, actor, now, archive=<zip bytes>)   # or directory=<path>
+    import_package(db, blobs, limits, actor, now, archive=<path of a zip>)   # or directory=<path>
 
 * The package is unpacked safely (unpack.py) or, for a folder, checked the same way, then validated
   (protocol/problem_package.py: schema, semantics, safe test masks).
@@ -61,6 +61,14 @@ def store_blob(db: Session, blobs: BlobStore, data: bytes) -> str:
     return sha
 
 
+def store_file(db: Session, blobs: BlobStore, path: Path) -> str:
+    """store_blob for a file on disk, copied in chunks."""
+    sha, size = blobs.put_file(path)
+    if db.get(Blob, sha) is None:
+        db.add(Blob(sha256=sha, size_bytes=size))
+    return sha
+
+
 def _statements(pkg: problem_package.Package) -> dict:
     out, problems = {}, []
     for lang, rel in pkg.statements.items():
@@ -79,7 +87,7 @@ def _program_name(ref: problem_package.ProgramRef) -> str:
 
 
 def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor: audit.Actor, now: datetime, *,
-                   archive: Optional[bytes] = None, directory: Optional[Path] = None, source_name: str = "",
+                   archive: Optional[Path] = None, directory: Optional[Path] = None, source_name: str = "",
                    owner_id: Optional[int] = None, dry_run: bool = False) -> ImportResult:
     """Import one package given as zip bytes or as a folder. ImportFailed (a PackageError) if it is refused.
     dry_run: every check, but nothing is written (no blob, no row); kind "new" or "exists"."""
@@ -118,8 +126,8 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
             db.add(problem)
             db.flush()
 
-        sha_of = {rel: store_blob(db, blobs, (root / rel).read_bytes()) for rel in files}
-        package_sha = store_blob(db, blobs, archive) if archive is not None else None
+        sha_of = {rel: store_file(db, blobs, root / rel) for rel in files}
+        package_sha = store_file(db, blobs, archive) if archive is not None else None
         number = (db.execute(select(func.max(ProblemVersion.version))
                              .where(ProblemVersion.problem_id == problem.id)).scalar() or 0) + 1
         version = ProblemVersion(problem_id=problem.id, version=number, status=VersionStatus.ready,

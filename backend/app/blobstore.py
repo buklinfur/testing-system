@@ -43,6 +43,29 @@ class BlobStore:
                 tmp.unlink()
         return sha
 
+    def put_file(self, src) -> tuple[str, int]:
+        """(sha256, size) of a file (a path or a binary file object), copied in chunks: never held in memory."""
+        tmp = self.root / f".tmp-{os.getpid()}-{secrets.token_hex(4)}"
+        h, size = hashlib.sha256(), 0
+        source = open(src, "rb") if isinstance(src, (str, os.PathLike)) else src
+        try:
+            with open(tmp, "wb") as out:
+                while block := source.read(1 << 20):
+                    h.update(block)
+                    size += len(block)
+                    out.write(block)
+            sha = h.hexdigest()
+            dest = self.path(sha)
+            if not dest.is_file():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(tmp, dest)
+            return sha, size
+        finally:
+            if source is not src:
+                source.close()
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+
     def get(self, sha256: str) -> Optional[bytes]:
         try:
             return self.path(sha256).read_bytes()

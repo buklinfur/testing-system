@@ -126,6 +126,20 @@ def read_input(ctx: Context, source: str, limit: int, what: str) -> bytes:
     return data
 
 
+def spool(stream: BinaryIO, dest, limit: int, what: str) -> int:
+    """Copy a stream into the file `dest` in chunks; CliError as soon as it passes `limit` or if it is empty."""
+    total = 0
+    with open(dest, "wb") as out:
+        while chunk := stream.read(1 << 20):
+            total += len(chunk)
+            if total > limit:
+                raise CliError(f"stdin: bigger than {limit // (1024 * 1024)} MB")
+            out.write(chunk)
+    if not total:
+        raise CliError(f"nothing on stdin: pipe {what} into it")
+    return total
+
+
 # ----------------------------------------------------------------------------- output
 def jsonable(value):
     if isinstance(value, datetime):

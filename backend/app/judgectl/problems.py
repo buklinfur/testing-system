@@ -1,6 +1,8 @@
 """judgectl problem ...: import packages (docs/PROBLEM_IMPORT.md), list and show versions, archive."""
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -10,7 +12,7 @@ from ..auth import audit
 from ..blobstore import BlobStore
 from ..models import ContestProblem, Problem, ProblemVersion, Program, TestGroup
 from ..problems.importer import import_package
-from .core import CliError, Context, emit_json, read_input, show
+from .core import CliError, Context, emit_json, show, spool
 
 
 def _problem(db: Session, slug: str) -> Problem:
@@ -33,14 +35,21 @@ def _version(db: Session, problem: Problem, number) -> ProblemVersion:
 def problem_import(ctx: Context, args) -> int:
     """A folder, a zip, or a zip on stdin (`-`: tools/pack-problem.sh <folder> | judgectl problem import -)."""
     limits = ctx.settings.imports
-    if args.source != "-" and Path(args.source).is_dir():
-        source = {"directory": Path(args.source), "source_name": Path(args.source).name}
-    else:
-        data = read_input(ctx, args.source, limits.max_archive_bytes, "a zip (tools/pack-problem.sh <folder>)")
-        source = {"archive": data, "source_name": "stdin" if args.source == "-" else Path(args.source).name}
-    with ctx.session() as db:
-        result = import_package(db, BlobStore(ctx.settings.blob_dir), limits, ctx.actor, ctx.clock(),
-                                dry_run=args.dry_run, **source)
+    with tempfile.TemporaryDirectory(prefix="judgectl-import-") as tmp:
+        if args.source != "-" and Path(args.source).is_dir():
+            source = {"directory": Path(args.source), "source_name": Path(args.source).name}
+        elif args.source == "-":  # streamed into a file with a counter: never more than the limit in memory or on disk
+            spooled = Path(tmp) / "package.zip"
+            spool(ctx.stdin, spooled, limits.max_archive_bytes, "a zip (tools/pack-problem.sh <folder>)")
+            source = {"archive": spooled, "source_name": "stdin"}
+        else:
+            path = Path(args.source)
+            if not path.is_file() or not os.access(path, os.R_OK):
+                raise CliError(f"cannot read {args.source} (judgectl runs as judge: give the file on stdin with `-`)")
+            source = {"archive": path, "source_name": path.name}
+        with ctx.session() as db:
+            result = import_package(db, BlobStore(ctx.settings.blob_dir), limits, ctx.actor, ctx.clock(),
+                                    dry_run=args.dry_run, **source)
     for warning in result.warnings:
         ctx.note(f"warning: {warning}")
     if ctx.json:

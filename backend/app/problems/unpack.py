@@ -67,12 +67,25 @@ def _kind_problem(info: zipfile.ZipInfo) -> str | None:
     return None
 
 
-def unpack_zip(data: bytes, dest: Path, limits: ImportSettings) -> list[str]:
-    """Unpack a zip into the empty folder `dest`; the sorted relative paths of the files. ArchiveError if refused."""
-    if len(data) > limits.max_archive_bytes:
-        raise ArchiveError([f"the archive is {_mb(len(data))}, the limit is {_mb(limits.max_archive_bytes)}"])
+def _size(source) -> int:
+    if isinstance(source, (str, os.PathLike)):
+        return os.stat(source).st_size
+    here = source.tell()
+    end = source.seek(0, os.SEEK_END)
+    source.seek(here)
+    return end
+
+
+def unpack_zip(source, dest: Path, limits: ImportSettings) -> list[str]:
+    """Unpack a zip (a path, a seekable binary file, or bytes) into the empty folder `dest`; the sorted relative
+    paths of the files. ArchiveError if refused."""
+    if isinstance(source, (bytes, bytearray)):
+        source = io.BytesIO(source)
+    size = _size(source)
+    if size > limits.max_archive_bytes:
+        raise ArchiveError([f"the archive is {_mb(size)}, the limit is {_mb(limits.max_archive_bytes)}"])
     try:
-        archive = zipfile.ZipFile(io.BytesIO(data))
+        archive = zipfile.ZipFile(source)
     except zipfile.BadZipFile as exc:
         raise ArchiveError([f"not a zip archive ({exc})"]) from exc
     infos = archive.infolist()

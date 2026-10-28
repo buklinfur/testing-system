@@ -45,6 +45,10 @@ class ImportTests(PgCase):
         self.actor = audit.Actor(cli="cli:judge", sudo_user="teacher")
 
     def run_import(self, **source):
+        if isinstance(source.get("archive"), bytes):  # import_package takes a file (MODULE_4A 5.7)
+            path = self.tmp / f"upload-{len(list(self.tmp.glob('upload-*')))}.zip"
+            path.write_bytes(source["archive"])
+            source["archive"] = path
         result = import_package(self.s, self.blobs, ImportSettings(), self.actor, T0, **source)
         self.s.commit()
         return result

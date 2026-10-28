@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from .api_errors import ApiError
 from .auth import flows, sessions
 from .auth.flows import LoginResult, Outcome
 from .models import SessionState, User, UserSession
@@ -221,14 +222,14 @@ def me(cur: Current = Depends(current_session)):
 def change_password(body: PasswordBody, request: Request, response: Response, cur: Current = Depends(current_session),
                     db: Session = Depends(get_db)):
     """The current password (admins: and a TOTP code) is required; other sessions are revoked and this one
-    gets a new token. A new password against the rules answers 422 with a message for the user."""
+    gets a new token. A new password against the rules answers 422 password_policy with a message for the user."""
     at = now(request)
     try:
         result = flows.change_password(db, request.app.state.settings.auth, at, row=cur.row, user=cur.user,
                                        current=body.current_password, new=body.new_password, ip=client_ip(request),
                                        box=request.app.state.box, totp_code=body.totp_code)
     except flows.PasswordChangeError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        raise ApiError(422, "password_policy", str(exc)) from exc
     db.commit()
     if result.outcome != Outcome.ok:
         _refuse(result, at, invalid_status=403)  # 403, not 401: the session itself is still fine

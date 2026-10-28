@@ -3,14 +3,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 
-from tests.pg.pgbase import HAVE_SA, URL, PgCase, requires_pg
-
-try:
-    import httpx  # noqa: F401
-    import fastapi  # noqa: F401
-    HAVE_API = True
-except ImportError:
-    HAVE_API = False
+from tests.pg.apibase import HAVE_API, ORIGIN, T0, ApiCase
+from tests.pg.pgbase import HAVE_SA, URL, requires_pg
 
 if URL and HAVE_SA and HAVE_API:
     from cryptography.fernet import Fernet
@@ -23,57 +17,10 @@ if URL and HAVE_SA and HAVE_API:
     from app.public_main import create_public_app
     from app.settings import AuthSettings, Settings
 
-ORIGIN = "https://judge.example.ru"
-T0 = datetime(2026, 10, 27, 9, 0, 0, tzinfo=timezone.utc)
-
 
 @requires_pg
 @unittest.skipUnless(HAVE_API, "needs fastapi and httpx")
-class PublicAuthApiTests(PgCase):
-    def setUp(self):
-        super().setUp()
-        self.now = T0
-        settings = Settings(public_origin=ORIGIN, auth=AuthSettings(secret_key=Fernet.generate_key().decode()))
-        self.app = create_public_app(settings, session_factory=self.Session, clock=lambda: self.now)
-        self.box = self.app.state.box
-        self.cli = audit.Actor(cli="cli:tester")
-
-    # ---------------------------------------------------------------- helpers
-    def tick(self, **kw):
-        self.now += timedelta(**kw)
-
-    def browser(self, peer="testclient"):
-        return TestClient(self.app, base_url="https://testserver", headers={"Origin": ORIGIN}, client=(peer, 50000))
-
-    def make_student(self, surname="Иванов", first="Пётр"):
-        user, password = users.create_student(self.s, self.cli, self.now, surname=surname, first_name=first)
-        self.s.commit()
-        return user, password
-
-    def make_admin(self, login="boss", password="correct-horse-battery"):
-        user = users.create_admin(self.s, self.cli, self.now, login=login, display_name="Boss", password=password)
-        secret = users.enroll_totp(self.s, self.cli, user, self.box, self.now)
-        self.assertTrue(users.confirm_totp(self.s, self.cli, user, self.box, self.code(secret), self.now))
-        self.s.commit()
-        self.tick(seconds=31)
-        return user, password, secret
-
-    def code(self, secret, delta=0):
-        return totp.code_at_step(secret, totp.step_at(self.now) + delta)
-
-    def login(self, b, login, password):
-        return b.post("/api/auth/login", json={"login": login, "password": password})
-
-    def csrf(self, r):
-        return {"X-CSRF-Token": r.json()["csrf_token"]}
-
-    def admin_login(self, b, password, secret):
-        r = self.login(b, "boss", password)
-        self.assertEqual(r.json()["state"], "mfa_pending")
-        r = b.post("/api/auth/totp", json={"code": self.code(secret)}, headers=self.csrf(r))
-        self.assertEqual((r.status_code, r.json()["state"]), (200, "active"), r.text)
-        return r
-
+class PublicAuthApiTests(ApiCase):
     # ---------------------------------------------------------------- cookie and session basics
     def test_student_login_sets_a_host_only_secure_cookie(self):
         user, password = self.make_student()
@@ -328,7 +275,8 @@ class PublicAuthApiTests(PgCase):
         weak = b.post("/api/auth/password", headers=self.csrf(r),
                       json={"current_password": password, "new_password": "qwerty123"})
         self.assertEqual(weak.status_code, 422)
-        self.assertIn("common", weak.json()["detail"])
+        self.assertEqual(weak.json()["detail"], "password_policy")  # one error format (MODULE_4A 5.7)
+        self.assertIn("common", weak.json()["message"])
         wrong = b.post("/api/auth/password", headers=self.csrf(r),
                        json={"current_password": "nope-nope", "new_password": "brand-new-secret"})
         self.assertEqual((wrong.status_code, wrong.json()["detail"]), (403, "invalid_credentials"))
