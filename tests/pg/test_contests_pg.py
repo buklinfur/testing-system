@@ -103,6 +103,22 @@ class ContestServiceTests(PgCase):
         self.assertEqual(changed.changes, ["title: Осенняя олимпиада, 7Б -> Олимпиада 7Б"])
         self.assertEqual(changed.contest.invite_code, c.invite_code)  # the code survives re-applies
 
+    def test_going_back_from_open_to_code_warns_that_the_old_code_works_again(self):
+        body = problems("label: A, problem: sum-of-two")
+        first = self.apply(HEAD + "join_policy: code\n" + body)
+        code = first.contest.invite_code
+        self.assertEqual(first.warnings, [])
+        opened = self.apply(HEAD + "join_policy: open\n" + body)
+        self.assertEqual((opened.warnings, opened.contest.invite_code), ([], code))  # kept, but unused while open
+        back = self.apply(HEAD + "join_policy: code\n" + body)
+        self.assertEqual(back.contest.invite_code, code)
+        self.assertEqual(len(back.warnings), 1)
+        self.assertIn("judgectl contest code regenerate olymp", back.warnings[0])
+        self.assertNotIn(code, back.warnings[0])  # the code itself is not repeated in logs
+        entry = self.s.execute(select(AuditLog).where(AuditLog.action == "contest.apply").order_by(AuditLog.id.desc())
+                               .limit(1)).scalar_one()
+        self.assertEqual(entry.details["warnings"], back.warnings)
+
     def test_a_removed_problem_is_hidden_with_submissions_and_deleted_without(self):
         c = self.apply(HEAD + problems("label: A, problem: sum-of-two, version: 1", "label: B, problem: pair-with-sum")).contest
         a = self.row_id(c, "A")

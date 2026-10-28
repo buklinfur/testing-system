@@ -44,9 +44,9 @@ class ImportSettings:
     max_archive_bytes: int = 100 * 1024 * 1024  # JUDGE_IMPORT_MAX_ARCHIVE_MB
     max_unpacked_bytes: int = 512 * 1024 * 1024  # JUDGE_IMPORT_MAX_UNPACKED_MB
     max_files: int = 5000  # JUDGE_IMPORT_MAX_FILES
-    # JUDGE_IMPORT_MAX_RATIO: unpacked / compressed, per file and in total. Only a second line: deflate itself tops
-    # out near 1030, legitimate monotonous tests reach 500-1000; the unpacked total above is the real protection.
-    max_ratio: int = 1000
+    # JUDGE_IMPORT_MAX_RATIO: unpacked / compressed, per file and in total; 0 = off (the default). Deflate tops out
+    # near 1030 and legitimate monotonous tests reach it, so the unpacked total above is the protection.
+    max_ratio: int = 0
 
 
 @dataclass(frozen=True)

@@ -37,6 +37,7 @@ class ApplyResult:
     contest: Contest
     created: bool
     changes: list = field(default_factory=list)
+    warnings: list = field(default_factory=list)  # nothing wrong, but the operator should know
 
 
 def get_contest(db: Session, slug: str) -> Contest:
@@ -132,12 +133,15 @@ def apply(db: Session, actor: audit.Actor, spec: ContestSpec, now: datetime) -> 
     resolved = _resolve(db, spec)
     contest = db.execute(select(Contest).where(Contest.slug == spec.slug).with_for_update()).scalar_one_or_none()
     created = contest is None
-    changes = []
+    changes, warnings = [], []
     if created:
         contest = Contest(slug=spec.slug, state=ContestState.draft, created_by=actor.user_id, **_fields(spec))
         db.add(contest)
         changes.append("contest created (draft)")
     else:
+        if contest.join_policy == JoinPolicy.open and spec.join_policy == "code" and contest.invite_code is not None:
+            warnings.append(f"join_policy open -> code: the invite code this contest had before is valid again; "
+                            f"if it may have spread, give a new one: judgectl contest code regenerate {contest.slug}")
         for name, value in _fields(spec).items():
             old = getattr(contest, name)
             if old != value:
@@ -213,8 +217,8 @@ def apply(db: Session, actor: audit.Actor, spec: ContestSpec, now: datetime) -> 
     db.flush()
     if changes:
         audit.record(db, actor, "contest.apply", now, object_type="contest", object_id=contest.id,
-                     details={"slug": contest.slug, "created": created, "changes": changes})
-    return ApplyResult(contest, created, changes)
+                     details={"slug": contest.slug, "created": created, "changes": changes, "warnings": warnings})
+    return ApplyResult(contest, created, changes, warnings)
 
 
 def visible_row(db: Session, contest: Contest, label: str) -> ContestProblem:

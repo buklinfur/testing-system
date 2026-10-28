@@ -105,10 +105,12 @@ class UnpackTests(unittest.TestCase):
     def test_archive_too_big(self):
         self.refused(make_zip([("a", os.urandom(3000))]), "the limit is", limits=ImportSettings(max_archive_bytes=2000))
 
-    def test_a_monotonous_big_test_is_accepted_with_the_default_limits(self):
-        """A million identical numbers (ratio about 515) is a legitimate test, not a bomb."""
-        data = make_zip([("p/problem.yaml", b"x"), ("p/tests/big.in", b"1000000000\n" * 10**6)])
-        self.assertEqual(unpack_zip(data, self.dest(), LIMITS), ["problem.yaml", "tests/big.in"])
+    def test_monotonous_big_tests_are_accepted_with_the_default_limits(self):
+        """A million identical numbers is a legitimate test, not a bomb: one-digit ones compress about 1020 times
+        (near the ceiling of deflate), ten-digit ones about 515."""
+        data = make_zip([("p/problem.yaml", b"x"), ("p/tests/digits.in", b"7 " * 10**6),
+                         ("p/tests/numbers.in", b"1000000000\n" * 10**6)])
+        self.assertEqual(unpack_zip(data, self.dest(), LIMITS), ["problem.yaml", "tests/digits.in", "tests/numbers.in"])
 
     def test_a_bomb_is_refused_by_volume_before_anything_is_written(self):
         dest = self.dest()
@@ -119,10 +121,25 @@ class UnpackTests(unittest.TestCase):
         self.assertIn("declares 16.0 MB of files, the limit is 8.0 MB", str(ctx.exception))
         self.assertEqual(list(dest.iterdir()), [])
 
-    def test_the_ratio_limit_is_a_second_line(self):
-        bomb = make_zip([("problem.yaml", b"x"), ("tests/big.in", b"0" * (2 * 1024 * 1024))])  # ratio about 1029
-        self.refused(bomb, "tests/big.in", "zip bomb", limits=ImportSettings(max_ratio=100))
-        self.refused(bomb, "tests/big.in", "zip bomb")  # above even the default 1000 (deflate tops out near 1030)
+    def test_the_ratio_limit_is_optional_and_off_by_default(self):
+        zeros = make_zip([("problem.yaml", b"x"), ("tests/big.in", b"0" * (2 * 1024 * 1024))])  # ratio about 1029
+        unpack_zip(zeros, self.dest(), LIMITS)  # 0 = off: only the volume counts
+        self.refused(zeros, "tests/big.in", "zip bomb", limits=ImportSettings(max_ratio=100))
+        self.refused(zeros, "tests/big.in", "zip bomb", limits=ImportSettings(max_ratio=1000))
+
+    def test_only_stored_and_deflate(self):
+        files = [("problem.yaml", b"x" * 100), ("tests/a.in", b"1 2\n")]
+        for method, name in ((zipfile.ZIP_BZIP2, "bzip2"), (zipfile.ZIP_LZMA, "lzma")):
+            with self.subTest(method=name):
+                e = self.refused(make_zip(files, method), f"compression {name} is not allowed (only stored and deflate)")
+                self.assertEqual(len(e.problems), 2)  # every entry is named
+        unpack_zip(make_zip(files, zipfile.ZIP_STORED), self.dest(), LIMITS)
+        unpack_zip(make_zip(files, zipfile.ZIP_DEFLATED), self.dest(), LIMITS)
+        locked = bytearray(make_zip([("tests/a.in", b"1")]))  # zipfile clears flag bits on write: set it in the bytes
+        for signature, offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+            at = locked.find(signature) + offset
+            struct.pack_into("<H", locked, at, struct.unpack_from("<H", locked, at)[0] | 0x1)  # "encrypted"
+        self.refused(bytes(locked), "encrypted entries are not allowed")
 
     def test_unpacked_total_limit(self):
         data = make_zip([(f"t/{i}.in", os.urandom(40_000)) for i in range(5)])  # random: no compression
@@ -177,7 +194,7 @@ class UnpackTests(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         archives = sorted(out.iterdir())
-        self.assertEqual(len(archives), 9)
+        self.assertEqual(len(archives), 11)
         for path in archives:
             with self.subTest(archive=path.name):
                 self.refused(path.read_bytes())

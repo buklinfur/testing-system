@@ -26,9 +26,9 @@ def base_entries():
             for p in sorted(BASE.rglob("*")) if p.is_file()]
 
 
-def build(extra) -> bytes:
+def build(extra, method=zipfile.ZIP_DEFLATED) -> bytes:
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+    with zipfile.ZipFile(buf, "w", method) as z:
         for name, data in base_entries() + list(extra):
             z.writestr(name, data)
     return buf.getvalue()
@@ -72,6 +72,10 @@ ARCHIVES = {
                            lambda: build([(f"sum-of-two/junk/{i}.txt", b"x") for i in range(5001)])),
     "lying-header.zip": ("sizes in the headers smaller than the data", lying_header),
     "not-a-zip.zip": ("not a zip at all", lambda: b"this is plain text, not an archive\n"),
+    "bzip2.zip": ("the whole package compressed with bzip2 (only stored and deflate are allowed)",
+                  lambda: build([], zipfile.ZIP_BZIP2)),
+    "lzma.zip": ("the whole package compressed with lzma (only stored and deflate are allowed)",
+                 lambda: build([], zipfile.ZIP_LZMA)),
 }
 
 

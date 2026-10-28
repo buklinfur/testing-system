@@ -2,11 +2,12 @@
 
 Before anything is written every entry name is checked: no absolute paths, drive letters, backslashes, `..`
 or empty parts, no symbolic links or special files (by the Unix mode in external_attr), no duplicates, not
-more than max_files entries, and the sizes the headers declare must not add up to more than the unpacked
-limit (a cheap early refusal; headers are never trusted the other way round). Then files are streamed out
+more than max_files entries, only the methods stored and deflate (no bzip2, lzma, deflate64 or encryption: fewer
+decoders on the path of untrusted data), and the sizes the headers declare must not add up to more than the
+unpacked limit (a cheap early refusal; headers are never trusted the other way round). Then files are streamed out
 with byte counters: the unpacked total is the main protection (a header that understates a size ends in a
-CRC error from zipfile, and the counter stops it before that anyway); the ratio unpacked / compressed per
-file and in total is a second line. Junk (protocol.problem_package.is_junk) is
+CRC error from zipfile, and the counter stops it before that anyway). The ratio unpacked / compressed per
+file and in total is an optional second line, off by default (max_ratio = 0). Junk (protocol.problem_package.is_junk) is
 skipped. When every file sits in one top-level folder (a zipped package folder), that folder is removed.
 A directory import gets the same checks through check_directory.
 """
@@ -48,7 +49,16 @@ def _name_problem(raw: str) -> str | None:
     return None
 
 
+METHODS = {zipfile.ZIP_STORED: "stored", zipfile.ZIP_DEFLATED: "deflate"}  # nothing else is unpacked
+METHOD_NAMES = {zipfile.ZIP_BZIP2: "bzip2", zipfile.ZIP_LZMA: "lzma", 9: "deflate64", 99: "AES"}
+
+
 def _kind_problem(info: zipfile.ZipInfo) -> str | None:
+    if info.flag_bits & 0x1:
+        return "encrypted entries are not allowed"
+    if info.compress_type not in METHODS:
+        method = METHOD_NAMES.get(info.compress_type, f"method {info.compress_type}")
+        return f"compression {method} is not allowed (only stored and deflate)"
     kind = stat.S_IFMT(info.external_attr >> 16)
     if kind == stat.S_IFLNK:
         return "symbolic links are not allowed"
@@ -104,14 +114,14 @@ def unpack_zip(data: bytes, dest: Path, limits: ImportSettings) -> list[str]:
         target.parent.mkdir(parents=True, exist_ok=True)
         written = 0
         compressed += info.compress_size
-        allowed = limits.max_ratio * max(info.compress_size, 1)
+        allowed = limits.max_ratio * max(info.compress_size, 1) if limits.max_ratio > 0 else None
         try:
             with archive.open(info) as src, \
                     os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as dst:
                 while chunk := src.read(CHUNK):
                     written += len(chunk)
                     total += len(chunk)
-                    if written > allowed:
+                    if allowed is not None and written > allowed:
                         raise ArchiveError([f"{rel}: unpacks to more than {limits.max_ratio} times its compressed "
                                             f"size ({info.compress_size} bytes): refused as a zip bomb"])
                     if total > limits.max_unpacked_bytes:
@@ -122,7 +132,7 @@ def unpack_zip(data: bytes, dest: Path, limits: ImportSettings) -> list[str]:
         except FileExistsError as exc:  # a file and a folder, or two names that differ only in the top folder
             raise ArchiveError([f"{rel}: the name occurs twice"]) from exc
         out.append(target_rel)
-    if total > limits.max_ratio * max(compressed, 1):
+    if limits.max_ratio > 0 and total > limits.max_ratio * max(compressed, 1):
         raise ArchiveError([f"the archive unpacks to more than {limits.max_ratio} times its compressed size: "
                             "refused as a zip bomb"])
     return sorted(out)
