@@ -15,7 +15,8 @@
 | [`tools/make-bad-archives.py`](../tools/make-bad-archives.py) | вредоносные архивы для ручной проверки импорта |
 
 Импорт из консоли — `judgectl problem import` ([`JUDGECTL.md`](JUDGECTL.md)): папка, zip или zip на stdin, `--dry-run`
-проверяет всё и ничего не пишет. `dev_seed` импортирует тем же путём. `import_package` принимает **файл** архива, а не
+проверяет всё и ничего не пишет. Из веба — `POST /api/admin/problems` с телом-zip ([`ADMIN_API.md`](ADMIN_API.md) §5.2).
+`dev_seed` импортирует тем же путём. `import_package` принимает **файл** архива, а не
 байты: stdin judgectl и тело запроса админского API пишутся во временный файл потоком со счётчиком, блобы копируются
 кусками — архив целиком в память не читается.
 

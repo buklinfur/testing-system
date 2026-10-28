@@ -130,7 +130,8 @@ class JudgectlContestTests(PgCase):
         self.assertIn("would change (dry run: nothing was written)", out)
         self.assertEqual(self.s.execute(select(Contest.title).where(Contest.slug == "olymp")).scalar_one(), "Олимпиада")
         shown = json.loads(self.ok("contest", "show", "olymp", "--json"))
-        self.assertEqual((shown["state"], shown["timing_mode"], shown["personal_duration"]), ("draft", "personal", 60))
+        self.assertEqual((shown["state"], shown["spec"]["timing_mode"], shown["spec"]["personal_duration"]),
+                         ("draft", "personal", "1h"))  # the shape of contest.yaml (same as the admin API)
         self.assertEqual(len(shown["invite_code"]), 6)
         self.assertIn(f"invite code {shown['invite_code']}", self.ok("contest", "show", "olymp"))
         self.assertIn("published", self.ok("contest", "publish", "olymp"))

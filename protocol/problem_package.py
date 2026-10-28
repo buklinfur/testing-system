@@ -32,11 +32,12 @@ PROGRAM_PATH_MAX = 128  # programs.name
 
 
 class PackageError(Exception):
-    """The package is not valid; `problems` lists every reason."""
+    """The package is not valid; `problems` lists every reason, `code` names the kind for an API."""
 
-    def __init__(self, problems: list[str], warnings: Optional[list[str]] = None):
+    def __init__(self, problems: list[str], warnings: Optional[list[str]] = None, code: str = "package_invalid"):
         self.problems = list(problems)
         self.warnings = list(warnings or [])
+        self.code = code
         super().__init__("the problem package is not valid:\n  - " + "\n  - ".join(self.problems))
 
 

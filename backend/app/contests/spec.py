@@ -93,8 +93,14 @@ def parse(text, tz: tzinfo) -> ContestSpec:
         data = yaml.load(text, Loader=_TextDates)  # noqa: S506 - a SafeLoader subclass
     except yaml.YAMLError as exc:
         raise ContestSpecError([f"not valid YAML: {exc}"]) from exc
+    return from_data(data, tz)
+
+
+def from_data(data, tz: tzinfo) -> ContestSpec:
+    """The same contest as already-parsed data (the JSON body of PUT /api/admin/contests/<slug>): one schema, one set
+    of rules for the file and the API."""
     if not isinstance(data, dict):
-        raise ContestSpecError(["the file must contain a mapping at the top level"])
+        raise ContestSpecError(["the contest must be a mapping (an object) at the top level"])
     problems = _schema_problems(data)
     if problems:
         raise ContestSpecError(problems)

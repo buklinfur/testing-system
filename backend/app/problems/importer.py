@@ -111,7 +111,7 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
         problem = db.execute(select(Problem).where(Problem.slug == pkg.slug)).scalar_one_or_none()
         if problem is not None and problem.archived:
             raise ImportFailed([f"problem {pkg.slug} is archived: unarchive it first (judgectl problem unarchive "
-                                f"{pkg.slug})"])
+                                f"{pkg.slug})"], code="problem_archived")
         if problem is not None:
             same = db.execute(select(ProblemVersion).where(ProblemVersion.problem_id == problem.id,
                                                            ProblemVersion.content_sha256 == digest)).scalar_one_or_none()

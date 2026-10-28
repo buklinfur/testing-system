@@ -97,3 +97,40 @@ two_factor (только у админов)}`; хешей и секретов н
 
 Пароли и QR-токены есть только в ответе, который их создал (`no-store`); в `audit_log` и в логи они не попадают —
 это проверяет тест вместе с кодами TOTP.
+
+### 5.2. Задачи
+
+Загрузка идёт через тот же `import_package`, что и `judgectl problem import` ([`PROBLEM_IMPORT.md`](PROBLEM_IMPORT.md)),
+списки — через `problems/catalog.py`, общий с `judgectl problem list / versions / show`.
+
+| Метод и путь | Тело / параметры | Ответ | Ошибки |
+|---|---|---|---|
+| `POST /problems` | тело — zip пакета (`application/zip`, лимит `JUDGE_IMPORT_MAX_ARCHIVE_MB`), `?dry_run=true` | 201 `{slug, result: "created", version, content_sha256, warnings, dry_run}`; то же содержимое — 200 `result: "exists"`; `dry_run` — 200 `result: "new"` или `"exists"`, ничего не пишется | 413 `too_large` (по `Content-Length` сразу или по счётчику), 415, 422 `package_invalid` + `problems` (все причины разом), 409 `problem_archived` |
+| `GET /problems` | `q` (часть slug), `archived=false\|true\|all` (по умолчанию `false`), курсор | `{items: [{id, slug, title, type, archived, versions, latest: {version, status}}]}` | — |
+| `GET /problems/{slug}` | — | то же + `versions: [{version, status, check_report, imported_at, content_sha256, files, pinned_in, from_zip}]` | 404 `problem_not_found` |
+| `GET /problems/{slug}/versions/{n}` | — | `{titles, statements, config, files: [пути], groups: [{name, points, scoring, visibility, feedback, depends_on, show_in_statement, tests: [{name, visibility, has_answer}]}], programs: [{role, name, language, expect}], check_report, …}` — скрытые тесты тоже | 404 `version_not_found` |
+| `GET /problems/{slug}/versions/{n}/files/{путь}` | — | сам файл по правилам §4: картинки `inline` (тип по расширению), тесты и тексты `text/plain` + `attachment`, остальное (SVG, HTML, …) `application/octet-stream` + `attachment`; всегда `nosniff` и `sandbox`-CSP | 404 `file_not_found` — путь ищется только среди файлов версии (`..`, `%2e%2e`, абсолютные пути, несуществующие имена — 404) |
+| `POST /problems/{slug}/archive` / `unarchive` | — | задача | 404 |
+
+Ответ после отказа импорта ничего не оставляет: ни строк, ни файлов в хранилище блобов (проверки идут до записи).
+
+### 5.3. Контесты
+
+Контест — это `contest.yaml` в виде JSON: та же схема (`protocol/schemas/contest.schema.json`), тот же разбор
+(`contests/spec.py`, `from_data`) и тот же `apply`, что у `judgectl contest apply` ([`CONTESTS.md`](CONTESTS.md)).
+`GET /contests/{slug}` отдаёт `spec` в форме `contest.yaml` (время — UTC с `Z`, длительность — `1h30m`): отправленный
+обратно через `PUT`, он ничего не меняет. `judgectl contest show --json` выдаёт ту же структуру.
+
+| Метод и путь | Тело / параметры | Ответ | Ошибки |
+|---|---|---|---|
+| `GET /contests` | `state=draft\|published\|archived`, курсор | `{items: [{id, slug, title, state, timing_mode, starts_at, ends_at, problems, participants}]}` | — |
+| `GET /contests/{slug}` | — | `{spec, state, created_at, invite_code, participants, rows: [{id, label, problem, version, status, points, hidden}]}` | 404 `contest_not_found` |
+| `PUT /contests/{slug}` | JSON `contest.yaml` (`slug` = путь; время без смещения — в `JUDGE_TIMEZONE`), `?dry_run=true` | 201 (создан) или 200: `{created, changes, warnings, dry_run, contest}`; без изменений — `changes: []`; `dry_run` показывает изменения и ничего не пишет | 422 `slug_mismatch`, 422 `contest_invalid` + `problems` (схема и правила файла), 409 `contest_conflict` + `problems` (нет задачи, версия не `ready`, «версия с посылками меняется через pin»: подсказка `judgectl contest pin …`) |
+| `POST /contests/{slug}/publish` / `archive` | — | `{slug, state, changed}` | 404 |
+| `POST /contests/{slug}/pin` | `{label, version, rejudge}` — `rejudge` **обязателен** | `{label, from, to, rejudge}` (`rejudge` — число созданных перепроверок или `null`) | 422 без `rejudge`, 404 `contest_problem_not_found` / `version_not_found`, 409 `version_not_ready` / `problem_archived` |
+| `POST /contests/{slug}/code` | — | `{slug, invite_code}` — новый код, старый перестаёт работать | 409 `contest_is_open` |
+| `GET /contests/{slug}/participants` | курсор | `{items: [{user_id, login, display_name, joined_at, started_at}]}` | 404 |
+
+Предупреждения `apply` (например, «при `open → code` снова действует старый код») приходят в `warnings` и не
+останавливают изменение.
+

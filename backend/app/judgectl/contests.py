@@ -1,11 +1,9 @@
 """judgectl contest ...: contest.yaml in, states, pins, invite codes, participants (docs/CONTESTS.md)."""
 from __future__ import annotations
 
-from sqlalchemy import func, select
-
 from ..contests import service
 from ..contests.spec import parse
-from ..models import Contest, ContestProblem, ContestState, Participation, Problem, ProblemVersion
+from ..models import Contest, ContestState
 from .core import CliError, Context, emit_json, read_input, show
 
 MAX_YAML = 1024 * 1024
@@ -46,60 +44,34 @@ def contest_apply(ctx: Context, args) -> int:
 
 def contest_list(ctx: Context, args) -> int:
     with ctx.session() as db:
-        query = select(Contest).order_by(Contest.starts_at.desc())
-        if not args.all:
-            query = query.where(Contest.state != ContestState.archived)
-        rows = []
-        for c in db.execute(query).scalars():
-            problems = db.execute(select(func.count()).select_from(ContestProblem).where(
-                ContestProblem.contest_id == c.id, ContestProblem.hidden.is_(False))).scalar_one()
-            people = db.execute(select(func.count()).select_from(Participation)
-                                .where(Participation.contest_id == c.id)).scalar_one()
-            rows.append({"slug": c.slug, "title": c.title, "state": c.state, "timing": c.timing_mode,
-                         "starts_at": c.starts_at, "ends_at": c.ends_at, "problems": problems, "participants": people})
-    show(ctx, rows, [("slug", "SLUG"), ("title", "TITLE"), ("state", "STATE"), ("timing", "TIMING"),
+        query = service.contests_query(include_archived=args.all).order_by(Contest.starts_at.desc())
+        rows = [service.contest_summary(db, c) for c in db.execute(query).scalars()]
+    show(ctx, rows, [("slug", "SLUG"), ("title", "TITLE"), ("state", "STATE"), ("timing_mode", "TIMING"),
                      ("starts_at", "STARTS"), ("ends_at", "ENDS"), ("problems", "PROBLEMS"), ("participants", "PEOPLE")])
     return 0
 
 
 def contest_show(ctx: Context, args) -> int:
+    """The same data as GET /api/admin/contests/<slug>: `spec` (contest.yaml) plus state, code and every row."""
     with ctx.session() as db:
-        c = service.get_contest(db, args.slug)
-        rows = db.execute(select(ContestProblem, Problem.slug, ProblemVersion.version, ProblemVersion.status)
-                          .join(Problem, Problem.id == ContestProblem.problem_id)
-                          .join(ProblemVersion, ProblemVersion.id == ContestProblem.problem_version_id)
-                          .where(ContestProblem.contest_id == c.id)
-                          .order_by(ContestProblem.hidden, ContestProblem.position, ContestProblem.id)).all()
-        problems = [{"label": cp.label, "problem": slug, "version": version, "status": status,
-                     "points": None if cp.points is None else str(cp.points), "hidden": cp.hidden}
-                    for cp, slug, version, status in rows]
-        people = db.execute(select(func.count()).select_from(Participation)
-                            .where(Participation.contest_id == c.id)).scalar_one()
-        data = {"slug": c.slug, "title": c.title, "state": c.state, "timing_mode": c.timing_mode,
-                "starts_at": c.starts_at, "ends_at": c.ends_at, "personal_duration":
-                    None if c.personal_duration is None else int(c.personal_duration.total_seconds() // 60),
-                "freeze_at": c.freeze_at, "scoring_mode": c.scoring_mode, "leaderboard": c.leaderboard,
-                "join_policy": c.join_policy, "invite_code": c.invite_code if c.join_policy.value == "code" else None,
-                "allow_upsolving": c.allow_upsolving, "languages": c.languages,
-                "submit_cooldown_sec": c.submit_cooldown_sec,
-                "max_submissions_per_problem": c.max_submissions_per_problem, "tests_after_end": c.tests_after_end,
-                "participants": people, "problems": problems}
+        data = service.contest_detail(db, service.get_contest(db, args.slug))
     if ctx.json:
         emit_json(ctx, data)
         return 0
-    ctx.print(f"{data['slug']}  {data['title']}  [{data['state'].value}]")
-    window = f"{ctx.time(data['starts_at'])} .. {ctx.time(data['ends_at']) if data['ends_at'] else 'no end'}"
-    if data["timing_mode"].value == "personal":
-        window += f", personal timer {data['personal_duration']} min"
+    spec = data["spec"]
+    ctx.print(f"{spec['slug']}  {spec['title']}  [{data['state'].value}]")
+    window = f"{ctx.time(spec['starts_at'])} .. {ctx.time(spec['ends_at']) if spec['ends_at'] else 'no end'}"
+    if spec["timing_mode"] == "personal":
+        window += f", personal timer {spec['personal_duration']}"
     ctx.print(f"  time ({ctx.settings.timezone}): {window}"
-              + (f", freeze {ctx.time(data['freeze_at'])}" if data["freeze_at"] else ""))
-    ctx.print(f"  scoring {data['scoring_mode'].value}, leaderboard {data['leaderboard'].value}, "
-              f"upsolving {'yes' if data['allow_upsolving'] else 'no'}, "
-              f"languages {', '.join(data['languages']) if data['languages'] else 'all'}")
-    ctx.print(f"  join: {data['join_policy'].value}" + (f", invite code {data['invite_code']}" if data["invite_code"] else "")
+              + (f", freeze {ctx.time(spec['freeze_at'])}" if spec.get("freeze_at") else ""))
+    ctx.print(f"  scoring {spec['scoring_mode']}, leaderboard {spec['leaderboard']}, "
+              f"upsolving {'yes' if spec['allow_upsolving'] else 'no'}, "
+              f"languages {', '.join(spec['languages']) if spec.get('languages') else 'all'}")
+    ctx.print(f"  join: {spec['join_policy']}" + (f", invite code {data['invite_code']}" if data["invite_code"] else "")
               + f"; participants: {data['participants']}")
-    show(ctx, data["problems"], [("label", "LABEL"), ("problem", "PROBLEM"), ("version", "V"), ("status", "STATUS"),
-                                 ("points", "POINTS"), ("hidden", "HIDDEN")])
+    show(ctx, data["rows"], [("label", "LABEL"), ("problem", "PROBLEM"), ("version", "V"), ("status", "STATUS"),
+                             ("points", "POINTS"), ("hidden", "HIDDEN")])
     return 0
 
 

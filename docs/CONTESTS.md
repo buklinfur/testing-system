@@ -11,6 +11,7 @@
 | [`backend/app/contests/access.py`](../backend/app/contests/access.py) | правила доступа — чистые функции (Р25) |
 | [`contests-examples/`](../contests-examples) | примеры: архив-тренировка, олимпиада с личным таймером, урок с заморозкой |
 
+Из веба — `PUT /api/admin/contests/<slug>` с тем же файлом в виде JSON ([`ADMIN_API.md`](ADMIN_API.md) §5.3).
 Команды — `judgectl contest …` ([`JUDGECTL.md`](JUDGECTL.md)): `apply` (файл или stdin, `--dry-run`), `show` (с
 кодом приглашения), `publish`, `archive`, `pin … --rejudge | --no-rejudge`, `code regenerate`, `participants`.
 Посылку «как ученик» до API 4б делает `dev_seed --contest <slug> --label <метка>` (только dev): вступает с кодом

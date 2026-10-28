@@ -26,7 +26,10 @@ INVITE_LENGTH = 6
 
 
 class ContestError(ValueError):
-    def __init__(self, problems):
+    """A refusal with every reason (`problems`) and a stable `code` for the API (docs/ADMIN_API.md)."""
+
+    def __init__(self, problems, code: str = "contest_conflict"):
+        self.code = code
         self.problems = [problems] if isinstance(problems, str) else list(problems)
         super().__init__("; ".join(self.problems) if len(self.problems) == 1
                          else "\n  - " + "\n  - ".join(self.problems))
@@ -43,7 +46,7 @@ class ApplyResult:
 def get_contest(db: Session, slug: str) -> Contest:
     contest = db.execute(select(Contest).where(Contest.slug == slug)).scalar_one_or_none()
     if contest is None:
-        raise ContestError(f"no contest {slug!r}")
+        raise ContestError(f"no contest {slug!r}", "contest_not_found")
     return contest
 
 
@@ -226,7 +229,7 @@ def visible_row(db: Session, contest: Contest, label: str) -> ContestProblem:
                                                   ContestProblem.label == label,
                                                   ContestProblem.hidden.is_(False))).scalar_one_or_none()
     if row is None:
-        raise ContestError(f"contest {contest.slug} has no problem {label!r}")
+        raise ContestError(f"contest {contest.slug} has no problem {label!r}", "contest_problem_not_found")
     return row
 
 
@@ -235,13 +238,14 @@ def pin(db: Session, actor: audit.Actor, contest: Contest, label: str, version_n
     """R22: pin another (ready) version; with rejudge every submission of the problem is judged again."""
     row = visible_row(db, contest, label)
     if db.get(Problem, row.problem_id).archived:
-        raise ContestError(f"{label}: the problem is archived: unarchive it to pin another version")
+        raise ContestError(f"{label}: the problem is archived: unarchive it to pin another version", "problem_archived")
     version = db.execute(select(ProblemVersion).where(ProblemVersion.problem_id == row.problem_id,
                                                       ProblemVersion.version == version_no)).scalar_one_or_none()
     if version is None:
-        raise ContestError(f"{label}: the problem has no version {version_no}")
+        raise ContestError(f"{label}: the problem has no version {version_no}", "version_not_found")
     if version.status != VersionStatus.ready:
-        raise ContestError(f"{label}: v{version_no} is {version.status.value}; only ready versions can be pinned")
+        raise ContestError(f"{label}: v{version_no} is {version.status.value}; only ready versions can be pinned",
+                           "version_not_ready")
     old = _version_no(db, row.problem_version_id)
     result = {"label": label, "from": old, "to": version_no, "rejudge": None}
     if row.problem_version_id != version.id:
@@ -266,7 +270,7 @@ def set_state(db: Session, actor: audit.Actor, contest: Contest, state: ContestS
 
 def regenerate_code(db: Session, actor: audit.Actor, contest: Contest, now: datetime) -> str:
     if contest.join_policy != JoinPolicy.code:
-        raise ContestError(f"contest {contest.slug} is open: it has no invite code")
+        raise ContestError(f"contest {contest.slug} is open: it has no invite code", "contest_is_open")
     contest.invite_code = new_invite_code(db)
     audit.record(db, actor, "contest.code_regenerate", now, object_type="contest", object_id=contest.id,
                  details={"slug": contest.slug})
@@ -282,7 +286,7 @@ def join(db: Session, user: User, contest: Contest, now: datetime, code: Optiona
     """R23: a student joins (open, or with the invite code)."""
     decision = access.can_join(user, contest, participation_of(db, contest, user), now, code)
     if not decision:
-        raise ContestError(decision.reason)
+        raise ContestError(decision.reason, decision.reason)
     row = Participation(contest_id=contest.id, user_id=user.id, joined_at=now)
     db.add(row)
     db.flush()
@@ -294,7 +298,7 @@ def start(db: Session, user: User, contest: Contest, now: datetime) -> Participa
     row = participation_of(db, contest, user, lock=True)
     decision = access.can_start(user, contest, row, now)
     if not decision:
-        raise ContestError(decision.reason)
+        raise ContestError(decision.reason, decision.reason)
     row.started_at = now
     db.flush()
     return row
@@ -314,3 +318,63 @@ def counted_submissions(db: Session, contest_problem_id: int, user_id: int, sinc
     if until is not None:
         query = query.where(Submission.created_at < until)
     return db.execute(query).scalar_one()
+
+
+# ----------------------------------------------------------------------------- what there is to see (judgectl, API)
+def contests_query(state: Optional[ContestState] = None, include_archived: bool = True):
+    query = select(Contest)
+    if state is not None:
+        query = query.where(Contest.state == state)
+    elif not include_archived:
+        query = query.where(Contest.state != ContestState.archived)
+    return query
+
+
+def contest_summary(db: Session, c: Contest) -> dict:
+    problems = db.execute(select(func.count()).select_from(ContestProblem).where(
+        ContestProblem.contest_id == c.id, ContestProblem.hidden.is_(False))).scalar_one()
+    people = db.execute(select(func.count()).select_from(Participation)
+                        .where(Participation.contest_id == c.id)).scalar_one()
+    return {"id": c.id, "slug": c.slug, "title": c.title, "state": c.state, "timing_mode": c.timing_mode,
+            "starts_at": c.starts_at, "ends_at": c.ends_at, "problems": problems, "participants": people}
+
+
+def format_duration(value) -> Optional[str]:
+    """timedelta -> "1h30m" / "90m"-style text that contest.yaml accepts back."""
+    if value is None:
+        return None
+    minutes = int(value.total_seconds() // 60)
+    hours, rest = divmod(minutes, 60)
+    return (f"{hours}h" if hours else "") + (f"{rest}m" if rest or not hours else "")
+
+
+def contest_detail(db: Session, c: Contest) -> dict:
+    """The contest in the shape of contest.yaml (so it can be sent back to apply unchanged: `spec`), plus what the
+    file does not hold: state, invite code, every contest problem row (hidden ones too) and the participant count."""
+    rows = db.execute(select(ContestProblem, Problem.slug, ProblemVersion.version, ProblemVersion.status)
+                      .join(Problem, Problem.id == ContestProblem.problem_id)
+                      .join(ProblemVersion, ProblemVersion.id == ContestProblem.problem_version_id)
+                      .where(ContestProblem.contest_id == c.id)
+                      .order_by(ContestProblem.hidden, ContestProblem.position, ContestProblem.id)).all()
+    spec = {"format_version": 1, "slug": c.slug, "title": c.title, "description": c.description_md,
+            "starts_at": c.starts_at, "ends_at": c.ends_at, "timing_mode": c.timing_mode.value,
+            "scoring_mode": c.scoring_mode.value, "icpc_penalty_minutes": c.icpc_penalty_minutes,
+            "leaderboard": c.leaderboard.value, "join_policy": c.join_policy.value,
+            "allow_upsolving": c.allow_upsolving, "submit_cooldown_sec": c.submit_cooldown_sec,
+            "max_submissions_per_problem": c.max_submissions_per_problem, "tests_after_end": c.tests_after_end,
+            "plagiarism_enabled": c.plagiarism_enabled,
+            "problems": [{"label": cp.label, "problem": slug, "version": version,
+                          **({"points": float(cp.points)} if cp.points is not None else {})}
+                         for cp, slug, version, _status in rows if not cp.hidden]}
+    if c.personal_duration is not None:
+        spec["personal_duration"] = format_duration(c.personal_duration)
+    if c.freeze_at is not None:
+        spec["freeze_at"] = c.freeze_at
+    if c.languages is not None:
+        spec["languages"] = c.languages
+    return {"spec": spec, "state": c.state, "created_at": c.created_at,
+            "invite_code": c.invite_code if c.join_policy == JoinPolicy.code else None,
+            "participants": db.execute(select(func.count()).select_from(Participation)
+                                       .where(Participation.contest_id == c.id)).scalar_one(),
+            "rows": [{"id": cp.id, "label": cp.label, "problem": slug, "version": version, "status": status,
+                      "points": cp.points, "hidden": cp.hidden} for cp, slug, version, status in rows]}
