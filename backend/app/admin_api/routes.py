@@ -8,8 +8,10 @@ from .deps import admin_session
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(admin_session)])
 
-# uploads read their raw body themselves (http_body.save_body, own limits): exempt from the 1 MB JSON limit
-UPLOADS: frozenset = frozenset()
+# Uploads read their raw body themselves (http_body.save_body, own limits) and are exempt from the 1 MB JSON limit.
+# Exact (method, path) pairs only, compared with the same scope["path"] the router uses: a trailing slash, a double
+# slash, another case or another method is not exempt (the body limit applies, then the router answers).
+UPLOADS: frozenset = frozenset({("POST", "/api/admin/problems"), ("POST", "/api/admin/users/import")})
 
 
 @router.get("/me")

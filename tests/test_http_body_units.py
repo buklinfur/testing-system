@@ -141,6 +141,30 @@ class BodyLimitTests(unittest.TestCase):
         self.assertIn(b"unsupported_media_type", out)
 
 
+    def test_only_the_exact_upload_routes_are_exempt(self):
+        """Variants of an upload path keep the 1 MB limit: the body is cut after 17 pieces of 64 KB."""
+        from app.admin_api import UPLOADS
+        self.assertEqual(UPLOADS, {("POST", "/api/admin/problems"), ("POST", "/api/admin/users/import")})
+        variants = [
+            ("POST", "/api/admin/problems/"), ("POST", "//api/admin/problems"), ("POST", "/api/admin//problems"),
+            ("POST", "/api/admin/problems/x"), ("POST", "/api/admin/problemsx"), ("POST", "/API/admin/problems"),
+            ("POST", "/api/admin%2Fproblems"),  # %2F as a server that does not decode it would pass it on
+            ("PUT", "/api/admin/problems"), ("PATCH", "/api/admin/problems"), ("DELETE", "/api/admin/problems"),
+            ("POST", "/api/admin/users/import/"), ("POST", "/api/admin/users/import2"),
+            ("POST", "/api/admin/users//import"), ("PUT", "/api/admin/users/import"),
+        ]
+        for method, path in variants:
+            with self.subTest(method=method, path=path):
+                body = Body(40)
+                status, _h, _out = call(self.app, method, path, body)
+                self.assertEqual((status, body.taken), (413, JSON_LIMIT // CHUNK + 1))
+        for method, path in sorted(UPLOADS):  # the exact pairs: the middleware leaves the body to the handler
+            with self.subTest(exact=path):
+                body = Body(40)
+                status, _h, _out = call(self.app, method, path, body)
+                self.assertNotEqual((status, body.taken), (413, JSON_LIMIT // CHUNK + 1))
+
+
 @unittest.skipUnless(HAVE_API, "needs fastapi and httpx")
 class ErrorFormatTests(unittest.TestCase):
     def setUp(self):

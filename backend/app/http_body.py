@@ -35,7 +35,8 @@ def declared_length(headers: Iterable) -> int | None:
 
 class BodyLimitMiddleware:
     def __init__(self, app, limit: int = JSON_LIMIT, exempt: frozenset = frozenset()):
-        """exempt: (method, path) pairs that read their body themselves (uploads)."""
+        """exempt: exact (method, path) pairs that read their body themselves (uploads). The path is scope["path"],
+        the one the router matches, so an exempt request always reaches its upload handler and nothing else."""
         self.app, self.limit, self.exempt = app, limit, exempt
 
     async def _refuse(self, send) -> None:
