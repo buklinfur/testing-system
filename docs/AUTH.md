@@ -151,13 +151,21 @@ HTTP: [`backend/app/auth_api.py`](../backend/app/auth_api.py) в публичн�
 | `POST /logout` | — ; CSRF, если сессия жива | 204, cookie стирается | 403 CSRF |
 | `GET /me` | — | 200 | 401 `not_authenticated` / `mfa_required` |
 | `POST /password` | `{"current_password", "new_password", "totp_code"}` (`totp_code` — админам); CSRF | 200 + новая cookie | 401 нет сессии, 403 `csrf_token_required`, 403 `invalid_credentials` (сессия цела), 422 `password_policy` (+ `message` для человека), 429 |
+| `PUT /profile` | `{"timezone": "<IANA>" \| null}` — ключ обязателен, других полей нет; CSRF | 200, как `me` | 401 `not_authenticated` / `mfa_required`, 403 CSRF, 422 `timezone_invalid` (неизвестный пояс), 422 `invalid_request` (любое другое поле: `role`, `login`, `display_name`, `user_id`… — и ничего не меняется) |
 
-Ответ `login`, `totp`, `qr`, `me`, `password`:
+Ответ `login`, `totp`, `qr`, `me`, `password`, `profile`:
 
 ```json
 {"state": "active", "csrf_token": "…", "expires_at": "2026-11-26T15:07:59.223443Z",
- "user": {"id": 6, "login": "podyachev.ch", "display_name": "Чеслав П.", "role": "student"}}
+ "user": {"id": 6, "login": "podyachev.ch", "display_name": "Чеслав П.", "role": "student",
+          "timezone": "Asia/Novosibirsk"}}
 ```
+
+**Часовой пояс** (D-024) — только то, как веб показывает время этому пользователю; хранение и API остаются в UTC.
+`PUT /profile` меняет пояс **своего** пользователя (того, чья сессия) — ученику и админу; `null` очищает (тогда
+пояс браузера). Изменение — в аудите `user.set_timezone` (`{old, new}`, от имени самого пользователя, с IP); без
+изменения запись не пишется. Пояс ученика ставит и админ: при создании и `PUT /api/admin/users/{id}/timezone`
+([`ADMIN_API.md`](ADMIN_API.md) §5.1), в консоли — `judgectl user set-timezone`.
 
 Все остальные защищённые эндпоинты публичного приложения (4б, 4а.3) используют зависимость `current_session`:
 полная сессия, CSRF для небезопасных методов. Проверка руками: [`tools/smoke-public-auth.sh`](../tools/smoke-public-auth.sh).

@@ -62,8 +62,11 @@ def _explicit_login(db: Session, raw: str) -> str:
 
 
 def create_student(db: Session, actor: audit.Actor, now: datetime, *, surname: str = "", first_name: str = "",
-                   login: Optional[str] = None, display_name: Optional[str] = None) -> tuple[User, str]:
-    """(user, generated password). Login: as given, or surname.initial with a number on collision."""
+                   login: Optional[str] = None, display_name: Optional[str] = None,
+                   timezone: Optional[str] = None) -> tuple[User, str]:
+    """(user, generated password). Login: as given, or surname.initial with a number on collision. `timezone`:
+    an IANA name or None (checked before anything is created)."""
+    timezone = checked_timezone(timezone)
     if login:
         login = _explicit_login(db, login)
     else:
@@ -76,11 +79,11 @@ def create_student(db: Session, actor: audit.Actor, now: datetime, *, surname: s
         raise UserError("a display name is required", "display_name_required")
     password = generate_password()
     user = User(login=login, display_name=display_name[:128], role=Role.student, is_active=True,
-                password_hash=hash_password(password), password_changed_at=now)
+                password_hash=hash_password(password), password_changed_at=now, timezone=timezone)
     db.add(user)
     db.flush()
     audit.record(db, actor, "user.create", now, object_type="user", object_id=user.id,
-                 details={"login": login, "role": "student"})
+                 details={"login": login, "role": "student", **({"timezone": timezone} if timezone else {})})
     return user, password
 
 

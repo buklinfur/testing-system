@@ -82,13 +82,14 @@ two_factor (только у админов)}`; хешей и секретов н
 | `GET /users` | `q` (часть логина или имени, без учёта регистра; `%` и `_` — обычные буквы), `role=student\|admin`, `active`, `locked`, курсор | список пользователей | 422 |
 | `GET /users/{id}` | — | пользователь | 404 `user_not_found` |
 | `GET /users/{id}/failures` | `limit` (до 200) | `{login, counting, limit, locked_until, items: [{at, kind, ip}]}` | 404 |
-| `POST /users` | `{surname, first_name, login?, display_name?}` | 201 `{user, password}` — **пароль только здесь** | 409 `login_taken`, 422 `login_invalid` / `display_name_required` / `invalid_request` |
+| `POST /users` | `{surname, first_name, login?, display_name?, timezone?}` | 201 `{user, password}` — **пароль только здесь** | 409 `login_taken`, 422 `login_invalid` / `display_name_required` / `timezone_invalid` / `invalid_request` |
 | `POST /users/import` | тело — список класса (`text/csv`, ≤ 1 МБ, формат и кодировки — [`JUDGECTL.md`](JUDGECTL.md)), `?dry_run=true` | 201 `{import_id, users: [{surname, first_name, login, password, display_name, group}]}` (столбец «класс» — группы, `JUDGECTL.md`); при `Accept: text/csv` — тот же CSV, что пишет judgectl (BOM, `;`, `attachment; filename="students-import-<id>.csv"`); `dry_run` — 200 `{dry_run, users}` без паролей, ничего не пишется | 413, 415, 422 `csv_invalid` + `problems` с номерами строк (в том числе занятые в базе логины), ничего не создано |
 | `GET /users/imports` | курсор | `{items: [{id, at, file, count, by_user_id, by_console, rolled_back}]}` | — |
 | `POST /users/imports/{id}/rollback` | `{confirm_import_id}` = id | `{import_id, deleted: [logins], groups_deleted: [названия], groups_kept: ["название: почему"]}` (К3) | 404 `import_not_found`, 409 `already_rolled_back` / `users_logged_in` (+ `logins`) / `has_traces` (+ `traces`), 422 `confirmation_mismatch` |
 | `POST /users/{id}/reset-password` | — | `{user, password}` — новый пароль один раз; сессии и QR-токены отозваны, блокировка снята | 403, 404 |
 | `POST /users/{id}/disable` / `enable` | — | пользователь (отключение отзывает сессии и QR-токены) | 403, 404 |
 | `PUT /users/{id}/login` | `{login}` | пользователь | 403, 404, 409 `login_taken`, 422 `login_invalid` |
+| `PUT /users/{id}/timezone` | `{timezone: "<IANA>" \| null}` (ключ обязателен) | пользователь (`timezone` в нём) | 403 `admin_in_console` (свой пояс админ меняет через `PUT /api/auth/profile`), 404, 422 `timezone_invalid` |
 | `POST /users/{id}/unlock` | — | `{login, was_locked}` | 403, 404 |
 | `POST /logins/{login}/unlock` | — | `{login, was_locked}` — любой логин, и несуществующий | 403 для логина админа |
 | `POST /ips/unlock` | `{ip}` | `{ip, was_locked}` | 422 `invalid_ip` |

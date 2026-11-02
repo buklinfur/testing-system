@@ -41,10 +41,15 @@ class NewStudent(Body):
     first_name: str = Field("", max_length=100)
     login: Optional[str] = Field(None, max_length=64)
     display_name: Optional[str] = Field(None, max_length=128)
+    timezone: Optional[str] = Field(None, max_length=64)
 
 
 class NewLogin(Body):
     login: str = Field(max_length=64)
+
+
+class TimezoneBody(Body):
+    timezone: Optional[str] = Field(max_length=64)  # required key; null clears it
 
 
 class ConfirmLogin(Body):
@@ -137,7 +142,7 @@ def create_student(body: NewStudent, request: Request, db: Session = Depends(get
     try:
         user, password = users.create_student(db, actor, now(request), surname=body.surname,
                                               first_name=body.first_name, login=body.login,
-                                              display_name=body.display_name)
+                                              display_name=body.display_name, timezone=body.timezone)
     except UserError as exc:
         raise refused(exc) from exc
     db.commit()
@@ -225,6 +230,19 @@ def set_login(user_id: int, body: NewLogin, request: Request, db: Session = Depe
     user = _student(db, user_id)
     try:
         users.set_login(db, actor, user, body.login, now(request))
+    except UserError as exc:
+        raise refused(exc) from exc
+    db.commit()
+    return _out(db, request, user)
+
+
+@router.put("/users/{user_id}/timezone")
+def set_timezone(user_id: int, body: TimezoneBody, request: Request, db: Session = Depends(get_db),
+                 actor: audit.Actor = Depends(admin_actor)):
+    """The zone the web shows a student's times in; an admin sets their own through PUT /api/auth/profile."""
+    user = _student(db, user_id)
+    try:
+        users.set_timezone(db, actor, user, body.timezone, now(request))
     except UserError as exc:
         raise refused(exc) from exc
     db.commit()

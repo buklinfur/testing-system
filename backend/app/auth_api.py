@@ -1,4 +1,4 @@
-"""Public authentication API (/api/auth): password and TOTP login, QR login, logout, me, password change.
+"""Public authentication API (/api/auth): password and TOTP login, QR login, logout, me, password change, profile.
 
 Every endpoint of the public app that needs a user depends on `current_session` (or `any_session` where an
 admin between the password and the TOTP code is allowed: /totp and /logout only):
@@ -20,11 +20,11 @@ from datetime import datetime
 from typing import Iterator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from .api_errors import ApiError
-from .auth import flows, sessions
+from .auth import audit, flows, sessions, users
 from .auth.flows import LoginResult, Outcome
 from .models import SessionState, User, UserSession
 from .timeutil import iso_utc
@@ -135,8 +135,15 @@ class PasswordBody(BaseModel):
     totp_code: Optional[str] = Field(None, max_length=32)  # required for admins
 
 
+class ProfileBody(BaseModel):
+    """What a user may change about themselves: only the time zone (the key is required; null clears it)."""
+    model_config = ConfigDict(extra="forbid")
+    timezone: Optional[str] = Field(max_length=64)
+
+
 def user_out(user: User) -> dict:
-    return {"id": user.id, "login": user.login, "display_name": user.display_name, "role": user.role.value}
+    return {"id": user.id, "login": user.login, "display_name": user.display_name, "role": user.role.value,
+            "timezone": user.timezone}
 
 
 def session_out(row: UserSession, user: User) -> dict:
@@ -215,6 +222,20 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
 
 @router.get("/me")
 def me(cur: Current = Depends(current_session)):
+    return session_out(cur.row, cur.user)
+
+
+@router.put("/profile")
+def profile(body: ProfileBody, request: Request, cur: Current = Depends(current_session),
+            db: Session = Depends(get_db)):
+    """Any fully logged-in user, students too, changes their own time zone (D-024): the user is the one of the
+    session, never one named in the body. An unknown zone answers 422 timezone_invalid and changes nothing."""
+    try:
+        users.set_timezone(db, audit.Actor(user_id=cur.user.id, ip=client_ip(request)), cur.user, body.timezone,
+                           now(request))
+    except users.UserError as exc:
+        raise ApiError(422, exc.code, str(exc)) from exc
+    db.commit()
     return session_out(cur.row, cur.user)
 
 
