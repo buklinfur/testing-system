@@ -32,15 +32,22 @@ def personal(**kw):
     return contest(timing_mode="personal", personal_duration=timedelta(hours=1), **kw)
 
 
-JOINED = NS(started_at=None)  # a participant who has not pressed "start" (personal) / any participant (fixed)
+JOINED = NS(started_at=None, joined_via="open")  # has not pressed "start" (personal) / any participant (fixed)
 
 
-def started(when):
-    return NS(started_at=when)
+def started(when, via="open"):
+    return NS(started_at=when, joined_via=via)
 
 
-CP = NS(hidden=False)
-HIDDEN_CP = NS(hidden=True)
+def problem(**kw):
+    base = dict(hidden=False, available_from=None, due_at=None, after_due_statement="visible", after_due_submit="late")
+    base.update(kw)
+    return NS(**base)
+
+
+CP = problem()
+HIDDEN_CP = problem(hidden=True)
+US = timedelta(microseconds=1)
 
 FIXED, PERSONAL = contest(), personal()
 PERSONAL_NO_END = personal(ends_at=None)  # a timed practice
@@ -53,7 +60,10 @@ class CanSubmitTests(unittest.TestCase):
         # fixed timing: before / during / after x participant or not x upsolving
         ("fixed before", FIXED, CP, JOINED, BEFORE, {}, (False, "not_started_yet", False)),
         ("fixed during", FIXED, CP, JOINED, DURING, {}, (True, "ok", True)),
+        # the window is [starts_at, ends_at): the start belongs to it, the end does not
+        ("fixed a microsecond before the start", FIXED, CP, JOINED, S - US, {}, (False, "not_started_yet", False)),
         ("fixed at the start", FIXED, CP, JOINED, S, {}, (True, "ok", True)),
+        ("fixed a microsecond before the end", FIXED, CP, JOINED, E - US, {}, (True, "ok", True)),
         ("fixed at the end", FIXED, CP, JOINED, E, {}, (True, "upsolving", False)),
         ("fixed after, upsolving", FIXED, CP, JOINED, AFTER, {}, (True, "upsolving", False)),
         ("fixed after, no upsolving", contest(allow_upsolving=False), CP, JOINED, AFTER, {}, (False, "contest_over", False)),
@@ -179,26 +189,47 @@ class ViewJoinStartTests(unittest.TestCase):
                 self.assertEqual(access.can_view_problem(STUDENT, c, cp, part, now), want)
                 self.assertTrue(access.can_view_problem(ADMIN, c, cp, part, now))
 
-    def test_join(self):
+    def test_enter(self):
         coded = contest(access_mode="code", invite_code="AC34KM")
-        cases = [  # (name, contest, participation, now, code, (allowed, reason))
-            ("open, before", FIXED, None, BEFORE, None, (True, "ok")),
-            ("open, during", FIXED, None, DURING, None, (True, "ok")),
-            ("open, after, upsolving", FIXED, None, AFTER, None, (True, "ok")),
-            ("open, after, no upsolving", contest(allow_upsolving=False), None, AFTER, None, (False, "contest_over")),
-            ("already joined", FIXED, JOINED, DURING, None, (False, "already_joined")),
-            ("draft", contest(state="draft"), None, DURING, None, (False, "not_published")),
-            ("archived", contest(state="archived"), None, DURING, None, (False, "not_published")),
-            ("code, right", coded, None, DURING, "AC34KM", (True, "ok")),
-            ("code, other case and spaces", coded, None, DURING, " ac3-4km ", (True, "ok")),
-            ("code, wrong", coded, None, DURING, "AC34KN", (False, "wrong_code")),
-            ("code, missing", coded, None, DURING, None, (False, "wrong_code")),
+        groups = contest(access_mode="groups")
+        either = contest(access_mode="code_or_groups", invite_code="AC34KM")
+        by_group = NS(started_at=None, joined_via="group")
+        cases = [  # (name, contest, participation, now, code, in_group, (allowed, reason, joined_via))
+            ("open, before", FIXED, None, BEFORE, None, False, (True, "ok", "open")),
+            ("open, during", FIXED, None, DURING, None, False, (True, "ok", "open")),
+            ("open, after, upsolving", FIXED, None, AFTER, None, False, (True, "ok", "open")),
+            ("open, after, no upsolving", contest(allow_upsolving=False), None, AFTER, None, False,
+             (False, "contest_over", None)),
+            ("already joined", FIXED, JOINED, DURING, None, False, (False, "already_joined", None)),
+            ("draft", contest(state="draft"), None, DURING, None, False, (False, "not_published", None)),
+            ("archived", contest(state="archived"), None, DURING, None, False, (False, "not_published", None)),
+            ("code, right", coded, None, DURING, "AC34KM", False, (True, "ok", "code")),
+            ("code, other case and spaces", coded, None, DURING, " ac3-4km ", False, (True, "ok", "code")),
+            ("code, wrong", coded, None, DURING, "AC34KN", False, (False, "wrong_code", None)),
+            ("code, missing", coded, None, DURING, None, False, (False, "wrong_code", None)),
+            ("code mode ignores groups", coded, None, DURING, None, True, (False, "wrong_code", None)),
+            ("groups, member", groups, None, DURING, None, True, (True, "ok", "group")),
+            ("groups, not a member", groups, None, DURING, None, False, (False, "no_access", None)),
+            ("groups, a code does not help", groups, None, DURING, "AC34KM", False, (False, "no_access", None)),
+            ("either, member without a code", either, None, DURING, None, True, (True, "ok", "group")),
+            ("either, member with the code: still group", either, None, DURING, "AC34KM", True, (True, "ok", "group")),
+            ("either, the code", either, None, DURING, "AC34KM", False, (True, "ok", "code")),
+            ("either, neither", either, None, DURING, None, False, (False, "wrong_code", None)),
+            # В6: taken out of the group, the student comes back with the code; the participation becomes a code one
+            ("either, removed from the group, the code", either, by_group, DURING, "AC34KM", False,
+             (True, "rejoin_with_code", "code")),
+            ("either, removed, wrong code", either, by_group, DURING, "AC34KN", False, (False, "already_joined", None)),
+            ("code, came in while open, the code", coded, JOINED, DURING, "AC34KM", False,
+             (True, "rejoin_with_code", "code")),
+            ("code, already by the code", coded, started(None, "code"), DURING, "AC34KM", False,
+             (False, "already_joined", None)),
+            ("groups, by group, a code", groups, by_group, DURING, "AC34KM", False, (False, "already_joined", None)),
         ]
-        for name, c, part, now, code, (allowed, reason) in cases:
+        for name, c, part, now, code, in_group, (allowed, reason, via) in cases:
             with self.subTest(name):
-                d = access.can_join(STUDENT, c, part, now, code)
-                self.assertEqual((d.allowed, d.reason), (allowed, reason))
-        self.assertEqual(access.can_join(ADMIN, FIXED, None, DURING).reason, "admins_do_not_join")
+                d = access.can_enter(STUDENT, c, part, now, code, in_group=in_group)
+                self.assertEqual((d.allowed, d.reason, d.joined_via), (allowed, reason, via))
+        self.assertEqual(access.can_enter(ADMIN, FIXED, None, DURING).reason, "admins_do_not_join")
 
     def test_start(self):
         cases = [  # (name, contest, participation, now, (allowed, reason))
@@ -211,6 +242,8 @@ class ViewJoinStartTests(unittest.TestCase):
             ("twice", PERSONAL, started(at(9, 30)), DURING, (False, "already_started")),
             ("draft", personal(state="draft"), JOINED, DURING, (False, "not_published")),
             ("timed practice, any day", PERSONAL_NO_END, JOINED, at(10, year=2030), (True, "ok")),
+            ("no access any more", personal(access_mode="groups"), started(None, "group"), DURING,
+             (False, "no_access")),
         ]
         for name, c, part, now, (allowed, reason) in cases:
             with self.subTest(name):
@@ -262,3 +295,166 @@ class LeaderboardAndTestsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------------ access modes and groups (D-020, D-021)
+P_CODE, P_GROUP, P_OPEN = started(None, "code"), started(None, "group"), started(None, "open")
+SITUATIONS = [  # (name, participation, in_group); an archived group or one taken off the contest is in_group False
+    ("member, not entered yet", None, True),
+    ("member, entered through the group", P_GROUP, True),
+    ("removed from the group (or it is archived / detached)", P_GROUP, False),
+    ("not a member, never entered", None, False),
+    ("entered with the code", P_CODE, False),
+    ("entered with the code and a member", P_CODE, True),
+    ("entered while the contest was open", P_OPEN, False),
+]
+# has access (statements, submitting) per mode, in the order of SITUATIONS
+ACCESS = {
+    "open": [True, True, True, True, True, True, True],
+    "code": [False, False, False, False, True, True, False],
+    "groups": [True, True, False, False, False, True, False],
+    "code_or_groups": [True, True, False, False, True, True, False],
+}
+
+
+class AccessModeTests(unittest.TestCase):
+    def test_matrix(self):
+        for mode, expected in ACCESS.items():
+            c = contest(access_mode=mode, invite_code="AC34KM")
+            for (name, part, in_group), want in zip(SITUATIONS, expected):
+                with self.subTest(mode=mode, who=name):
+                    self.assertEqual(access.has_access(STUDENT, c, part, in_group), want)
+                    if part is not None:
+                        d = access.can_submit(STUDENT, c, CP, part, DURING, in_group=in_group)
+                        self.assertEqual((d.allowed, d.reason), (True, "ok") if want else (False, "no_access"))
+                        self.assertEqual(access.can_view_problem(STUDENT, c, CP, part, DURING, in_group), want)
+                        self.assertEqual(access.can_see_leaderboard(STUDENT, c, part, DURING, in_group), want)
+                        # whatever the access, a student sees their own submissions and scores
+                        self.assertTrue(access.can_see_own_results(STUDENT, c, part))
+                    self.assertTrue(access.has_access(ADMIN, c, part, in_group))
+
+    def test_a_contest_only_for_groups_is_not_shown_to_others(self):
+        for mode in ACCESS:
+            c = contest(access_mode=mode, invite_code="AC34KM")
+            for name, part, in_group in SITUATIONS:
+                with self.subTest(mode=mode, who=name):
+                    want = mode != "groups" or access.has_access(STUDENT, c, part, in_group)
+                    self.assertEqual(access.can_view_contest(STUDENT, c, part, DURING, in_group), want)
+
+    def test_archived_contest_needs_access_too_but_own_results_stay(self):
+        c = contest(state="archived", access_mode="groups")
+        self.assertTrue(access.can_view_contest(STUDENT, c, P_GROUP, AFTER, in_group=True))
+        self.assertFalse(access.can_view_contest(STUDENT, c, P_GROUP, AFTER, in_group=False))
+        self.assertTrue(access.can_see_own_results(STUDENT, c, P_GROUP))
+        self.assertFalse(access.can_see_own_results(STUDENT, contest(state="draft"), P_GROUP))
+        self.assertFalse(access.can_see_own_results(STUDENT, c, None))
+
+    def test_changing_the_mode_cuts_off_the_right_students(self):
+        cases = [  # (from -> to, participation, in_group, access before, access after)
+            ("open -> code cuts those who came in open", P_OPEN, False, ("open", True), ("code", False)),
+            ("open -> code keeps those with the code", P_CODE, False, ("open", True), ("code", True)),
+            ("code -> groups cuts the code", P_CODE, False, ("code", True), ("groups", False)),
+            ("code -> groups keeps members", P_CODE, True, ("code", True), ("groups", True)),
+            ("groups -> code cuts members without the code", P_GROUP, True, ("groups", True), ("code", False)),
+            ("groups -> code_or_groups keeps members", P_GROUP, True, ("groups", True), ("code_or_groups", True)),
+            ("code_or_groups -> groups cuts the code", P_CODE, False, ("code_or_groups", True), ("groups", False)),
+            ("anything -> open lets everyone in", P_GROUP, False, ("groups", False), ("open", True)),
+        ]
+        for name, part, in_group, (before, had), (after, has) in cases:
+            with self.subTest(name):
+                self.assertEqual(access.has_access(STUDENT, contest(access_mode=before), part, in_group), had)
+                self.assertEqual(access.has_access(STUDENT, contest(access_mode=after), part, in_group), has)
+
+
+# ------------------------------------------------------------------ deadlines of contest problems (D-023)
+DUE = at(11)  # inside the window 09:00-12:00
+AVAILABLE = at(9, 30)
+
+
+class DeadlineTests(unittest.TestCase):
+    def submit(self, cp, now, c=FIXED, part=JOINED, **kw):
+        d = access.can_submit(STUDENT, c, cp, part, now, **kw)
+        return d.allowed, d.reason, d.counted, d.late
+
+    def test_due_boundary_for_each_policy(self):
+        """On time while now <= the due moment: exactly at due_at is still on time (unlike the end of the window)."""
+        ok, late = (True, "ok", True, False), (True, "late", True, True)
+        expected = {  # policy: (due - 1 us, due, due + 1 us)
+            "no": (ok, ok, (False, "deadline_passed", False, False)),
+            "late": (ok, ok, late),
+            "yes": (ok, ok, ok),
+        }
+        for policy, wants in expected.items():
+            cp = problem(due_at=DUE, after_due_submit=policy)
+            for now, want in zip((DUE - US, DUE, DUE + US), wants):
+                with self.subTest(policy=policy, now=now.time()):
+                    self.assertEqual(self.submit(cp, now), want)
+        self.assertEqual(self.submit(CP, AFTER - timedelta(hours=1, seconds=1)), ok)  # no due_at: never late
+
+    def test_available_from_boundary(self):
+        cp = problem(available_from=AVAILABLE)
+        self.assertEqual(self.submit(cp, AVAILABLE - US), (False, "not_available_yet", False, False))
+        self.assertEqual(self.submit(cp, AVAILABLE), (True, "ok", True, False))  # inclusive
+        self.assertFalse(access.problem_listed(STUDENT, cp, AVAILABLE - US))  # not even its label
+        self.assertTrue(access.problem_listed(STUDENT, cp, AVAILABLE))
+        self.assertFalse(access.can_view_problem(STUDENT, FIXED, cp, JOINED, AVAILABLE - US))
+        self.assertTrue(access.can_view_problem(STUDENT, FIXED, cp, JOINED, AVAILABLE))
+        self.assertTrue(access.problem_listed(ADMIN, cp, AVAILABLE - US))
+        self.assertFalse(access.problem_listed(STUDENT, problem(hidden=True), DURING))
+
+    def test_extensions(self):
+        cp = problem(due_at=DUE, after_due_submit="no")
+        mine, my_group = at(11, 30), at(11, 45)
+        cases = [  # (name, extensions, effective due)
+            ("none", [], DUE),
+            ("own", [mine], mine),
+            ("group", [my_group], my_group),
+            ("the latest of several", [mine, my_group], my_group),
+            ("one earlier than due_at changes nothing", [at(10)], DUE),
+        ]
+        for name, extensions, due in cases:
+            with self.subTest(name):
+                self.assertEqual(access.effective_due(cp, extensions), due)
+                self.assertTrue(self.submit(cp, due, extensions=extensions)[0])
+                self.assertEqual(self.submit(cp, due + US, extensions=extensions)[1], "deadline_passed")
+        self.assertIsNone(access.effective_due(problem(), [mine]))  # an extension of no deadline extends nothing
+
+    def test_personal_timer_and_due_whichever_comes_first(self):
+        part = started(at(10, 30))  # own hour 10:30-11:30
+        cp = problem(due_at=DUE)  # 11:00, policy late
+        self.assertEqual(self.submit(cp, at(10, 45), PERSONAL, part), (True, "ok", True, False))
+        self.assertEqual(self.submit(cp, at(11, 10), PERSONAL, part), (True, "late", True, True))  # due first
+        cp = problem(due_at=at(12), after_due_submit="no")
+        self.assertEqual(self.submit(cp, at(11, 40), PERSONAL, part), (True, "upsolving", False, False))  # timer first
+
+    def test_end_of_contest_before_due(self):
+        cp = problem(due_at=at(13), after_due_submit="yes")
+        self.assertEqual(self.submit(cp, at(12, 30), contest(allow_upsolving=False)), (False, "contest_over", False, False))
+        self.assertEqual(self.submit(cp, at(12, 30)), (True, "upsolving", False, False))
+
+    def test_upsolving_is_not_touched_by_deadlines(self):
+        """В3: after the window the deadline does not matter, whatever after_due_submit says."""
+        for policy in ("no", "late", "yes"):
+            with self.subTest(policy):
+                cp = problem(due_at=DUE, after_due_submit=policy)
+                self.assertEqual(self.submit(cp, AFTER), (True, "upsolving", False, False))
+
+    def test_late_counts_and_uses_the_limit(self):
+        cp = problem(due_at=DUE, after_due_submit="late")
+        c = contest(max_submissions_per_problem=2)
+        self.assertEqual(self.submit(cp, DUE + US, c, counted_submissions=1), (True, "late", True, True))
+        self.assertEqual(self.submit(cp, DUE + US, c, counted_submissions=2)[1], "submission_limit")
+
+    def test_statement_after_due(self):
+        hidden = problem(due_at=DUE, after_due_statement="hidden")
+        self.assertTrue(access.can_view_problem(STUDENT, FIXED, hidden, JOINED, DUE))
+        self.assertFalse(access.can_view_problem(STUDENT, FIXED, hidden, JOINED, DUE + US))
+        self.assertTrue(access.can_view_problem(STUDENT, FIXED, hidden, JOINED, DUE + US, extensions=[at(11, 30)]))
+        self.assertFalse(access.can_view_problem(STUDENT, FIXED, hidden, JOINED, AFTER))  # in upsolving too
+        self.assertTrue(access.can_view_problem(STUDENT, FIXED, problem(due_at=DUE), JOINED, AFTER))  # visible
+        self.assertTrue(access.can_view_problem(ADMIN, FIXED, hidden, JOINED, AFTER))
+        self.assertTrue(access.can_see_own_results(STUDENT, FIXED, JOINED))  # own results stay
+
+    def test_admins_are_never_late(self):
+        d = access.can_submit(ADMIN, FIXED, problem(due_at=DUE, after_due_submit="no"), None, AFTER)
+        self.assertEqual((d.allowed, d.counted, d.late), (True, False, False))

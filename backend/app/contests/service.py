@@ -283,12 +283,15 @@ def participation_of(db: Session, contest: Contest, user: User, lock: bool = Fal
 
 
 def join(db: Session, user: User, contest: Contest, now: datetime, code: Optional[str] = None) -> Participation:
-    """R23: a student joins (open, or with the invite code)."""
-    decision = access.can_join(user, contest, participation_of(db, contest, user), now, code)
+    """R23: a student joins (open, or with the invite code). Group membership and turning a participation into a
+    code one (access.can_enter, "rejoin_with_code") come with the groups service."""
+    existing = participation_of(db, contest, user)
+    decision = access.can_enter(user, contest, existing, now, code)
+    if existing is not None and decision:
+        decision = access.Decision(False, "already_joined")
     if not decision:
         raise ContestError(decision.reason, decision.reason)
-    via = JoinedVia.open if contest.access_mode == AccessMode.open else JoinedVia.code
-    row = Participation(contest_id=contest.id, user_id=user.id, joined_at=now, joined_via=via)
+    row = Participation(contest_id=contest.id, user_id=user.id, joined_at=now, joined_via=JoinedVia(decision.joined_via))
     db.add(row)
     db.flush()
     return row
