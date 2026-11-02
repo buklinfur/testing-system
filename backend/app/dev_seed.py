@@ -10,9 +10,10 @@
 * Each problem gets one entry in the practice contest "dev" (open, no end), pinned to the newest version seeded;
   an entry pinned to an older version is hidden (its submissions stay).
 * `--contest SLUG --label L`: instead of the "dev" contest, submit to problem L of a real (published) contest the way
-  a student will through the API of 4b: the student joins (with the contest's invite code), presses "start" in a
-  personal contest, and every submission goes through access.can_submit (window, upsolving, cooldown, limit,
-  language). A refusal stops dev_seed with its reason and exit code 1. Not with --package.
+  a student will through the API of 4b: the student enters (with the contest's invite code), presses "start" in a
+  personal contest, and every submission goes through service.submission_decision (access, window, upsolving,
+  deadline and extensions, cooldown, limit, language) and keeps its `late`. A refusal stops dev_seed with its
+  reason and exit code 1. Not with --package.
 * `--user N`: the submissions belong to student `dev-student-N` (created on demand), default 1.
 * `--source` / `--archive` / `--entry`: the solution (a zip for `--archive`); without `--source` a correct
   Python a + b solution is sent. Code-less problems (choice, text_answer) are not supported here.
@@ -132,27 +133,25 @@ def submit_to_contest(session: Session, blobs: BlobStore, args, student: User, s
     if access.can_start(student, contest, part, now, in_group=in_group):
         service.start(session, student, contest, now)
         print(f"dev_seed: {student.login} pressed start", file=sys.stderr)
-    source_sha = store_blob(session, blobs, source)
     out = []
-    for _ in range(args.count):
-        now = datetime.now(timezone.utc)
-        last = session.execute(select(func.max(Submission.created_at)).where(
-            Submission.user_id == student.id, Submission.contest_problem_id == cp.id)).scalar()
-        window = access.contest_window_for(contest, part)
-        counted = service.counted_submissions(session, cp.id, student.id, window.start, window.end) if window else 0
-        decision = access.can_submit(student, contest, cp, part, now, language=args.language, in_group=in_group,
-                                     last_submission_at=last, counted_submissions=counted)
+    for i in range(args.count):
+        if i:  # each submission is its own request; the first one was received at `now` above
+            now = datetime.now(timezone.utc)
+        decision = service.submission_decision(session, student, contest, cp, now, language=args.language)
         if not decision:
             wait = f" (retry in {decision.retry_after_s} s)" if decision.retry_after_s else ""
             print(f"dev_seed: refused by the access rules: {decision.reason}{wait}", file=sys.stderr)
             break
+        source_sha = store_blob(session, blobs, source)  # "reading the source" happens after the receipt time
         sub = Submission(user_id=student.id, contest_problem_id=cp.id, language_key=args.language,
-                         source_sha256=source_sha, is_archive=args.archive, entry_file=args.entry, created_at=now)
+                         source_sha256=source_sha, is_archive=args.archive, entry_file=args.entry, created_at=now,
+                         late=decision.late)
         session.add(sub)
         session.flush()
         j = q.enqueue(session, sub)
         out.append({"submission_id": sub.id, "judgement_id": j.id, "problem_version_id": cp.problem_version_id,
-                    "contest_problem_id": cp.id, "import": None, "counted": decision.counted})
+                    "contest_problem_id": cp.id, "import": None, "counted": decision.counted,
+                    "late": decision.late})
     return out
 
 

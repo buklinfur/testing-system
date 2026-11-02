@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 from .. import groups as g
 from .. import queue as q
 from ..auth import audit
-from ..models import (AccessMode, Contest, ContestGroup, ContestProblem, ContestState, Group, JoinedVia, Language,
+from ..models import (AccessMode, AfterDueStatement, AfterDueSubmit, Contest, ContestGroup, ContestProblem,
+                      ContestState, DeadlineExtension, Group, GroupMember, JoinedVia, Language,
                       LeaderboardMode, Participation, Problem, ProblemVersion, ScoringMode, Submission, TimingMode,
                       User, VersionStatus)
 from . import access
@@ -171,6 +172,40 @@ def _show(value) -> str:
     return "-" if value is None else str(getattr(value, "value", value))
 
 
+def _apply_deadlines(db: Session, row: ContestProblem, entry, changes: list, warnings: list) -> None:
+    """available_from, due_at, after-due policies and the note of one contest problem (D-023). Extensions are not
+    in the file; apply warns when a new due_at leaves some of them without effect."""
+    where = f"{entry.label} ({entry.slug})"
+    if entry.due_at_minute_59:
+        warnings.append(f"{where}: due_at at minute 59 without seconds is HH:59:00, so a submission at HH:59:30 is "
+                        "late; for the end of that minute write HH:59:59 (or the next full hour)")
+    old_due = row.due_at
+    for name, value in (("available_from", entry.available_from), ("due_at", entry.due_at),
+                        ("after_due_statement", AfterDueStatement(entry.after_due_statement)),
+                        ("after_due_submit", AfterDueSubmit(entry.after_due_submit))):
+        if getattr(row, name) != value:
+            changes.append(f"{where}: {name} {_show(getattr(row, name))} -> {_show(value)}")
+            setattr(row, name, value)
+    if row.note_md != entry.note_md:
+        changes.append(f"{where}: note " + ("removed" if entry.note_md is None else "set" if row.note_md is None
+                                            else "changed"))
+        row.note_md = entry.note_md
+    if old_due == row.due_at or row.id is None:
+        return
+    extensions = list(db.execute(select(DeadlineExtension.due_at)
+                                 .where(DeadlineExtension.contest_problem_id == row.id)).scalars())
+    if not extensions:
+        return
+    if row.due_at is None:
+        warnings.append(f"{where}: the deadline is removed, so its {len(extensions)} extension(s) mean nothing now "
+                        f"(they stay; judgectl extension list)")
+    else:
+        earlier = sum(1 for due in extensions if due <= row.due_at)
+        if earlier:
+            warnings.append(f"{where}: the new due_at is not earlier than {earlier} extension(s): they give "
+                            "nothing more now (judgectl extension list)")
+
+
 def apply(db: Session, actor: audit.Actor, spec: ContestSpec, now: datetime) -> ApplyResult:
     """Make the contest what the file says (R35), idempotently: a second apply of the same file changes nothing.
 
@@ -264,6 +299,7 @@ def apply(db: Session, actor: audit.Actor, spec: ContestSpec, now: datetime) -> 
         if row.points != entry.points:  # Decimal compares numerically: 100.00 == 100
             changes.append(f"{entry.label} ({entry.slug}): points {_show(row.points)} -> {_show(entry.points)}")
             row.points = entry.points
+        _apply_deadlines(db, row, entry, changes, warnings)
     if problems:
         raise ContestError(problems)
     db.flush()
@@ -388,6 +424,35 @@ def counted_submissions(db: Session, contest_problem_id: int, user_id: int, sinc
     return db.execute(query).scalar_one()
 
 
+def extensions_for(db: Session, contest_problem: ContestProblem, user: User) -> list[datetime]:
+    """access.py's `extensions`: the student's own extension and those of the groups (not archived) they are in
+    now (deadlines.py gives and removes them)."""
+    own = select(DeadlineExtension.due_at).where(DeadlineExtension.contest_problem_id == contest_problem.id,
+                                                 DeadlineExtension.user_id == user.id)
+    by_group = (select(DeadlineExtension.due_at)
+                .join(GroupMember, GroupMember.group_id == DeadlineExtension.group_id)
+                .join(Group, Group.id == DeadlineExtension.group_id)
+                .where(DeadlineExtension.contest_problem_id == contest_problem.id, GroupMember.user_id == user.id,
+                       GroupMember.removed_at.is_(None), Group.archived_at.is_(None)))
+    return list(db.execute(own.union_all(by_group)).scalars())
+
+
+def submission_decision(db: Session, user: User, contest: Contest, contest_problem: ContestProblem, now: datetime,
+                        language: Optional[str] = None) -> access.Decision:
+    """The one way to decide on a submission (dev_seed now, the public API of 4b later): everything access.can_submit
+    needs, from the database. `now` is the moment the request was received, taken once by the caller before the
+    source is read (a large upload must not become late while it arrives); the submission gets
+    created_at = now and late = decision.late, never recomputed. `user` is the student of the session."""
+    participation, in_group = access_inputs(db, contest, user)
+    last = db.execute(select(func.max(Submission.created_at)).where(
+        Submission.user_id == user.id, Submission.contest_problem_id == contest_problem.id)).scalar()
+    window = access.contest_window_for(contest, participation)
+    counted = counted_submissions(db, contest_problem.id, user.id, window.start, window.end) if window else 0
+    return access.can_submit(user, contest, contest_problem, participation, now, language=language,
+                             last_submission_at=last, counted_submissions=counted, in_group=in_group,
+                             extensions=extensions_for(db, contest_problem, user))
+
+
 # ----------------------------------------------------------------------------- what there is to see (judgectl, API)
 def contests_query(state: Optional[ContestState] = None, include_archived: bool = True):
     query = select(Contest)
@@ -416,6 +481,21 @@ def format_duration(value) -> Optional[str]:
     return (f"{hours}h" if hours else "") + (f"{rest}m" if rest or not hours else "")
 
 
+def _problem_spec(cp: ContestProblem, slug: str, version: int) -> dict:
+    out = {"label": cp.label, "problem": slug, "version": version}
+    if cp.points is not None:
+        out["points"] = float(cp.points)
+    for name in ("available_from", "due_at", "note_md"):
+        if getattr(cp, name) is not None:
+            out[name] = getattr(cp, name)
+    after_due = {key: value.value for key, value in (("statement", cp.after_due_statement),
+                                                     ("submit", cp.after_due_submit))
+                 if value.value != {"statement": "visible", "submit": "late"}[key]}
+    if after_due:
+        out["after_due"] = after_due
+    return out
+
+
 def contest_detail(db: Session, c: Contest) -> dict:
     """The contest in the shape of contest.yaml (so it can be sent back to apply unchanged: `spec`), plus what the
     file does not hold: state, invite code, every contest problem row (hidden ones too) and the participant count."""
@@ -433,9 +513,7 @@ def contest_detail(db: Session, c: Contest) -> dict:
             "allow_upsolving": c.allow_upsolving, "submit_cooldown_sec": c.submit_cooldown_sec,
             "max_submissions_per_problem": c.max_submissions_per_problem, "tests_after_end": c.tests_after_end,
             "plagiarism_enabled": c.plagiarism_enabled,
-            "problems": [{"label": cp.label, "problem": slug, "version": version,
-                          **({"points": float(cp.points)} if cp.points is not None else {})}
-                         for cp, slug, version, _status in rows if not cp.hidden]}
+            "problems": [_problem_spec(cp, slug, version) for cp, slug, version, _status in rows if not cp.hidden]}
     if c.personal_duration is not None:
         spec["personal_duration"] = format_duration(c.personal_duration)
     if c.freeze_at is not None:

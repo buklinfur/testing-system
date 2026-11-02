@@ -82,7 +82,19 @@
         "points": {
           "type": "number", "exclusiveMinimum": 0, "maximum": 100000,
           "description": "Overrides the total of the problem; group points are scaled proportionally."
-        }
+        },
+        "available_from": { "$ref": "#/$defs/time", "description": "Before it (inclusive from) the problem does not exist for students." },
+        "due_at": { "$ref": "#/$defs/time", "description": "Deadline, inclusive: a submission received at due_at is on time. Extensions are given with `judgectl extension`, not here." },
+        "after_due": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "statement": { "enum": ["visible", "hidden"], "default": "visible" },
+            "submit": { "enum": ["no", "late", "yes"], "default": "late", "description": "no: refused; late: accepted and marked late; yes: accepted as usual." }
+          },
+          "description": "What happens after the effective due moment; upsolving after the contest is not touched."
+        },
+        "note_md": { "type": "string", "maxLength": 20000, "description": "The teacher's note on this problem in this contest (Markdown), shown to students with access." }
       }
     }
   }

@@ -15,7 +15,7 @@ from ..settings import Settings
 from ..timeutil import TimezoneError
 from protocol.problem_package import PackageError
 from ..groups import GroupError
-from . import accounts, contests, groups as group_cmds, ops, problems, submissions
+from . import accounts, contests, extensions, groups as group_cmds, ops, problems, submissions
 from .core import CliError, Context
 from ..auth.csvimport import CsvImportError
 
@@ -155,6 +155,22 @@ def build_parser() -> argparse.ArgumentParser:
             json=True).add_argument("slug")
     command(contest, "participants", contests.contest_participants, "who joined and started",
             json=True).add_argument("slug")
+
+    extension = groups.add_parser("extension", help="later deadlines for one student or one group").add_subparsers(
+        dest="cmd", required=True, metavar="COMMAND")
+    p = command(extension, "add", extensions.extension_add,
+                "a later due moment of one problem (again for the same student or group: replaces it)", json=True)
+    p.add_argument("contest")
+    p.add_argument("label")
+    who = p.add_mutually_exclusive_group(required=True)
+    who.add_argument("--user", help="login of the student")
+    who.add_argument("--group", help="the group (name or #id)")
+    p.add_argument("--due", required=True, help="e.g. '2026-11-17 23:59:59' (JUDGE_TIMEZONE) or with Z / +07:00")
+    p.add_argument("--reason", help="a short note (at most 200 characters)")
+    p = command(extension, "list", extensions.extension_list, "extensions of a contest (or of one problem)", json=True)
+    p.add_argument("contest")
+    p.add_argument("label", nargs="?")
+    command(extension, "remove", extensions.extension_remove, "remove an extension by id").add_argument("id", type=int)
 
     group = groups.add_parser("group", help="groups (classes) that contests are addressed to").add_subparsers(
         dest="cmd", required=True, metavar="COMMAND")

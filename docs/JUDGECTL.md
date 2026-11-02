@@ -47,6 +47,8 @@ judgectl problem import (<папка> | <файл.zip> | -) [--dry-run] | list [
 judgectl contest apply (<contest.yaml> | -) [--dry-run] | list [--all] | show <slug> | publish <slug>
                 | archive <slug> | pin <контест> <метка> <версия> (--rejudge | --no-rejudge)
                 | code regenerate <slug> | participants <slug>
+judgectl extension add <контест> <метка> (--user <логин> | --group <группа>) --due <время> [--reason <текст>]
+                | list <контест> [<метка>] | remove <id>
 judgectl group  create <название> | rename <группа> <название> | archive <группа> | unarchive <группа>
                 | list [--all] | show <группа> [--history] | add <группа> <логин>... | remove <группа> <логин>...
 judgectl submission show <id>
@@ -172,6 +174,17 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | `pin <контест> <метка> <версия> --rejudge \| --no-rejudge` | Закрепить другую `ready`-версию; выбор обязателен: перепроверить все посылки задачи или оставить старые результаты |
 | `code regenerate <slug>` | Новый код приглашения, старый перестаёт работать |
 | `participants <slug>` | Кто вступил и когда нажал «Начать» |
+
+### extension — продления сроков ([`CONTESTS.md`](CONTESTS.md) §5)
+
+| Команда | Что делает |
+|---|---|
+| `add <контест> <метка> (--user <логин> \| --group <группа>) --due <время> [--reason <текст>]` | Срок задачи позже `due_at` для одного ученика или одной группы. `--due` — как в `contest.yaml`: без смещения — `JUDGE_TIMEZONE`, или с `Z` / `+07:00`; «до конца дня» — `23:59:59`. Повторно для того же ученика или группы — заменяет срок (печатает прежний; он и в аудите) |
+| `list <контест> [<метка>]` | Продления: кому, до какого времени, базовый срок, причина; `--json` — время в UTC |
+| `remove <id>` | Удалить продление (уже принятые посылки не меняются) |
+
+Отказы: задача без `due_at`, срок не позже `due_at`, не ученик, архивная группа. Аудит — `contest.extension_add`
+(с `replaced`), `contest.extension_remove`.
 
 ### group — группы (классы, D-020)
 

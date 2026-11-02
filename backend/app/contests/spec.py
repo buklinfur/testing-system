@@ -21,6 +21,7 @@ from ..timeutil import parse_local
 
 SCHEMA_PATH = Path(protocol.__file__).resolve().parent / "schemas" / "contest.schema.json"
 DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?$")
+MINUTE_59_RE = re.compile(r"[T ]\d{2}:59(?:Z|[+-]\d{2}:\d{2})?$")  # no seconds, minute 59
 
 
 class ContestSpecError(ValueError):
@@ -45,6 +46,12 @@ class ProblemEntry:
     slug: str
     version: Optional[int]
     points: Optional[Decimal]
+    available_from: Optional[datetime] = None
+    due_at: Optional[datetime] = None
+    after_due_statement: str = "visible"
+    after_due_submit: str = "late"
+    note_md: Optional[str] = None
+    due_at_minute_59: bool = False  # written as HH:59 without seconds: probably meant the end of that minute
 
 
 @dataclass
@@ -138,6 +145,18 @@ def from_data(data, tz: tzinfo) -> ContestSpec:
     twice = sorted({name for name in group_names if lowered.count(name.lower()) > 1})
     if twice:
         problems.append(f"each group may occur once (case does not matter): {', '.join(twice)}")
+    entries = []
+    for p in data["problems"]:
+        available, due = (parse_local(p[k], tz) if p.get(k) else None for k in ("available_from", "due_at"))
+        if available is not None and due is not None and not available < due:
+            problems.append(f"{p['label']}: available_from must be before due_at")
+        after_due = p.get("after_due", {})
+        entries.append(ProblemEntry(
+            p["label"], p["problem"], p.get("version"),
+            Decimal(str(p["points"])) if p.get("points") is not None else None,
+            available_from=available, due_at=due, after_due_statement=after_due.get("statement", "visible"),
+            after_due_submit=after_due.get("submit", "late"), note_md=p.get("note_md") or None,
+            due_at_minute_59=isinstance(p.get("due_at"), str) and bool(MINUTE_59_RE.search(p["due_at"]))))
     labels = [p["label"] for p in data["problems"]]
     slugs = [p["problem"] for p in data["problems"]]
     for what, values in (("label", labels), ("problem", slugs)):
@@ -155,7 +174,5 @@ def from_data(data, tz: tzinfo) -> ContestSpec:
         languages=data.get("languages"), submit_cooldown_sec=data.get("submit_cooldown_sec", 15),
         max_submissions_per_problem=data.get("max_submissions_per_problem"),
         tests_after_end=data.get("tests_after_end", False), plagiarism_enabled=data.get("plagiarism_enabled", False),
-        problems=[ProblemEntry(p["label"], p["problem"], p.get("version"),
-                               Decimal(str(p["points"])) if p.get("points") is not None else None)
-                  for p in data["problems"]],
+        problems=entries,
     )

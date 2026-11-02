@@ -56,6 +56,28 @@ class SpecTests(unittest.TestCase):
                              "join_policy is replaced by access: {mode: open}", "schema: leaderboard")
         self.assertFalse(any("join_policy" in p and "schema" in p for p in error.problems))
 
+    def test_deadlines_of_problems(self):
+        base = BASE.replace("  - {label: A, problem: sum-of-two}\n", "")
+        s = spec("  - {label: A, problem: sum-of-two, available_from: 2026-11-10 09:30, due_at: 2026-11-10 23:59:59,"
+                 " after_due: {statement: hidden, submit: 'no'}, note_md: 'До конца дня'}\n"
+                 "  - {label: B, problem: pair-with-sum}\n", base=base)
+        a, b = s.problems
+        self.assertEqual((a.available_from, a.due_at), (datetime(2026, 11, 10, 2, 30, tzinfo=timezone.utc),
+                                                        datetime(2026, 11, 10, 16, 59, 59, tzinfo=timezone.utc)))
+        self.assertEqual((a.after_due_statement, a.after_due_submit, a.note_md, a.due_at_minute_59),
+                         ("hidden", "no", "До конца дня", False))
+        self.assertEqual((b.available_from, b.due_at, b.after_due_statement, b.after_due_submit, b.note_md),
+                         (None, None, "visible", "late", None))
+        for text, flagged in (("2026-11-10 23:59", True), ("2026-11-10T23:59+07:00", True), ("2026-11-10 23:59Z", True),
+                              ("2026-11-10 23:59:00", False), ("2026-11-10 23:58", False), ("2026-11-10 12:00", False)):
+            with self.subTest(text):
+                entry = spec(f"  - {{label: A, problem: x1, due_at: '{text}'}}\n", base=base).problems[0]
+                self.assertEqual(entry.due_at_minute_59, flagged)
+        self.refused(base + "  - {label: A, problem: x1, available_from: 2026-11-10 12:00, due_at: 2026-11-10 12:00}\n",
+                     "A: available_from must be before due_at")
+        self.refused(base + "  - {label: A, problem: x1, after_due: {submit: maybe}}\n", "schema: problems/0/after_due")
+        self.refused(base + "  - {label: A, problem: x1, extensions: []}\n", "schema: problems/0")  # not in the file
+
     def test_access_groups(self):
         s = spec("access: {mode: code_or_groups, groups: ['  7  Б ', 8А]}\n")
         self.assertEqual((s.access_mode, s.groups), ("code_or_groups", ["7 Б", "8А"]))

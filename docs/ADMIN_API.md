@@ -120,7 +120,9 @@ two_factor (только у админов)}`; хешей и секретов н
 (`contests/spec.py`, `from_data`) и тот же `apply`, что у `judgectl contest apply` ([`CONTESTS.md`](CONTESTS.md)).
 `GET /contests/{slug}` отдаёт `spec` в форме `contest.yaml` (время — UTC с `Z`, длительность — `1h30m`): отправленный
 обратно через `PUT`, он ничего не меняет. Доступ — `access: {mode, groups}` (4а.3a; `join_policy` из 4а.2 — 422
-`contest_invalid` с подсказкой); неизвестная или архивная группа — 409 `contest_conflict`. Эндпоинты самих групп — 4а.3b. `judgectl contest show --json` выдаёт ту же структуру.
+`contest_invalid` с подсказкой); неизвестная или архивная группа — 409 `contest_conflict`. У задачи — `available_from`, `due_at`, `after_due:
+{statement, submit}`, `note_md` (`CONTESTS.md` §1); предупреждения о сроках — в `warnings`. Эндпоинты групп и
+продлений — 4а.3b. `judgectl contest show --json` выдаёт ту же структуру.
 
 | Метод и путь | Тело / параметры | Ответ | Ошибки |
 |---|---|---|---|
