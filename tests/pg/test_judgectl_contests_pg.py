@@ -261,7 +261,7 @@ class JudgectlContestTests(PgCase):
         self.ok("contest", "publish", "olymp")
         code, out, err = seed("--contest", "olymp", "--label", "A", "--count", "2")
         self.assertEqual(code, 1)  # the second one is refused by the 600 s cooldown
-        self.assertIn("dev-student-1 joined olymp", err)
+        self.assertIn("dev-student-1 entered olymp (code)", err)
         self.assertIn("pressed start", err)
         self.assertIn("refused by the access rules: cooldown", err)
         made = json.loads(out)

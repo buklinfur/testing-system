@@ -11,8 +11,8 @@ from typing import Optional
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from ..models import (AuditLog, AuthLockout, Contest, Judgement, LoginToken, Participation, Problem, ProblemVersion, Role, Submission, User,
-                      UserSession)
+from ..models import (AuditLog, AuthLockout, Contest, ContestGroup, DeadlineExtension, Group, GroupMember, Judgement,
+                      LoginToken, Participation, Problem, ProblemVersion, Role, Submission, User, UserSession)
 from ..timeutil import iso_utc
 from . import audit, login_tokens, ratelimit, sessions
 from .logins import LoginError, checked_login, default_display_name, default_login, unique_login
@@ -220,6 +220,7 @@ def confirm_totp(db: Session, actor: audit.Actor, user: User, box: SecretBox, co
 
 # ----------------------------------------------------------------------------- deletion (R9 refined, MODULE_4A 5.5)
 # Everything that would keep a trace of a user. A user with any of them is only disabled, never deleted.
+# A student's own membership of groups is not a trace (В5): deleting the user deletes those rows, like sessions.
 TRACES = (
     ("problems owned", Problem.owner_id),
     ("problem versions imported", ProblemVersion.imported_by),
@@ -228,6 +229,12 @@ TRACES = (
     ("submissions", Submission.user_id),
     ("rejudges requested", Judgement.requested_by),
     ("audit records as actor (web actions or logins)", AuditLog.actor_user_id),
+    ("groups created", Group.created_by),
+    ("students added to groups", GroupMember.added_by),
+    ("students removed from groups", GroupMember.removed_by),
+    ("groups attached to contests", ContestGroup.added_by),
+    ("deadline extensions given", DeadlineExtension.created_by),
+    ("deadline extensions", DeadlineExtension.user_id),
 )
 
 
@@ -246,9 +253,12 @@ def _describe(found: dict) -> str:
 
 
 def _erase(db: Session, user: User) -> dict:
-    """Delete the user with its sessions, QR tokens and the failures / lockouts of its login (no audit here)."""
+    """Delete the user with its sessions, QR tokens, group memberships and the failures / lockouts of its login
+    (no audit here)."""
     removed = {"sessions_deleted": db.execute(delete(UserSession).where(UserSession.user_id == user.id)).rowcount,
-               "qr_tokens_deleted": db.execute(delete(LoginToken).where(LoginToken.user_id == user.id)).rowcount}
+               "qr_tokens_deleted": db.execute(delete(LoginToken).where(LoginToken.user_id == user.id)).rowcount,
+               "group_memberships_deleted": db.execute(delete(GroupMember)
+                                                       .where(GroupMember.user_id == user.id)).rowcount}
     removed.update(ratelimit.forget_login(db, user.login))
     db.delete(user)
     db.flush()

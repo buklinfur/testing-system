@@ -61,6 +61,7 @@ class ContestSpec:
     icpc_penalty_minutes: int
     leaderboard: str
     access_mode: str
+    groups: list  # names of the groups the contest is addressed to (groups / code_or_groups)
     allow_upsolving: bool
     languages: Optional[list]
     submit_cooldown_sec: int
@@ -124,6 +125,19 @@ def from_data(data, tz: tzinfo) -> ContestSpec:
             problems.append("freeze_at must be after starts_at and before ends_at")
         if leaderboard == "hidden":
             problems.append("freeze_at with leaderboard: hidden makes no sense: nobody sees the leaderboard")
+    access = data.get("access", {})
+    mode = access.get("mode", "code")
+    group_names = [" ".join(name.split()) for name in access.get("groups", [])]
+    if mode in ("groups", "code_or_groups") and not group_names:
+        problems.append(f"access mode {mode} needs at least one group in access.groups")
+    if mode in ("open", "code") and group_names:
+        problems.append(f"access.groups is used only with the modes groups and code_or_groups, not {mode}")
+    if any(not name for name in group_names):
+        problems.append("a group name in access.groups is blank")
+    lowered = [name.lower() for name in group_names]
+    twice = sorted({name for name in group_names if lowered.count(name.lower()) > 1})
+    if twice:
+        problems.append(f"each group may occur once (case does not matter): {', '.join(twice)}")
     labels = [p["label"] for p in data["problems"]]
     slugs = [p["problem"] for p in data["problems"]]
     for what, values in (("label", labels), ("problem", slugs)):
@@ -137,7 +151,7 @@ def from_data(data, tz: tzinfo) -> ContestSpec:
         starts_at=starts, ends_at=ends, timing_mode=data.get("timing_mode", "fixed"), personal_duration=duration,
         freeze_at=freeze, scoring_mode=data.get("scoring_mode", "points"),
         icpc_penalty_minutes=data.get("icpc_penalty_minutes", 20), leaderboard=leaderboard,
-        access_mode=data.get("access", {}).get("mode", "code"), allow_upsolving=data.get("allow_upsolving", True),
+        access_mode=mode, groups=group_names, allow_upsolving=data.get("allow_upsolving", True),
         languages=data.get("languages"), submit_cooldown_sec=data.get("submit_cooldown_sec", 15),
         max_submissions_per_problem=data.get("max_submissions_per_problem"),
         tests_after_end=data.get("tests_after_end", False), plagiarism_enabled=data.get("plagiarism_enabled", False),

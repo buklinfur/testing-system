@@ -14,7 +14,8 @@ from ..contests.spec import ContestSpecError
 from ..settings import Settings
 from ..timeutil import TimezoneError
 from protocol.problem_package import PackageError
-from . import accounts, contests, ops, problems, submissions
+from ..groups import GroupError
+from . import accounts, contests, groups as group_cmds, ops, problems, submissions
 from .core import CliError, Context
 from ..auth.csvimport import CsvImportError
 
@@ -155,6 +156,26 @@ def build_parser() -> argparse.ArgumentParser:
     command(contest, "participants", contests.contest_participants, "who joined and started",
             json=True).add_argument("slug")
 
+    group = groups.add_parser("group", help="groups (classes) that contests are addressed to").add_subparsers(
+        dest="cmd", required=True, metavar="COMMAND")
+    command(group, "create", group_cmds.group_create, "a new group, e.g. 7Б").add_argument("name")
+    p = command(group, "rename", group_cmds.group_rename, "a new name (<group>: name or #id)")
+    p.add_argument("group")
+    p.add_argument("name")
+    command(group, "archive", group_cmds.group_archive,
+            "archive: gives no access any more, lists the contests it is attached to").add_argument("group")
+    command(group, "unarchive", group_cmds.group_unarchive, "undo archive").add_argument("group")
+    p = command(group, "list", group_cmds.group_list, "groups with their number of students and contests", json=True)
+    p.add_argument("--all", action="store_true", help="include archived groups")
+    p = command(group, "show", group_cmds.group_show, "students and contests of a group", json=True)
+    p.add_argument("group")
+    p.add_argument("--history", action="store_true", help="also students removed from it, with when")
+    for name, func, text in (("add", group_cmds.group_add, "add students (by login)"),
+                             ("remove", group_cmds.group_remove, "remove students; their history stays")):
+        p = command(group, name, func, text, json=True)
+        p.add_argument("group")
+        p.add_argument("logins", nargs="+", metavar="login")
+
     submission = groups.add_parser("submission", help="submissions").add_subparsers(dest="cmd", required=True,
                                                                                     metavar="COMMAND")
     command(submission, "show", submissions.submission_show, "one submission with every judgement and test",
@@ -190,7 +211,7 @@ def main(argv: Optional[list] = None, ctx: Optional[Context] = None) -> int:
     try:
         return args.func(ctx, args)
     except (CliError, UserError, LoginError, TotpConfigError, CsvImportError, PackageError, ContestError,
-            ContestSpecError, TimezoneError) as exc:
+            ContestSpecError, TimezoneError, GroupError) as exc:
         print(f"judgectl: {exc}", file=ctx.err)
         return 1
     except (KeyboardInterrupt, EOFError):

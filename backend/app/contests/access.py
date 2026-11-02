@@ -123,16 +123,19 @@ def _code_ok(contest, code: Optional[str]) -> bool:
 def can_enter(user, contest, participation, now: datetime, code: Optional[str] = None,
               in_group: bool = False) -> Decision:
     """The first entry creates the participation (R23, D-021); `joined_via` tells how. A student of an attached
-    group comes in without a code (group), even when they type one. Already a participant: a right code still
-    turns a participation that did not come in with the code into a code one ("rejoin_with_code"), so a student
-    taken out of the group, or let in while the contest was open, gets access back with the code."""
+    group comes in without a code (group), even when they type one. Already a participant without access through
+    a group: a right code turns a participation that did not come in with the code into a code one
+    ("rejoin_with_code"), so a student taken out of the group, or let in while the contest was open, gets access
+    back with the code."""
     if is_admin(user):
         return Decision(False, "admins_do_not_join")
     if _v(contest.state) != "published":
         return Decision(False, "not_published")
     mode = _v(contest.access_mode)
     if participation is not None:
-        if mode in CODE_MODES and _v(participation.joined_via) != "code" and _code_ok(contest, code):
+        through_group = mode in GROUP_MODES and in_group
+        if mode in CODE_MODES and _v(participation.joined_via) != "code" and not through_group \
+                and _code_ok(contest, code):
             return Decision(True, "rejoin_with_code", joined_via="code")
         return Decision(False, "already_joined")
     if contest_over(contest, now) and not contest.allow_upsolving:

@@ -119,7 +119,8 @@ two_factor (только у админов)}`; хешей и секретов н
 Контест — это `contest.yaml` в виде JSON: та же схема (`protocol/schemas/contest.schema.json`), тот же разбор
 (`contests/spec.py`, `from_data`) и тот же `apply`, что у `judgectl contest apply` ([`CONTESTS.md`](CONTESTS.md)).
 `GET /contests/{slug}` отдаёт `spec` в форме `contest.yaml` (время — UTC с `Z`, длительность — `1h30m`): отправленный
-обратно через `PUT`, он ничего не меняет. `judgectl contest show --json` выдаёт ту же структуру.
+обратно через `PUT`, он ничего не меняет. Доступ — `access: {mode, groups}` (4а.3a; `join_policy` из 4а.2 — 422
+`contest_invalid` с подсказкой); неизвестная или архивная группа — 409 `contest_conflict`. Эндпоинты самих групп — 4а.3b. `judgectl contest show --json` выдаёт ту же структуру.
 
 | Метод и путь | Тело / параметры | Ответ | Ошибки |
 |---|---|---|---|

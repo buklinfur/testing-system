@@ -125,11 +125,11 @@ def submit_to_contest(session: Session, blobs: BlobStore, args, student: User, s
     contest = service.get_contest(session, args.contest)
     cp = service.visible_row(session, contest, args.label)
     now = datetime.now(timezone.utc)
-    part = service.participation_of(session, contest, student)
+    part, in_group = service.access_inputs(session, contest, student)
     if part is None:
-        part = service.join(session, student, contest, now, contest.invite_code)
-        print(f"dev_seed: {student.login} joined {contest.slug}", file=sys.stderr)
-    if access.can_start(student, contest, part, now):
+        part = service.enter(session, student, contest, now, contest.invite_code)
+        print(f"dev_seed: {student.login} entered {contest.slug} ({part.joined_via.value})", file=sys.stderr)
+    if access.can_start(student, contest, part, now, in_group=in_group):
         service.start(session, student, contest, now)
         print(f"dev_seed: {student.login} pressed start", file=sys.stderr)
     source_sha = store_blob(session, blobs, source)
@@ -140,7 +140,7 @@ def submit_to_contest(session: Session, blobs: BlobStore, args, student: User, s
             Submission.user_id == student.id, Submission.contest_problem_id == cp.id)).scalar()
         window = access.contest_window_for(contest, part)
         counted = service.counted_submissions(session, cp.id, student.id, window.start, window.end) if window else 0
-        decision = access.can_submit(student, contest, cp, part, now, language=args.language,
+        decision = access.can_submit(student, contest, cp, part, now, language=args.language, in_group=in_group,
                                      last_submission_at=last, counted_submissions=counted)
         if not decision:
             wait = f" (retry in {decision.retry_after_s} s)" if decision.retry_after_s else ""

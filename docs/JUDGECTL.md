@@ -47,6 +47,8 @@ judgectl problem import (<папка> | <файл.zip> | -) [--dry-run] | list [
 judgectl contest apply (<contest.yaml> | -) [--dry-run] | list [--all] | show <slug> | publish <slug>
                 | archive <slug> | pin <контест> <метка> <версия> (--rejudge | --no-rejudge)
                 | code regenerate <slug> | participants <slug>
+judgectl group  create <название> | rename <группа> <название> | archive <группа> | unarchive <группа>
+                | list [--all] | show <группа> [--history] | add <группа> <логин>... | remove <группа> <логин>...
 judgectl submission show <id>
                 | rejudge (--id <id> | --contest <slug> --problem <метка> | --contest-problem-id <id>
                            | --problem-version <slug>@<версия>) [--verdicts WA,TL]
@@ -170,6 +172,27 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | `pin <контест> <метка> <версия> --rejudge \| --no-rejudge` | Закрепить другую `ready`-версию; выбор обязателен: перепроверить все посылки задачи или оставить старые результаты |
 | `code regenerate <slug>` | Новый код приглашения, старый перестаёт работать |
 | `participants <slug>` | Кто вступил и когда нажал «Начать» |
+
+### group — группы (классы, D-020)
+
+Группа — адресат контестов в режимах `groups` и `code_or_groups` (`access.groups` в `contest.yaml`,
+[`CONTESTS.md`](CONTESTS.md) §1–§3). `<группа>` — название (без учёта регистра; среди неархивных оно уникально) или
+`#id` (нужен, когда несколько архивных групп названы одинаково). Каждое изменение — в аудите (`group.create`,
+`group.rename`, `group.archive`, `group.unarchive`, `group.add_members`, `group.remove_members`).
+
+| Команда | Что делает |
+|---|---|
+| `create <название>` | Новая группа; пробелы по краям и двойные убираются, регистр сохраняется |
+| `rename <группа> <название>` | Новое название |
+| `archive <группа>` | Группа больше не даёт доступа; в stderr — контесты, к которым она подключена. Не удаляется никогда |
+| `unarchive <группа>` | Вернуть; отказ, если её название уже занято другой группой |
+| `list [--all]` | Группы с числом учеников и контестов; архивные — с `--all` |
+| `show <группа> [--history]` | Ученики и контесты; `--history` — и убранные из группы, с датами |
+| `add <группа> <логин>...` | Добавить учеников (только `student`; в архивную нельзя). Уже состоящие — в stderr. Доступ к контестам группы — сразу |
+| `remove <группа> <логин>...` | Убрать: строка остаётся с `removed_at` (кто был в классе), доступ к контестам группы пропадает, свои посылки ученик видит |
+
+Удаление ученика (`user delete`, по правилам следов) удаляет и его строки состава групп: членство — не след (В5).
+Следами считаются действия админа с группами из веба (создание, изменения состава, подключение к контесту).
 
 ### submission — посылки
 

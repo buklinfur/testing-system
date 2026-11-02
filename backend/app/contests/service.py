@@ -1,4 +1,4 @@
-"""Contests: apply from contest.yaml, pin, publish/archive, invite codes, join, personal start (docs/CONTESTS.md).
+"""Contests: apply from contest.yaml, pin, publish/archive, invite codes, entry, personal start (docs/CONTESTS.md).
 
 Functions flush but never commit; the caller owns the transaction (judgectl: one per command). Every change is
 written to audit_log. Who may do what is decided by access.py; these functions only carry it out.
@@ -13,16 +13,19 @@ from typing import Optional
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
+from .. import groups as g
 from .. import queue as q
 from ..auth import audit
-from ..models import (AccessMode, Contest, ContestProblem, ContestState, JoinedVia, Language, LeaderboardMode,
-                      Participation, Problem, ProblemVersion, ScoringMode, Submission, TimingMode, User, VersionStatus)
+from ..models import (AccessMode, Contest, ContestGroup, ContestProblem, ContestState, Group, JoinedVia, Language,
+                      LeaderboardMode, Participation, Problem, ProblemVersion, ScoringMode, Submission, TimingMode,
+                      User, VersionStatus)
 from . import access
 from .spec import ContestSpec
 
 # invite codes: 6 characters without look-alikes (no 0/O, 1/I/L, 2/Z, 5/S, 8/B), typed in any case
 INVITE_ALPHABET = "ACDEFGHJKMNPQRTUVWXY3479"
 INVITE_LENGTH = 6
+CODE_MODES = (AccessMode.code, AccessMode.code_or_groups)
 
 
 class ContestError(ValueError):
@@ -72,9 +75,32 @@ def _version_no(db: Session, version_id: int) -> int:
     return db.get(ProblemVersion, version_id).version
 
 
-def _resolve(db: Session, spec: ContestSpec) -> dict:
-    """slug -> (problem, the version asked for or None); ContestError with every problem."""
+def _resolve_groups(db: Session, spec: ContestSpec, problems: list) -> list[Group]:
+    """The groups of access.groups by name (ignoring case): a group not archived, or an archived one this contest
+    already has (it stays attached and gives no access, K6); an archived group cannot be attached anew."""
+    found = []
+    attached = {}
+    if spec.groups:
+        rows = db.execute(select(Group).join(ContestGroup, ContestGroup.group_id == Group.id)
+                          .join(Contest, Contest.id == ContestGroup.contest_id).where(Contest.slug == spec.slug)).scalars()
+        attached = {grp.name.lower(): grp for grp in rows}
+    for name in spec.groups:
+        live = db.execute(select(Group).where(func.lower(Group.name) == name.lower(),
+                                              Group.archived_at.is_(None))).scalar_one_or_none()
+        group = live or attached.get(name.lower())
+        if group is not None:
+            found.append(group)
+        elif db.execute(select(Group.id).where(func.lower(Group.name) == name.lower())).first() is not None:
+            problems.append(f"group {name!r} is archived: an archived group cannot be attached to a contest")
+        else:
+            problems.append(f"no group {name!r} (judgectl group create {name!r})")
+    return found
+
+
+def _resolve(db: Session, spec: ContestSpec) -> tuple:
+    """(slug -> (problem, the version asked for or None), the groups); ContestError with every problem."""
     problems, out = [], {}
+    wanted_groups = _resolve_groups(db, spec, problems)
     if spec.languages:
         enabled = set(db.execute(select(Language.key).where(Language.enabled.is_(True))).scalars())
         unknown = sorted(set(spec.languages) - enabled)
@@ -105,7 +131,27 @@ def _resolve(db: Session, spec: ContestSpec) -> dict:
         out[entry.slug] = (problem, version)
     if problems:
         raise ContestError(problems)
-    return out
+    return out, wanted_groups
+
+
+def _apply_groups(db: Session, actor: audit.Actor, contest: Contest, wanted: list, now: datetime,
+                  changes: list, warnings: list) -> None:
+    current = {cg.group_id: cg for cg in db.execute(select(ContestGroup)
+                                                     .where(ContestGroup.contest_id == contest.id)).scalars()}
+    for group in wanted:
+        if group.id not in current:
+            db.add(ContestGroup(contest_id=contest.id, group_id=group.id, added_at=now, added_by=actor.user_id))
+            changes.append(f"group {group.name} attached")
+        if group.archived_at is not None:
+            warnings.append(f"group {group.name} is archived: it gives no access to this contest")
+    keep = {group.id for group in wanted}
+    for group_id, row in current.items():
+        if group_id not in keep:
+            name = db.get(Group, group_id).name
+            db.delete(row)
+            changes.append(f"group {name} detached")
+            warnings.append(f"group {name} detached: its students lose access to the contest unless they came in "
+                            "with the invite code (their submissions and scores stay visible to them)")
 
 
 def _fields(spec: ContestSpec) -> dict:
@@ -133,7 +179,7 @@ def apply(db: Session, actor: audit.Actor, spec: ContestSpec, now: datetime) -> 
     the one in the file (or the file names none), else it gets a new row. A pinned version that differs from the
     file is changed only while the problem has no submissions; otherwise `contest pin` decides about rejudging.
     """
-    resolved = _resolve(db, spec)
+    resolved, wanted_groups = _resolve(db, spec)
     contest = db.execute(select(Contest).where(Contest.slug == spec.slug).with_for_update()).scalar_one_or_none()
     created = contest is None
     changes, warnings = [], []
@@ -142,18 +188,21 @@ def apply(db: Session, actor: audit.Actor, spec: ContestSpec, now: datetime) -> 
         db.add(contest)
         changes.append("contest created (draft)")
     else:
-        if contest.access_mode == AccessMode.open and spec.access_mode == "code" and contest.invite_code is not None:
-            warnings.append(f"access mode open -> code: the invite code this contest had before is valid again; "
-                            f"if it may have spread, give a new one: judgectl contest code regenerate {contest.slug}")
+        new_mode = AccessMode(spec.access_mode)
+        if contest.access_mode not in CODE_MODES and new_mode in CODE_MODES and contest.invite_code is not None:
+            warnings.append(f"access mode {contest.access_mode.value} -> {new_mode.value}: the invite code this "
+                            "contest had before is valid again; if it may have spread, give a new one: "
+                            f"judgectl contest code regenerate {contest.slug}")
         for name, value in _fields(spec).items():
             old = getattr(contest, name)
             if old != value:
                 setattr(contest, name, value)
                 changes.append(f"{name}: {_show(old)} -> {_show(value)}")
-    if contest.access_mode == AccessMode.code and contest.invite_code is None:
+    if contest.access_mode in CODE_MODES and contest.invite_code is None:
         contest.invite_code = new_invite_code(db)
         changes.append("invite code created")
     db.flush()
+    _apply_groups(db, actor, contest, wanted_groups, now, changes, warnings)
 
     rows = list(db.execute(select(ContestProblem).where(ContestProblem.contest_id == contest.id)
                            .order_by(ContestProblem.id)).scalars())
@@ -269,8 +318,9 @@ def set_state(db: Session, actor: audit.Actor, contest: Contest, state: ContestS
 
 
 def regenerate_code(db: Session, actor: audit.Actor, contest: Contest, now: datetime) -> str:
-    if contest.access_mode != AccessMode.code:
-        raise ContestError(f"contest {contest.slug} is open: it has no invite code", "contest_is_open")
+    if contest.access_mode not in CODE_MODES:
+        raise ContestError(f"contest {contest.slug} has no invite code (access mode {contest.access_mode.value})",
+                           "contest_is_open")
     contest.invite_code = new_invite_code(db)
     audit.record(db, actor, "contest.code_regenerate", now, object_type="contest", object_id=contest.id,
                  details={"slug": contest.slug})
@@ -282,25 +332,39 @@ def participation_of(db: Session, contest: Contest, user: User, lock: bool = Fal
     return db.execute(query.with_for_update() if lock else query).scalar_one_or_none()
 
 
-def join(db: Session, user: User, contest: Contest, now: datetime, code: Optional[str] = None) -> Participation:
-    """R23: a student joins (open, or with the invite code). Group membership and turning a participation into a
-    code one (access.can_enter, "rejoin_with_code") come with the groups service."""
-    existing = participation_of(db, contest, user)
-    decision = access.can_enter(user, contest, existing, now, code)
-    if existing is not None and decision:
-        decision = access.Decision(False, "already_joined")
+def access_inputs(db: Session, contest: Contest, user: User, lock: bool = False) -> tuple:
+    """(participation, in_group): what access.py needs about this student and this contest, from the database."""
+    return participation_of(db, contest, user, lock), g.in_contest_group(db, contest, user)
+
+
+def enter(db: Session, user: User, contest: Contest, now: datetime, code: Optional[str] = None,
+          ip: Optional[str] = None) -> Participation:
+    """R23, D-021: the first entry of a student creates the participation with joined_via (access.can_enter).
+    A participant who did not come in with the code and types the right one gets joined_via = code (В6), audited
+    as contest.rejoin_with_code. `user` is the student of the session, never an id from a request."""
+    existing, in_group = access_inputs(db, contest, user, lock=True)
+    decision = access.can_enter(user, contest, existing, now, code, in_group=in_group)
     if not decision:
         raise ContestError(decision.reason, decision.reason)
-    row = Participation(contest_id=contest.id, user_id=user.id, joined_at=now, joined_via=JoinedVia(decision.joined_via))
+    if existing is not None:  # rejoin_with_code
+        old = existing.joined_via.value
+        existing.joined_via = JoinedVia.code
+        db.flush()
+        audit.record(db, audit.Actor(user_id=user.id, ip=ip), "contest.rejoin_with_code", now,
+                     object_type="participation", object_id=existing.id,
+                     details={"contest": contest.slug, "from": old, "to": "code"})
+        return existing
+    row = Participation(contest_id=contest.id, user_id=user.id, joined_at=now,
+                        joined_via=JoinedVia(decision.joined_via))
     db.add(row)
     db.flush()
     return row
 
 
 def start(db: Session, user: User, contest: Contest, now: datetime) -> Participation:
-    """R21: the personal start, once."""
-    row = participation_of(db, contest, user, lock=True)
-    decision = access.can_start(user, contest, row, now)
+    """R21: the personal start, once, only with access."""
+    row, in_group = access_inputs(db, contest, user, lock=True)
+    decision = access.can_start(user, contest, row, now, in_group=in_group)
     if not decision:
         raise ContestError(decision.reason, decision.reason)
     row.started_at = now
@@ -360,10 +424,12 @@ def contest_detail(db: Session, c: Contest) -> dict:
                       .join(ProblemVersion, ProblemVersion.id == ContestProblem.problem_version_id)
                       .where(ContestProblem.contest_id == c.id)
                       .order_by(ContestProblem.hidden, ContestProblem.position, ContestProblem.id)).all()
+    names = [grp.name for grp in g.contest_groups(db, c)]
+    access_spec = {"mode": c.access_mode.value, **({"groups": names} if names else {})}
     spec = {"format_version": 1, "slug": c.slug, "title": c.title, "description": c.description_md,
             "starts_at": c.starts_at, "ends_at": c.ends_at, "timing_mode": c.timing_mode.value,
             "scoring_mode": c.scoring_mode.value, "icpc_penalty_minutes": c.icpc_penalty_minutes,
-            "leaderboard": c.leaderboard.value, "access": {"mode": c.access_mode.value},
+            "leaderboard": c.leaderboard.value, "access": access_spec,
             "allow_upsolving": c.allow_upsolving, "submit_cooldown_sec": c.submit_cooldown_sec,
             "max_submissions_per_problem": c.max_submissions_per_problem, "tests_after_end": c.tests_after_end,
             "plagiarism_enabled": c.plagiarism_enabled,
@@ -377,7 +443,7 @@ def contest_detail(db: Session, c: Contest) -> dict:
     if c.languages is not None:
         spec["languages"] = c.languages
     return {"spec": spec, "state": c.state, "created_at": c.created_at,
-            "invite_code": c.invite_code if c.access_mode == AccessMode.code else None,
+            "invite_code": c.invite_code if c.access_mode in CODE_MODES else None,
             "participants": db.execute(select(func.count()).select_from(Participation)
                                        .where(Participation.contest_id == c.id)).scalar_one(),
             "rows": [{"id": cp.id, "label": cp.label, "problem": slug, "version": version, "status": status,

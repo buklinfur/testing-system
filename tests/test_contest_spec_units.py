@@ -56,6 +56,16 @@ class SpecTests(unittest.TestCase):
                              "join_policy is replaced by access: {mode: open}", "schema: leaderboard")
         self.assertFalse(any("join_policy" in p and "schema" in p for p in error.problems))
 
+    def test_access_groups(self):
+        s = spec("access: {mode: code_or_groups, groups: ['  7  Б ', 8А]}\n")
+        self.assertEqual((s.access_mode, s.groups), ("code_or_groups", ["7 Б", "8А"]))
+        self.assertEqual(spec().groups, [])
+        self.refused(BASE + "access: {mode: groups}\n", "access mode groups needs at least one group")
+        self.refused(BASE + "access: {mode: code, groups: [7Б]}\n", "only with the modes groups and code_or_groups")
+        self.refused(BASE + "access: {mode: groups, groups: [7Б, 7б]}\n", "each group may occur once")
+        self.refused(BASE + "access: {mode: groups, groups: ['   ']}\n", "a group name in access.groups is blank")
+        self.refused(BASE + "access: {mode: groups, groups: ['']}\n", "schema: access/groups/0")
+
     def test_times_without_an_offset_are_judge_timezone_and_dates_stay_text(self):
         s = spec("ends_at: '2026-11-10T12:00:00+00:00'\n")
         self.assertEqual(s.starts_at, datetime(2026, 11, 10, 2, 0, tzinfo=timezone.utc))  # 09:00 in Novosibirsk

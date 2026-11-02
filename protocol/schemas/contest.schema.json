@@ -26,7 +26,15 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "mode": { "enum": ["open", "code"], "default": "code", "description": "open: any student, with a button; code: with the invite code." }
+        "mode": {
+          "enum": ["open", "code", "groups", "code_or_groups"], "default": "code",
+          "description": "open: any student, with a button; code: with the invite code; groups: students now in one of `groups`, without a code; code_or_groups: either."
+        },
+        "groups": {
+          "type": "array", "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "description": "Names of the groups (classes) the contest is addressed to; only with groups / code_or_groups, and then at least one. A group dropped from the list is detached."
+        }
       },
       "description": "Who may enter. Absent: mode code."
     },

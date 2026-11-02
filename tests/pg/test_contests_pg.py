@@ -214,18 +214,18 @@ class ContestServiceTests(PgCase):
         student = self.student(1)
         self.s.commit()
         with self.assertRaises(ContestError) as ctx:
-            service.join(self.s, student, c, T0, c.invite_code)
+            service.enter(self.s, student, c, T0, c.invite_code)
         self.assertEqual(ctx.exception.problems, ["not_published"])  # a draft cannot be joined
         self.assertTrue(service.set_state(self.s, self.actor, c, ContestState.published, T0))
         self.assertFalse(service.set_state(self.s, self.actor, c, ContestState.published, T0))
         self.s.commit()
         with self.assertRaises(ContestError):
-            service.join(self.s, student, c, T0, "WRONG1")
-        part = service.join(self.s, student, c, T0, c.invite_code.lower())
+            service.enter(self.s, student, c, T0, "WRONG1")
+        part = service.enter(self.s, student, c, T0, c.invite_code.lower())
         self.s.commit()
         self.assertEqual((part.joined_at, part.started_at), (T0, None))
         with self.assertRaises(ContestError) as ctx:
-            service.join(self.s, student, c, T0, c.invite_code)
+            service.enter(self.s, student, c, T0, c.invite_code)
         self.assertEqual(ctx.exception.problems, ["already_joined"])
         self.s.rollback()
         with self.assertRaises(ContestError) as ctx:

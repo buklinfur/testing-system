@@ -219,6 +219,8 @@ class ViewJoinStartTests(unittest.TestCase):
             ("either, removed from the group, the code", either, by_group, DURING, "AC34KM", False,
              (True, "rejoin_with_code", "code")),
             ("either, removed, wrong code", either, by_group, DURING, "AC34KN", False, (False, "already_joined", None)),
+            ("either, still in the group, the code: nothing to change", either, by_group, DURING, "AC34KM", True,
+             (False, "already_joined", None)),
             ("code, came in while open, the code", coded, JOINED, DURING, "AC34KM", False,
              (True, "rejoin_with_code", "code")),
             ("code, already by the code", coded, started(None, "code"), DURING, "AC34KM", False,
@@ -340,6 +342,15 @@ class AccessModeTests(unittest.TestCase):
                 with self.subTest(mode=mode, who=name):
                     want = mode != "groups" or access.has_access(STUDENT, c, part, in_group)
                     self.assertEqual(access.can_view_contest(STUDENT, c, part, DURING, in_group), want)
+
+    def test_the_contest_list_of_a_student_removed_from_the_group(self):
+        """For 4b: the list is can_view_contest OR can_see_own_results; a contest that is there only by the second
+        opens as "my results only" (no statements, no submitting, no leaderboard)."""
+        c = contest(access_mode="groups")
+        self.assertFalse(access.can_view_contest(STUDENT, c, P_GROUP, DURING, in_group=False))
+        self.assertTrue(access.can_see_own_results(STUDENT, c, P_GROUP))
+        self.assertFalse(access.can_view_problem(STUDENT, c, CP, P_GROUP, DURING, in_group=False))
+        self.assertFalse(access.can_see_leaderboard(STUDENT, c, P_GROUP, DURING, in_group=False))
 
     def test_archived_contest_needs_access_too_but_own_results_stay(self):
         c = contest(state="archived", access_mode="groups")
