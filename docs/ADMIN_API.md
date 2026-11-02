@@ -121,8 +121,8 @@ two_factor (только у админов)}`; хешей и секретов н
 `GET /contests/{slug}` отдаёт `spec` в форме `contest.yaml` (время — UTC с `Z`, длительность — `1h30m`): отправленный
 обратно через `PUT`, он ничего не меняет. Доступ — `access: {mode, groups}` (4а.3a; `join_policy` из 4а.2 — 422
 `contest_invalid` с подсказкой); неизвестная или архивная группа — 409 `contest_conflict`. У задачи — `available_from`, `due_at`, `after_due:
-{statement, submit}`, `note_md` (`CONTESTS.md` §1); предупреждения о сроках — в `warnings`. Эндпоинты групп и
-продлений — 4а.3b. `judgectl contest show --json` выдаёт ту же структуру.
+{statement, submit}`, `note_md` (`CONTESTS.md` §1); предупреждения о сроках — в `warnings`. Группы — §5.4,
+продления — §5.5. `judgectl contest show --json` выдаёт ту же структуру.
 
 | Метод и путь | Тело / параметры | Ответ | Ошибки |
 |---|---|---|---|
@@ -132,8 +132,38 @@ two_factor (только у админов)}`; хешей и секретов н
 | `POST /contests/{slug}/publish` / `archive` | — | `{slug, state, changed}` | 404 |
 | `POST /contests/{slug}/pin` | `{label, version, rejudge}` — `rejudge` **обязателен** | `{label, from, to, rejudge}` (`rejudge` — число созданных перепроверок или `null`) | 422 без `rejudge`, 404 `contest_problem_not_found` / `version_not_found`, 409 `version_not_ready` / `problem_archived` |
 | `POST /contests/{slug}/code` | — | `{slug, invite_code}` — новый код, старый перестаёт работать | 409 `contest_is_open` |
-| `GET /contests/{slug}/participants` | курсор | `{items: [{user_id, login, display_name, joined_at, started_at}]}` | 404 |
+| `GET /contests/{slug}/participants` | курсор | `{items: [{user_id, login, display_name, joined_at, started_at, joined_via, access_now}]}` — `joined_via`: как ученик впервые вошёл (`code` / `group` / `open`); `access_now`: даёт ли это доступ сейчас (режим и текущий состав групп, `access.has_access`) | 404 |
 
 Предупреждения `apply` (например, «при `open → code` снова действует старый код») приходят в `warnings` и не
 останавливают изменение.
+
+### 5.4. Группы
+
+Тот же сервис, что `judgectl group` (`app/groups.py`, [`JUDGECTL.md`](JUDGECTL.md)). Группа здесь — по `id`, ученики —
+по `user_id`. Каждое изменение — в аудите от имени админа сессии.
+
+| Метод и путь | Тело / параметры | Ответ | Ошибки |
+|---|---|---|---|
+| `GET /groups` | `q` (часть названия), `archived=false\|true\|all` (по умолчанию `false`), курсор | `{items: [{id, name, archived_at, created_at, members, contests}]}` (`members`, `contests` — числа) | — |
+| `POST /groups` | `{name}` | 201: группа (как `GET /groups/{id}`) | 409 `group_name_taken` (без учёта регистра среди неархивных), 422 `group_name_invalid` |
+| `GET /groups/{id}` | `?history=true` | `{id, name, archived_at, created_at, members, contests: [{slug, title, state}], students: [{user_id, login, display_name, added_at, removed_at}]}`; с `history` — и убранные | 404 `group_not_found` |
+| `PUT /groups/{id}` | `{name}` | группа | 404, 409 `group_name_taken`, 422 `group_name_invalid` |
+| `POST /groups/{id}/archive` | — | `{group, contests: [slug]}` — контесты, к которым группа подключена (К6): она больше не даёт к ним доступа | 404 |
+| `POST /groups/{id}/unarchive` | — | группа | 404, 409 `group_name_taken` |
+| `POST /groups/{id}/members` | `{user_ids: [...]}` (1–200) | `{added: [логины], already: [логины]}` | 404 `user_not_found` + `problems` (все отсутствующие), 409 `group_archived`, 422 `not_a_student` + `logins` |
+| `POST /groups/{id}/members/remove` | `{user_ids: [...]}` | `{removed: [...], not_members: [...]}` — строки состава остаются с `removed_at` | 404 |
+
+Доступ к контестам меняется сразу (правила — [`CONTESTS.md`](CONTESTS.md) §3–§4): добавленный ученик видит контесты
+группы, убранный теряет условия и сдачу, свои посылки и оценки видит всегда.
+
+### 5.5. Продления сроков
+
+Тот же сервис, что `judgectl extension` (`contests/deadlines.py`, [`CONTESTS.md`](CONTESTS.md) §5).
+
+| Метод и путь | Тело / параметры | Ответ | Ошибки |
+|---|---|---|---|
+| `GET /contests/{slug}/extensions` | `?label=` | `{items: [{id, label, user, group, due_at, base_due_at, reason, created_at}]}` | 404 `contest_not_found` / `contest_problem_not_found` |
+| `GET /contests/{slug}/problems/{label}/extensions` | — | то же для одной задачи | 404 |
+| `POST /contests/{slug}/problems/{label}/extensions` | `{user_id \| group_id, due_at, reason?}` — ровно одно из двух; `due_at` как в `contest.yaml` (без смещения — `JUDGE_TIMEZONE`) | 201 `{extension, replaced: null}`; для того же ученика или группы — 200 `{extension, replaced: <прежний срок>}` (D-038) | 404 `user_not_found` / `group_not_found` / `contest_problem_not_found`, 409 `no_deadline` / `group_archived`, 422 `extension_not_later` / `extension_subject` / `not_a_student` / `due_at_invalid` |
+| `POST /contests/{slug}/problems/{label}/extensions/{id}/delete` | — | 204 | 404 `extension_not_found` — в том числе для продления другой задачи или другого контеста |
 

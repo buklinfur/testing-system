@@ -184,7 +184,7 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | `publish` / `archive <slug>` | `draft`/`archived` → `published`; → `archived` (только чтение для участников) |
 | `pin <контест> <метка> <версия> --rejudge \| --no-rejudge` | Закрепить другую `ready`-версию; выбор обязателен: перепроверить все посылки задачи или оставить старые результаты |
 | `code regenerate <slug>` | Новый код приглашения, старый перестаёт работать |
-| `participants <slug>` | Кто вступил и когда нажал «Начать» |
+| `participants <slug>` | Кто вошёл и когда нажал «Начать»; `VIA` — как вошёл (`code` / `group` / `open`), `ACCESS` — даёт ли это доступ сейчас (режим и текущий состав групп) |
 
 ### extension — продления сроков ([`CONTESTS.md`](CONTESTS.md) §5)
 

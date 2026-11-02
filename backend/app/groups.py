@@ -227,6 +227,14 @@ def in_contest_group(db: Session, contest: Contest, user: User) -> bool:
         ContestGroup.group_id == Group.id, Group.archived_at.is_(None)))).scalar()
 
 
+def contest_member_ids(db: Session, contest: Contest) -> set[int]:
+    """Ids of the students for whom in_contest_group is true (one query for a whole list of participants)."""
+    return set(db.execute(select(GroupMember.user_id).join(ContestGroup, ContestGroup.group_id == GroupMember.group_id)
+                          .join(Group, Group.id == GroupMember.group_id)
+                          .where(ContestGroup.contest_id == contest.id, GroupMember.removed_at.is_(None),
+                                 Group.archived_at.is_(None))).scalars())
+
+
 def contest_groups(db: Session, contest: Contest) -> list[Group]:
     return list(db.execute(select(Group).join(ContestGroup, ContestGroup.group_id == Group.id)
                            .where(ContestGroup.contest_id == contest.id).order_by(Group.name, Group.id)).scalars())

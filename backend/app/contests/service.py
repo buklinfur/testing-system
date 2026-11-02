@@ -413,6 +413,15 @@ def participants(db: Session, contest: Contest) -> list:
                            .where(Participation.contest_id == contest.id).order_by(Participation.joined_at)).all())
 
 
+def participant_out(contest: Contest, participation: Participation, user: User, member_ids: set) -> dict:
+    """One participant for judgectl and the admin API: how they came in (joined_via) and whether that still gives
+    access now (access_now: the mode and the current membership, access.has_access)."""
+    return {"user_id": user.id, "login": user.login, "display_name": user.display_name,
+            "joined_at": participation.joined_at, "started_at": participation.started_at,
+            "joined_via": participation.joined_via,
+            "access_now": access.has_access(user, contest, participation, user.id in member_ids)}
+
+
 def counted_submissions(db: Session, contest_problem_id: int, user_id: int, since: datetime,
                         until: Optional[datetime]) -> int:
     """Submissions of a user for a problem inside a window: the ones the per-problem limit applies to."""

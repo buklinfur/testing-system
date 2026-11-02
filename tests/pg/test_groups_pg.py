@@ -391,8 +391,17 @@ class GroupServiceTests(PgCase):
         self.assertIn("not archived any more", self.ok("group", "unarchive", "7Б")[0])
         self.assertIn("7Б -> 7 Б", self.ok("group", "rename", "7Б", "7 Б")[0])
         self.assertIn("groups 7 Б", self.ok("contest", "show", "lesson")[0])
+        lesson = service.get_contest(self.s, "lesson")
+        service.set_state(self.s, self.actor, lesson, ContestState.published, T0)
+        service.enter(self.s, self.a, lesson, T0)
+        self.s.commit()
+        people = json.loads(self.ok("contest", "participants", "lesson", "--json")[0])
+        self.assertEqual([(p["login"], p["joined_via"], p["access_now"]) for p in people], [("student1", "group", True)])
+        self.ok("group", "remove", "7 Б", "student1")
+        self.assertRegex(self.ok("contest", "participants", "lesson")[0], r"student1 .* group\s+no")
         self.assertEqual(self.actions("group."), ["group.create", "group.add_members", "group.remove_members",
-                                                  "group.archive", "group.unarchive", "group.rename"])
+                                                  "group.archive", "group.unarchive", "group.rename",
+                                                  "group.remove_members"])
         entry = self.s.execute(select(AuditLog).where(AuditLog.action == "group.add_members")).scalar_one()
         self.assertEqual((entry.actor_cli, entry.details["logins"]), ("cli:judge", ["student1", "student2"]))
 

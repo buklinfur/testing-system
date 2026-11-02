@@ -211,4 +211,5 @@ problems:
 * Повторное продление для того же ученика или группы **заменяет** срок (В7); прежний срок — в аудите
   (`contest.extension_add`, поле `replaced`). Удаление — `contest.extension_remove`.
 * Уже принятые посылки продление не меняет: отметка `late` у них остаётся.
-* Команды: `judgectl extension add | list | remove` ([`JUDGECTL.md`](JUDGECTL.md)); в админском API — 4а.3b.
+* Команды: `judgectl extension add | list | remove` ([`JUDGECTL.md`](JUDGECTL.md)); в админском API —
+  `…/problems/{label}/extensions` ([`ADMIN_API.md`](ADMIN_API.md) §5.5).

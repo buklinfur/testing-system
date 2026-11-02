@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -15,16 +15,18 @@ from sqlalchemy.orm import Session
 from ..api_errors import ApiError
 from ..auth import audit
 from ..auth_api import get_db, now
-from ..contests import service
+from .. import groups as g
+from ..contests import deadlines, service
 from ..contests.service import ContestError
 from ..contests.spec import ContestSpecError, from_data
 from ..jsonable import plain
-from ..models import Contest, ContestState, Participation, User
-from ..timeutil import TimezoneError, zone
+from ..models import Contest, ContestState, DeadlineExtension, Group, Participation, User
+from ..timeutil import TimezoneError, parse_local, zone
 from .deps import Page, admin_actor, page, paginate
 
 router = APIRouter()
-STATUS = {"contest_not_found": 404, "contest_problem_not_found": 404, "version_not_found": 404}
+STATUS = {"contest_not_found": 404, "contest_problem_not_found": 404, "version_not_found": 404,
+          "extension_not_found": 404, "extension_not_later": 422, "extension_subject": 422, "not_a_student": 422}
 
 
 class PinBody(BaseModel):
@@ -32,6 +34,14 @@ class PinBody(BaseModel):
     label: str = Field(max_length=8)
     version: int = Field(ge=1)
     rejudge: bool  # required: rejudging every submission of the problem is a decision, not a default
+
+
+class ExtensionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: Optional[int] = None  # exactly one of user_id / group_id
+    group_id: Optional[int] = None
+    due_at: str = Field(max_length=40, description="like contest.yaml: without an offset in JUDGE_TIMEZONE")
+    reason: Optional[str] = Field(None, max_length=200)
 
 
 def refused(exc: ContestError) -> ApiError:
@@ -135,6 +145,70 @@ def participants(slug: str, pg: Page = Depends(page), db: Session = Depends(get_
     contest = _contest(db, slug)
     query = select(Participation, User).join(User, User.id == Participation.user_id).where(
         Participation.contest_id == contest.id)
-    return paginate(db, query, Participation.id, pg, lambda row: {
-        "user_id": row[1].id, "login": row[1].login, "display_name": row[1].display_name,
-        "joined_at": row[0].joined_at, "started_at": row[0].started_at})
+    members = g.contest_member_ids(db, contest)
+    return paginate(db, query, Participation.id, pg,
+                    lambda row: service.participant_out(contest, row[0], row[1], members))
+
+
+# ----------------------------------------------------------------------------- deadline extensions (D-023, D-038)
+def _row(db: Session, contest: Contest, label: str):
+    try:
+        return service.visible_row(db, contest, label)
+    except ContestError as exc:
+        raise refused(exc) from exc
+
+
+@router.get("/contests/{slug}/extensions")
+def contest_extensions(slug: str, label: Optional[str] = None, db: Session = Depends(get_db)):
+    contest = _contest(db, slug)
+    try:
+        return plain({"items": deadlines.list_extensions(db, contest, label)})
+    except ContestError as exc:
+        raise refused(exc) from exc
+
+
+@router.get("/contests/{slug}/problems/{label}/extensions")
+def problem_extensions(slug: str, label: str, db: Session = Depends(get_db)):
+    return contest_extensions(slug, label, db)
+
+
+@router.post("/contests/{slug}/problems/{label}/extensions")
+def add_extension(slug: str, label: str, body: ExtensionBody, request: Request, db: Session = Depends(get_db),
+                  actor: audit.Actor = Depends(admin_actor)):
+    """201 for a new extension; 200 when it replaced one of the same student or group (`replaced`: the old due)."""
+    contest = _contest(db, slug)
+    try:
+        due = parse_local(body.due_at, zone(request.app.state.settings.timezone))
+    except ValueError as exc:
+        raise ApiError(422, "due_at_invalid", "due_at: a time like 2026-11-17 23:59:59 or with Z / +07:00") from exc
+    user = group = None
+    if body.user_id is not None:
+        user = db.get(User, body.user_id)
+        if user is None:
+            raise ApiError(404, "user_not_found")
+    if body.group_id is not None:
+        group = db.get(Group, body.group_id)
+        if group is None:
+            raise ApiError(404, "group_not_found")
+    try:
+        row, replaced = deadlines.add_extension(db, actor, contest, label, due, now(request), user=user, group=group,
+                                                reason=body.reason)
+    except ContestError as exc:
+        db.rollback()
+        raise refused(exc) from exc
+    db.commit()
+    item = next(i for i in deadlines.list_extensions(db, contest, label) if i["id"] == row.id)
+    return JSONResponse(plain({"extension": item, "replaced": replaced}), status_code=200 if replaced else 201)
+
+
+@router.post("/contests/{slug}/problems/{label}/extensions/{extension_id}/delete", status_code=204)
+def delete_extension(slug: str, label: str, extension_id: int, request: Request, db: Session = Depends(get_db),
+                     actor: audit.Actor = Depends(admin_actor)):
+    """Only an extension of this very problem of this contest: an id of another one is 404, like a missing one."""
+    row = _row(db, _contest(db, slug), label)
+    found = db.get(DeadlineExtension, extension_id)
+    if found is None or found.contest_problem_id != row.id:
+        raise ApiError(404, "extension_not_found")
+    deadlines.remove_extension(db, actor, extension_id, now(request))
+    db.commit()
+    return Response(status_code=204)

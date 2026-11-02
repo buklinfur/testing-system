@@ -1,6 +1,7 @@
 """judgectl contest ...: contest.yaml in, states, pins, invite codes, participants (docs/CONTESTS.md)."""
 from __future__ import annotations
 
+from .. import groups as g
 from ..contests import service
 from ..contests.spec import parse
 from ..models import Contest, ContestState
@@ -118,8 +119,9 @@ def contest_code_regenerate(ctx: Context, args) -> int:
 def contest_participants(ctx: Context, args) -> int:
     with ctx.session() as db:
         c = service.get_contest(db, args.slug)
-        rows = [{"login": u.login, "display_name": u.display_name, "joined_at": p.joined_at, "started_at": p.started_at}
-                for p, u in service.participants(db, c)]
-    show(ctx, rows, [("login", "LOGIN"), ("display_name", "NAME"), ("joined_at", "JOINED"), ("started_at", "STARTED")])
+        members = g.contest_member_ids(db, c)
+        rows = [service.participant_out(c, p, u, members) for p, u in service.participants(db, c)]
+    show(ctx, rows, [("login", "LOGIN"), ("display_name", "NAME"), ("joined_at", "JOINED"), ("started_at", "STARTED"),
+                     ("joined_via", "VIA"), ("access_now", "ACCESS")])
     return 0
 

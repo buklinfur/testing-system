@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from ..auth_api import Current, session_out
-from . import contests, problems, users
+from . import contests, groups, problems, users
 from .deps import admin_session
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(admin_session)])
@@ -24,3 +24,4 @@ def me(cur: Current = Depends(admin_session)):
 router.include_router(users.router)
 router.include_router(problems.router)
 router.include_router(contests.router)
+router.include_router(groups.router)
