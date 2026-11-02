@@ -305,7 +305,7 @@ class JudgectlTests(PgCase):
         traced = {
             "submissions": lambda u: self.submission(u),
             "contest participations": lambda u: self.s.add(Participation(contest_id=self.seed["cp"].contest_id,
-                                                                        user_id=u.id)),
+                                                                        user_id=u.id, joined_via="open")),
             "rejudges requested": lambda u: self.s.execute(Judgement.__table__.update().values(requested_by=u.id)),
             "audit records as actor": lambda u: audit.record(self.s, audit.Actor(user_id=u.id), "auth.login", T0),
         }

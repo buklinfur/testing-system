@@ -173,7 +173,7 @@ class AdminProblemsContestsTests(ApiCase):
     # ---------------------------------------------------------------- contests
     def contest(self, **changes):
         spec = {"format_version": 1, "slug": "olymp", "title": "Олимпиада", "starts_at": "2026-11-10 09:00",
-                "ends_at": "2026-11-10 18:00", "join_policy": "code",
+                "ends_at": "2026-11-10 18:00", "access": {"mode": "code"},
                 "problems": [{"label": "A", "problem": "sum-of-two"}, {"label": "B", "problem": "pair-with-sum"}]}
         spec.update(changes)
         return spec
@@ -199,7 +199,7 @@ class AdminProblemsContestsTests(ApiCase):
         self.assertEqual((dry["changes"], dry["dry_run"]), (["title: Олимпиада -> Другое"], True))
         self.assertEqual(self.ok(self.call("get", "/contests/olymp"))["spec"]["title"], "Олимпиада")
 
-        self.ok(self.put(self.contest(join_policy="open")))
+        self.ok(self.put(self.contest(access={"mode": "open"})))
         back = self.ok(self.put(self.contest()))
         self.assertTrue(any("code regenerate" in w for w in back["warnings"]))
 
@@ -232,7 +232,7 @@ class AdminProblemsContestsTests(ApiCase):
         self.assertEqual(self.ok(self.call("post", "/contests/olymp/publish"))["state"], "published")
         code = self.ok(self.call("post", "/contests/olymp/code"))["invite_code"]
         self.assertNotEqual(code, detail["invite_code"])
-        self.ok(self.put({**self.contest(join_policy="open"), "problems": pinned}))
+        self.ok(self.put({**self.contest(access={"mode": "open"}), "problems": pinned}))
         self.assertEqual(self.call("post", "/contests/olymp/code").json()["detail"], "contest_is_open")
         self.assertEqual(self.ok(self.call("get", "/contests/olymp/participants"))["items"], [])
         listed = self.ok(self.call("get", "/contests", params={"state": "published"}))["items"]

@@ -39,3 +39,16 @@ class TimeutilTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoredTimeTests(unittest.TestCase):
+    def test_every_time_column_is_timestamptz(self):
+        """A naive timestamp column would store local wall time and break the UTC rule (D-014)."""
+        from sqlalchemy import DateTime
+
+        from app.models import Base
+
+        naive = [f"{table.name}.{column.name}" for table in Base.metadata.tables.values() for column in table.columns
+                 if isinstance(column.type, DateTime) and not column.type.timezone]
+        self.assertEqual(naive, [])
+        self.assertIn("due_at", Base.metadata.tables["deadline_extensions"].columns)  # the new tables are covered

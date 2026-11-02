@@ -68,7 +68,7 @@ def contest_show(ctx: Context, args) -> int:
     ctx.print(f"  scoring {spec['scoring_mode']}, leaderboard {spec['leaderboard']}, "
               f"upsolving {'yes' if spec['allow_upsolving'] else 'no'}, "
               f"languages {', '.join(spec['languages']) if spec.get('languages') else 'all'}")
-    ctx.print(f"  join: {spec['join_policy']}" + (f", invite code {data['invite_code']}" if data["invite_code"] else "")
+    ctx.print(f"  access: {spec['access']['mode']}" + (f", invite code {data['invite_code']}" if data["invite_code"] else "")
               + f"; participants: {data['participants']}")
     show(ctx, data["rows"], [("label", "LABEL"), ("problem", "PROBLEM"), ("version", "V"), ("status", "STATUS"),
                              ("points", "POINTS"), ("hidden", "HIDDEN")])

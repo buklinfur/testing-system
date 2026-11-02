@@ -22,7 +22,7 @@ ADMIN, STUDENT = NS(role="admin"), NS(role="student")
 
 def contest(**kw):
     base = dict(state="published", timing_mode="fixed", starts_at=S, ends_at=E, personal_duration=None,
-                allow_upsolving=True, join_policy="open", invite_code=None, languages=None, submit_cooldown_sec=0,
+                allow_upsolving=True, access_mode="open", invite_code=None, languages=None, submit_cooldown_sec=0,
                 max_submissions_per_problem=None, leaderboard="visible", freeze_at=None, tests_after_end=False)
     base.update(kw)
     return NS(**base)
@@ -180,7 +180,7 @@ class ViewJoinStartTests(unittest.TestCase):
                 self.assertTrue(access.can_view_problem(ADMIN, c, cp, part, now))
 
     def test_join(self):
-        coded = contest(join_policy="code", invite_code="AC34KM")
+        coded = contest(access_mode="code", invite_code="AC34KM")
         cases = [  # (name, contest, participation, now, code, (allowed, reason))
             ("open, before", FIXED, None, BEFORE, None, (True, "ok")),
             ("open, during", FIXED, None, DURING, None, (True, "ok")),

@@ -91,7 +91,7 @@ def can_join(user, contest, participation, now: datetime, code: Optional[str] = 
         return Decision(False, "already_joined")
     if contest_over(contest, now) and not contest.allow_upsolving:
         return Decision(False, "contest_over")
-    if _v(contest.join_policy) == "code" and normalize_code(code) != normalize_code(contest.invite_code):
+    if _v(contest.access_mode) != "open" and normalize_code(code) != normalize_code(contest.invite_code):
         return Decision(False, "wrong_code")
     return Decision(True)
 

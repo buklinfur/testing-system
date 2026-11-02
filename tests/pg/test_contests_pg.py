@@ -105,12 +105,12 @@ class ContestServiceTests(PgCase):
 
     def test_going_back_from_open_to_code_warns_that_the_old_code_works_again(self):
         body = problems("label: A, problem: sum-of-two")
-        first = self.apply(HEAD + "join_policy: code\n" + body)
+        first = self.apply(HEAD + "access: {mode: code}\n" + body)
         code = first.contest.invite_code
         self.assertEqual(first.warnings, [])
-        opened = self.apply(HEAD + "join_policy: open\n" + body)
+        opened = self.apply(HEAD + "access: {mode: open}\n" + body)
         self.assertEqual((opened.warnings, opened.contest.invite_code), ([], code))  # kept, but unused while open
-        back = self.apply(HEAD + "join_policy: code\n" + body)
+        back = self.apply(HEAD + "access: {mode: code}\n" + body)
         self.assertEqual(back.contest.invite_code, code)
         self.assertEqual(len(back.warnings), 1)
         self.assertIn("judgectl contest code regenerate olymp", back.warnings[0])
@@ -208,7 +208,7 @@ class ContestServiceTests(PgCase):
 
     # ---------------------------------------------------------------- states, codes, join, start
     def test_publish_join_and_personal_start(self):
-        text = HEAD + "timing_mode: personal\npersonal_duration: 90m\njoin_policy: code\n" + problems(
+        text = HEAD + "timing_mode: personal\npersonal_duration: 90m\naccess: {mode: code}\n" + problems(
             "label: A, problem: sum-of-two")
         c = self.apply(text).contest
         student = self.student(1)

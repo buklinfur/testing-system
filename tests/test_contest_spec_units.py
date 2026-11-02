@@ -43,9 +43,18 @@ class SpecTests(unittest.TestCase):
 
     def test_defaults(self):
         s = spec()
-        self.assertEqual((s.timing_mode, s.join_policy, s.leaderboard, s.allow_upsolving, s.submit_cooldown_sec,
+        self.assertEqual((s.timing_mode, s.access_mode, s.leaderboard, s.allow_upsolving, s.submit_cooldown_sec,
                           s.scoring_mode, s.icpc_penalty_minutes, s.ends_at, s.languages),
                          ("fixed", "code", "hidden", True, 15, "points", 20, None, None))
+
+    def test_access(self):
+        self.assertEqual(spec("access: {mode: open}\n").access_mode, "open")
+        self.refused(BASE + "access: {mode: everyone}\n", "schema: access/mode")
+        self.refused(BASE + "access: {mode: code, code: X}\n", "schema: access")  # the code is never in the file
+        # the key of 4a.2 gets a hint, not only "additional property"; other problems are still listed
+        error = self.refused(BASE + "join_policy: open\nleaderboard: nope\n",
+                             "join_policy is replaced by access: {mode: open}", "schema: leaderboard")
+        self.assertFalse(any("join_policy" in p and "schema" in p for p in error.problems))
 
     def test_times_without_an_offset_are_judge_timezone_and_dates_stay_text(self):
         s = spec("ends_at: '2026-11-10T12:00:00+00:00'\n")

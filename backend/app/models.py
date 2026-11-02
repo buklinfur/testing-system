@@ -128,9 +128,33 @@ class ContestState(str, enum.Enum):
     archived = "archived"
 
 
-class JoinPolicy(str, enum.Enum):
-    open = "open"  # any student joins with a button
+class AccessMode(str, enum.Enum):
+    """Who may enter a contest (D-021; the rules are in contests/access.py)."""
+
+    open = "open"  # any student, with a button
     code = "code"  # with invite_code (or the link /join/<code>)
+    groups = "groups"  # students currently in a group attached to the contest, without a code
+    code_or_groups = "code_or_groups"  # either way
+
+
+class JoinedVia(str, enum.Enum):
+    """How a student first entered a contest. Only `code` keeps giving access by itself; `group` lasts while the
+    student stays in an attached group, `open` while the contest is open."""
+
+    code = "code"
+    group = "group"
+    open = "open"
+
+
+class AfterDueStatement(str, enum.Enum):
+    visible = "visible"
+    hidden = "hidden"
+
+
+class AfterDueSubmit(str, enum.Enum):
+    no = "no"  # refused: deadline_passed
+    late = "late"  # accepted and marked late
+    yes = "yes"  # accepted as usual
 
 
 class ScoringMode(str, enum.Enum):
@@ -199,6 +223,7 @@ class User(Base):
     totp_secret_enc: Mapped[Optional[str]] = mapped_column(Text)  # Fernet(JUDGE_SECRET_KEY), admins only
     totp_enabled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # set once a code confirmed it
     totp_last_step: Mapped[Optional[int]] = mapped_column(BigInteger)  # last accepted 30 s step: a code works once
+    timezone: Mapped[Optional[str]] = mapped_column(String(64))  # IANA name for the UI (D-024); null: the browser's
 
     __table_args__ = (CheckConstraint(f"login ~ '{LOGIN_PATTERN}'", name="login_format"),)
 
@@ -438,8 +463,8 @@ class Contest(Base):
     icpc_penalty_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     leaderboard: Mapped[LeaderboardMode] = mapped_column(pg_enum(LeaderboardMode, "leaderboard_mode"), nullable=False,
                                                          default=LeaderboardMode.hidden)
-    join_policy: Mapped[JoinPolicy] = mapped_column(pg_enum(JoinPolicy, "join_policy"), nullable=False,
-                                                    default=JoinPolicy.code)
+    access_mode: Mapped[AccessMode] = mapped_column(pg_enum(AccessMode, "access_mode"), nullable=False,
+                                                    default=AccessMode.code)
     invite_code: Mapped[Optional[str]] = mapped_column(String(32), unique=True)
     allow_upsolving: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     languages: Mapped[Optional[list[str]]] = mapped_column(JSONB)  # null: every enabled language
@@ -460,7 +485,8 @@ class Contest(Base):
                         name="personal_duration_positive"),
         CheckConstraint("timing_mode <> 'personal' OR freeze_at IS NULL", name="no_freeze_with_personal"),
         CheckConstraint("ends_at IS NULL OR ends_at > starts_at", name="window"),
-        CheckConstraint("join_policy <> 'code' OR invite_code IS NOT NULL", name="invite_code"),
+        CheckConstraint("access_mode NOT IN ('code', 'code_or_groups') OR invite_code IS NOT NULL",
+                        name="invite_code"),
         CheckConstraint("submit_cooldown_sec >= 0 AND icpc_penalty_minutes >= 0", name="non_negative"),
         CheckConstraint("max_submissions_per_problem IS NULL OR max_submissions_per_problem > 0",
                         name="max_submissions"),
@@ -485,6 +511,17 @@ class ContestProblem(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     points: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))  # overrides the problem total; groups scale
     hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # deadlines (D-023): before available_from the problem does not exist for students; after the effective due
+    # moment (due_at or a later extension) the statement and submitting follow the after_due_* policies
+    available_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    after_due_statement: Mapped[AfterDueStatement] = mapped_column(
+        pg_enum(AfterDueStatement, "after_due_statement"), nullable=False, default=AfterDueStatement.visible,
+        server_default=AfterDueStatement.visible.value)
+    after_due_submit: Mapped[AfterDueSubmit] = mapped_column(
+        pg_enum(AfterDueSubmit, "after_due_submit"), nullable=False, default=AfterDueSubmit.late,
+        server_default=AfterDueSubmit.late.value)
+    note_md: Mapped[Optional[str]] = mapped_column(Text)  # the teacher's note, shown to students with access
 
     contest: Mapped[Contest] = relationship(back_populates="problems")
     problem_version: Mapped[ProblemVersion] = relationship()
@@ -495,6 +532,33 @@ class ContestProblem(Base):
         Index("uq_contest_problems_contest_problem", "contest_id", "problem_id", unique=True,
               postgresql_where=text("NOT hidden")),
         CheckConstraint("points IS NULL OR points > 0", name="points_positive"),
+        CheckConstraint("available_from IS NULL OR due_at IS NULL OR available_from < due_at", name="deadline"),
+    )
+
+
+class DeadlineExtension(Base):
+    """A later due moment of one contest problem for one student or for one group (D-023). Only later than due_at;
+    a student's effective due moment is the latest of due_at, their own extension and those of the groups they are
+    in now."""
+
+    __tablename__ = "deadline_extensions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    contest_problem_id: Mapped[int] = mapped_column(ForeignKey("contest_problems.id", ondelete="CASCADE"),
+                                                    nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id"))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = utcnow_column()
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))  # null: from the console
+
+    __table_args__ = (
+        CheckConstraint("(user_id IS NULL) <> (group_id IS NULL)", name="one_subject"),
+        Index("uq_deadline_extensions_user", "contest_problem_id", "user_id", unique=True,
+              postgresql_where=text("user_id IS NOT NULL")),
+        Index("uq_deadline_extensions_group", "contest_problem_id", "group_id", unique=True,
+              postgresql_where=text("group_id IS NOT NULL")),
     )
 
 
@@ -506,8 +570,60 @@ class Participation(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     joined_at: Mapped[datetime] = utcnow_column()
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # personal timing: "start"
+    joined_via: Mapped[JoinedVia] = mapped_column(pg_enum(JoinedVia, "joined_via"), nullable=False)
 
     __table_args__ = (UniqueConstraint("contest_id", "user_id", name="uq_participations_contest_user"),)
+
+
+# --------------------------------------------------------------------------- groups (classes, D-020)
+class Group(Base):
+    """A class. Groups are archived, never deleted; the name is unique (ignoring case) among groups not archived."""
+
+    __tablename__ = "groups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = utcnow_column()
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))  # null: from the console
+
+    __table_args__ = (
+        Index("uq_groups_live_name", text("lower(name)"), unique=True, postgresql_where=text("archived_at IS NULL")),
+        CheckConstraint("btrim(name) <> ''", name="name_not_blank"),
+    )
+
+
+class GroupMember(Base):
+    """A student in a group. Removal sets removed_at and keeps the row (who was in the class); adding the student
+    again makes a new row. At most one current row per group and student."""
+
+    __tablename__ = "group_members"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    added_at: Mapped[datetime] = utcnow_column()
+    added_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    removed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    removed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+
+    __table_args__ = (
+        Index("uq_group_members_live", "group_id", "user_id", unique=True, postgresql_where=text("removed_at IS NULL")),
+        Index("ix_group_members_user_live", "user_id", postgresql_where=text("removed_at IS NULL")),
+    )
+
+
+class ContestGroup(Base):
+    """A group a contest is addressed to (access_mode groups / code_or_groups)."""
+
+    __tablename__ = "contest_groups"
+
+    contest_id: Mapped[int] = mapped_column(ForeignKey("contests.id", ondelete="CASCADE"), primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), primary_key=True)
+    added_at: Mapped[datetime] = utcnow_column()
+    added_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+
+    __table_args__ = (Index("ix_contest_groups_group", "group_id"),)
 
 
 # --------------------------------------------------------------------------- submissions
@@ -524,6 +640,8 @@ class Submission(Base):
     answers: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB)  # for choice / text_answer
     ip_address: Mapped[Optional[str]] = mapped_column(String(45))
     created_at: Mapped[datetime] = utcnow_column()
+    late: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False,
+                                       server_default=text("false"))  # fixed at receipt, never recomputed
 
     judgements: Mapped[list[Judgement]] = relationship(back_populates="submission", order_by="Judgement.id")
 

@@ -5,7 +5,7 @@ title: "Тренировка"
 description: |
   Задачи для самостоятельной работы. Решайте в любом порядке, сколько угодно попыток.
 starts_at: 2026-09-01 00:00
-join_policy: open
+access: {mode: open}
 leaderboard: hidden
 problems:
   - {label: A, problem: sum-of-two}

@@ -41,7 +41,7 @@ from .auth import audit
 from .blobstore import BlobStore
 from .contests import access, service
 from .db import session_scope
-from .models import Contest, ContestProblem, ContestState, JoinPolicy, Language, ProblemType, ProblemVersion, Role, \
+from .models import AccessMode, Contest, ContestProblem, ContestState, Language, ProblemType, ProblemVersion, Role, \
     Submission, User
 from .problems.importer import ImportResult, import_package, store_blob
 from .settings import Settings
@@ -102,7 +102,7 @@ def ensure_contest_problem(session: Session, version: ProblemVersion, admin: Use
     another version, it is hidden (its submissions keep their version) and a new one takes its place."""
     contest = _get_or_create(session, Contest, {"slug": CONTEST_SLUG}, title="Dev contest",
                              starts_at=datetime.now(timezone.utc), state=ContestState.published,
-                             join_policy=JoinPolicy.open, created_by=admin.id)
+                             access_mode=AccessMode.open, created_by=admin.id)
     cp = session.execute(select(ContestProblem).where(ContestProblem.contest_id == contest.id,
                                                       ContestProblem.problem_id == version.problem_id,
                                                       ContestProblem.hidden.is_(False))).scalar_one_or_none()

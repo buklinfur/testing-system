@@ -60,7 +60,7 @@ class ContestSpec:
     scoring_mode: str
     icpc_penalty_minutes: int
     leaderboard: str
-    join_policy: str
+    access_mode: str
     allow_upsolving: bool
     languages: Optional[list]
     submit_cooldown_sec: int
@@ -101,7 +101,11 @@ def from_data(data, tz: tzinfo) -> ContestSpec:
     of rules for the file and the API."""
     if not isinstance(data, dict):
         raise ContestSpecError(["the contest must be a mapping (an object) at the top level"])
-    problems = _schema_problems(data)
+    problems = []
+    if "join_policy" in data:  # contest.yaml of 4a.2
+        problems.append(f"join_policy is replaced by access: {{mode: {data['join_policy']}}}")
+        data = {k: v for k, v in data.items() if k != "join_policy"}
+    problems += _schema_problems(data)
     if problems:
         raise ContestSpecError(problems)
 
@@ -133,7 +137,7 @@ def from_data(data, tz: tzinfo) -> ContestSpec:
         starts_at=starts, ends_at=ends, timing_mode=data.get("timing_mode", "fixed"), personal_duration=duration,
         freeze_at=freeze, scoring_mode=data.get("scoring_mode", "points"),
         icpc_penalty_minutes=data.get("icpc_penalty_minutes", 20), leaderboard=leaderboard,
-        join_policy=data.get("join_policy", "code"), allow_upsolving=data.get("allow_upsolving", True),
+        access_mode=data.get("access", {}).get("mode", "code"), allow_upsolving=data.get("allow_upsolving", True),
         languages=data.get("languages"), submit_cooldown_sec=data.get("submit_cooldown_sec", 15),
         max_submissions_per_problem=data.get("max_submissions_per_problem"),
         tests_after_end=data.get("tests_after_end", False), plagiarism_enabled=data.get("plagiarism_enabled", False),

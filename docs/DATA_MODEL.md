@@ -9,10 +9,11 @@ users ──< problems ──< problem_versions ──< test_groups ──< test
                               │  └──< programs (checker, interactor, validator, solutions)
                               │
 contests ──< contest_problems ┘            (контест привязан к конкретной версии)
-   │               │
+   │               │  └──< deadline_extensions ──> users | groups   (продления срока)
    │               └──< submissions ──< judgements ──< test_results ──> test_cases
-   └──< participations                      │
-                                            └──> workers
+   ├──< participations                      │
+   └──< contest_groups ──> groups           └──> workers
+groups ──< group_members ──> users   (классы; состав с историей)
 blobs (sha256)   — файлы: тесты, исходники, архивы, пакеты
 languages        — профили языков (конфиг, не код)
 audit_log        — кто, что и откуда делал (веб: actor_user_id, консоль: actor_cli)
@@ -118,3 +119,31 @@ auth_failures, auth_lockouts — неудачные попытки входа и
 * Откат (`downgrade`) возвращает то, что умеет старая схема (`personal` → `timed` + минуты с округлением вверх,
   `ready` → `published`, `failed` → `archived`, …); состояние, настройки посылок, скрытость и баллы задач теряются.
   Если в контесте одна метка у скрытой и видимой строки, откат отказывает со списком.
+
+## Изменения 4а.3a (миграция `6fca2cdc55b2`)
+
+Решения — D-020…D-024 в [`DECISIONS.md`](DECISIONS.md), ТЗ — [`PLAN_4A_DELTA_4V.md`](PLAN_4A_DELTA_4V.md) §3.2;
+перенос данных и отказы проверяет `tests/pg/test_migrations_pg.py`.
+
+* `contests.access_mode` (`open` / `code` / `groups` / `code_or_groups`) вместо `join_policy`; `CHECK`: в режимах
+  с кодом (`code`, `code_or_groups`) код задан. Перенос: `open` → `open`, `code` → `code`.
+* `participations.joined_via` (`code` / `group` / `open`) — как ученик впервые вошёл. Сам по себе доступ даёт только
+  `code`; остальное решают текущий режим и текущий состав групп. Перенос: `code` в контестах с кодом, иначе `open`.
+* `groups` — классы: `name` (уникально без учёта регистра среди неархивных: индекс по `lower(name) WHERE archived_at
+  IS NULL`; не пустое), `archived_at` (группы не удаляются), `created_at`, `created_by` (пусто — из консоли).
+* `group_members` — состав: `added_at/by`, `removed_at/by`. Удаление из группы ставит `removed_at`, строка остаётся
+  (кто был в классе); повторное добавление — новая строка. Текущая строка на пару группа–ученик одна (частичный
+  уникальный индекс `WHERE removed_at IS NULL`).
+* `contest_groups` — группы, которым адресован контест: PK `(contest_id, group_id)`, `added_at/by`.
+* `contest_problems`: `available_from`, `due_at` (`CHECK available_from < due_at`), `after_due_statement`
+  (`visible` / `hidden`, по умолчанию `visible`), `after_due_submit` (`no` / `late` / `yes`, по умолчанию `late`),
+  `note_md` (пояснение преподавателя, его видят ученики с доступом к задаче).
+* `deadline_extensions` — продление срока задачи контеста ученику **или** группе (`CHECK`: ровно одно), `due_at`,
+  `reason`, `created_at/by`; на задачу — одно продление на ученика и одно на группу (частичные уникальные индексы).
+* `users.timezone` — пояс IANA для интерфейса (пусто — пояс браузера); хранение времени не меняется (`timestamptz`,
+  тест проверяет по метаданным, что все столбцы времени с поясом).
+* `submissions.late` — отметка «с опозданием», ставится при приёме и потом не пересчитывается.
+* Откат отказывает, ничего не меняя и со списком, пока в базе есть то, чего старая схема не выразит: контест
+  в режиме с группами, группы, продления, сроки / политики / пояснения задач, посылки с опозданием, пояса
+  пользователей, участия, которые сейчас доступа не дают (вошёл при `open`, потом контест стал `code`: при
+  `join_policy` такого ученика снова пустили бы).

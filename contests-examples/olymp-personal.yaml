@@ -11,7 +11,7 @@ timing_mode: personal
 personal_duration: 1h30m
 scoring_mode: icpc
 leaderboard: after_end
-join_policy: code
+access: {mode: code}
 allow_upsolving: true
 languages: [python, cpp]
 submit_cooldown_sec: 30

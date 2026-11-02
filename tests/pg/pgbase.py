@@ -36,7 +36,7 @@ if URL and HAVE_SA:
 
     from app import queue as q
     from app.models import (
-        Base, Blob, Contest, ContestProblem, ContestState, JoinPolicy, Language, Problem, ProblemType, ProblemVersion, Role,
+        AccessMode, Base, Blob, Contest, ContestProblem, ContestState, Language, Problem, ProblemType, ProblemVersion, Role,
         Submission, TestCase, TestGroup, User, VersionStatus,
     )
 
@@ -93,7 +93,7 @@ class PgCase(unittest.TestCase):
         tests = [TestCase(group_id=group.id, position=i, name=f"t{i}", input_sha256="a" * 64, answer_sha256="b" * 64) for i in range(2)]
         s.add_all(tests)
         contest = Contest(slug="c", title="C", starts_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-                          state=ContestState.published, join_policy=JoinPolicy.open, created_by=admin.id)
+                          state=ContestState.published, access_mode=AccessMode.open, created_by=admin.id)
         s.add(contest)
         s.flush()
         cp = ContestProblem(contest_id=contest.id, problem_id=problem.id, problem_version_id=version.id, label="A",

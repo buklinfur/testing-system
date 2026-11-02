@@ -333,7 +333,7 @@ class MigrationTests(PgCase):
                     conn.execute(text(statement))
             self.alembic(conn, "upgrade", "head")
 
-            row = conn.execute(text("""SELECT id, state::text, timing_mode::text, join_policy::text, ends_at,
+            row = conn.execute(text("""SELECT id, state::text, timing_mode::text, access_mode::text, ends_at,
                                               to_char(starts_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')
                                        FROM contests WHERE slug = 'dev'""")).one()
             self.assertEqual(tuple(row), (1, "published", "fixed", "open", None, "2026-10-20 10:00"))
@@ -381,3 +381,140 @@ class MigrationTests(PgCase):
         self.assertIn("dev-sum: already exists as v2", err.getvalue())
         with engine.connect() as conn:
             self.assertEqual(counts(), before)
+
+    # ---------------------------------------------------------------- 6fca2cdc55b2: groups, access, deadlines (4a.3a)
+    BEFORE_GROUPS = """
+        INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
+          (1, 'admin', '!', 'A', 'admin', true), (2, 'pupil', '!', 'P', 'student', true),
+          (3, 'other', '!', 'O', 'student', true);
+        INSERT INTO problems (id, slug, owner_id) VALUES (1, 'sum', 1);
+        INSERT INTO problem_versions (id, problem_id, version, status, type, titles, statements, config)
+          VALUES (1, 1, 1, 'ready', 'batch', '{}', '{}', '{}');
+        INSERT INTO contests (id, slug, title, description_md, state, starts_at, timing_mode, scoring_mode,
+                              icpc_penalty_minutes, leaderboard, join_policy, invite_code, allow_upsolving,
+                              submit_cooldown_sec, tests_after_end, plagiarism_enabled, created_by) VALUES
+          (1, 'practice', 'p', '', 'published', '2026-10-01 00:00+00', 'fixed', 'points', 20, 'hidden', 'open', NULL,
+           true, 15, false, false, 1),
+          (2, 'lesson', 'l', '', 'published', '2026-10-01 00:00+00', 'fixed', 'points', 20, 'hidden', 'code', 'ACDEFG',
+           true, 15, false, false, 1);
+        INSERT INTO contest_problems (id, contest_id, problem_id, problem_version_id, label, position) VALUES
+          (1, 1, 1, 1, 'A', 0), (2, 2, 1, 1, 'A', 0);
+        INSERT INTO participations (contest_id, user_id, joined_at) VALUES
+          (1, 2, '2026-10-05 08:00+00'), (2, 2, '2026-10-05 08:00+00'), (2, 3, '2026-10-06 08:00+00');
+        INSERT INTO submissions (id, user_id, contest_problem_id, is_archive) VALUES (1, 2, 2, false)
+    """
+
+    def run_sql(self, conn, script):
+        for statement in script.split(";"):
+            if statement.strip():
+                conn.execute(text(statement))
+
+    def test_groups_migration_carries_access_over_and_back(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "4d8a1c2e9f57")
+            self.run_sql(conn, self.BEFORE_GROUPS)
+            self.alembic(conn, "upgrade", "6fca2cdc55b2")
+
+            self.assertEqual(self.contests(conn, "access_mode::text, invite_code"),
+                             {"practice": ("open", None), "lesson": ("code", "ACDEFG")})
+            rows = conn.execute(text("""SELECT c.slug, p.user_id, p.joined_via::text FROM participations p
+                                        JOIN contests c ON c.id = p.contest_id ORDER BY p.id""")).all()
+            self.assertEqual([tuple(r) for r in rows], [("practice", 2, "open"), ("lesson", 2, "code"), ("lesson", 3, "code")])
+            rows = conn.execute(text("""SELECT available_from, due_at, after_due_statement::text, after_due_submit::text,
+                                               note_md FROM contest_problems ORDER BY id""")).all()
+            self.assertEqual([tuple(r) for r in rows], [(None, None, "visible", "late", None)] * 2)
+            self.assertEqual(conn.execute(text("SELECT late FROM submissions")).scalar_one(), False)
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM users WHERE timezone IS NOT NULL")).scalar_one(), 0)
+            self.assertEqual(conn.execute(text("SELECT to_regtype('join_policy')")).scalar_one(), None)
+
+            # the rules hold for new rows
+            conn.execute(text("INSERT INTO groups (id, name) VALUES (1, '7Б')"))
+            conn.execute(text("INSERT INTO group_members (group_id, user_id) VALUES (1, 2)"))
+            for bad in ("UPDATE contests SET access_mode = 'code_or_groups' WHERE slug = 'practice'",  # no code
+                        "UPDATE contests SET access_mode = 'code', invite_code = NULL WHERE slug = 'lesson'",
+                        "UPDATE contest_problems SET available_from = '2026-11-02 10:00+00', "
+                        "due_at = '2026-11-02 10:00+00' WHERE id = 1",
+                        "INSERT INTO groups (name) VALUES ('7б')",  # the same name ignoring case
+                        "INSERT INTO groups (name) VALUES ('  ')",
+                        "INSERT INTO group_members (group_id, user_id) VALUES (1, 2)",  # twice at once
+                        "INSERT INTO deadline_extensions (contest_problem_id, due_at) VALUES (1, now())",
+                        "INSERT INTO deadline_extensions (contest_problem_id, user_id, group_id, due_at) "
+                        "VALUES (1, 2, 1, now())",
+                        "INSERT INTO deadline_extensions (contest_problem_id, user_id, due_at) "
+                        "VALUES (1, 2, now()), (1, 2, now())"):
+                with self.subTest(bad=bad), self.assertRaises(Exception):
+                    with conn.begin_nested():
+                        conn.execute(text(bad))
+            # what is allowed: an archived name is free again, removed members may come back, groups mode
+            conn.execute(text("UPDATE groups SET archived_at = now() WHERE id = 1"))
+            conn.execute(text("INSERT INTO groups (id, name) VALUES (2, '7б')"))
+            conn.execute(text("UPDATE group_members SET removed_at = now()"))
+            conn.execute(text("INSERT INTO group_members (group_id, user_id) VALUES (1, 2)"))
+            conn.execute(text("UPDATE contests SET access_mode = 'groups' WHERE slug = 'practice'"))
+
+            # nothing the old schema cannot hold -> back to join_policy
+            conn.execute(text("UPDATE contests SET access_mode = 'open' WHERE slug = 'practice'"))
+            conn.execute(text("DELETE FROM group_members; DELETE FROM groups"))
+            self.alembic(conn, "downgrade", "4d8a1c2e9f57")
+            self.assertEqual(self.contests(conn, "join_policy::text, invite_code"),
+                             {"practice": ("open", None), "lesson": ("code", "ACDEFG")})
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM participations")).scalar_one(), 3)
+            self.assertEqual(conn.execute(text("SELECT to_regclass('groups')")).scalar_one(), None)
+            self.alembic(conn, "upgrade", "head")
+
+    def test_groups_downgrade_refuses_what_the_old_schema_cannot_hold(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "4d8a1c2e9f57")
+            self.run_sql(conn, self.BEFORE_GROUPS)
+            self.alembic(conn, "upgrade", "6fca2cdc55b2")
+        cases = {
+            "contest practice: access mode groups": "UPDATE contests SET access_mode = 'groups' WHERE slug = 'practice'",
+            "groups: 1": "INSERT INTO groups (name) VALUES ('7Б')",
+            "deadline extensions: 1": "INSERT INTO deadline_extensions (contest_problem_id, user_id, due_at) "
+                                      "VALUES (1, 2, now())",
+            "contest lesson A: deadline": "UPDATE contest_problems SET due_at = now() WHERE id = 2",
+            "contest practice A: deadline": "UPDATE contest_problems SET after_due_submit = 'no' WHERE id = 1",
+            "late submissions: 1": "UPDATE submissions SET late = true",
+            "users with a time zone: 1": "UPDATE users SET timezone = 'Asia/Novosibirsk' WHERE id = 2",
+            # open -> code after pupil 3 came in the open way: with join_policy every participant is let in again
+            "contest lesson: 1 participation(s) that give no access now (joined via open)":
+                "UPDATE participations SET joined_via = 'open' WHERE user_id = 3",
+        }
+        for expected, change in cases.items():
+            with self.subTest(expected):
+                with engine.begin() as conn:
+                    conn.execute(text(change))
+                    before = conn.execute(text("SELECT * FROM contests ORDER BY id")).all()
+                with self.assertRaises(RuntimeError) as caught:
+                    with engine.begin() as conn:
+                        self.alembic(conn, "downgrade", "4d8a1c2e9f57")
+                self.assertIn(expected, str(caught.exception))
+                self.assertIn("nothing was changed", str(caught.exception))
+                with engine.begin() as conn:
+                    self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(),
+                                     "6fca2cdc55b2")
+                    self.assertEqual(conn.execute(text("SELECT * FROM contests ORDER BY id")).all(), before)
+                    for undo in ("UPDATE contests SET access_mode = 'open' WHERE slug = 'practice'",
+                                 "DELETE FROM deadline_extensions", "DELETE FROM groups",
+                                 "UPDATE contest_problems SET due_at = NULL, after_due_submit = 'late'",
+                                 "UPDATE submissions SET late = false", "UPDATE users SET timezone = NULL",
+                                 "UPDATE participations SET joined_via = 'code' WHERE contest_id = 2"):
+                        conn.execute(text(undo))
+
+    def test_groups_upgrade_refuses_a_code_contest_without_a_code(self):
+        """Impossible under the CHECK of 4a.2; the guard is formal, so the CHECK is dropped to reach it."""
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "4d8a1c2e9f57")
+            self.run_sql(conn, self.BEFORE_GROUPS)
+            conn.execute(text("ALTER TABLE contests DROP CONSTRAINT ck_contests_invite_code"))
+            conn.execute(text("UPDATE contests SET invite_code = NULL WHERE slug = 'lesson'"))
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "upgrade", "6fca2cdc55b2")
+        self.assertIn("id=2 'lesson'", str(caught.exception))
+        with engine.connect() as conn:
+            self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "4d8a1c2e9f57")
+            self.assertEqual(conn.execute(text("SELECT to_regtype('access_mode')")).scalar_one(), None)

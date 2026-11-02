@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 
 from .. import queue as q
 from ..auth import audit
-from ..models import (Contest, ContestProblem, ContestState, JoinPolicy, Language, LeaderboardMode, Participation,
-                      Problem, ProblemVersion, ScoringMode, Submission, TimingMode, User, VersionStatus)
+from ..models import (AccessMode, Contest, ContestProblem, ContestState, JoinedVia, Language, LeaderboardMode,
+                      Participation, Problem, ProblemVersion, ScoringMode, Submission, TimingMode, User, VersionStatus)
 from . import access
 from .spec import ContestSpec
 
@@ -114,7 +114,7 @@ def _fields(spec: ContestSpec) -> dict:
         "timing_mode": TimingMode(spec.timing_mode), "personal_duration": spec.personal_duration,
         "freeze_at": spec.freeze_at, "scoring_mode": ScoringMode(spec.scoring_mode),
         "icpc_penalty_minutes": spec.icpc_penalty_minutes, "leaderboard": LeaderboardMode(spec.leaderboard),
-        "join_policy": JoinPolicy(spec.join_policy), "allow_upsolving": spec.allow_upsolving,
+        "access_mode": AccessMode(spec.access_mode), "allow_upsolving": spec.allow_upsolving,
         "languages": spec.languages, "submit_cooldown_sec": spec.submit_cooldown_sec,
         "max_submissions_per_problem": spec.max_submissions_per_problem, "tests_after_end": spec.tests_after_end,
         "plagiarism_enabled": spec.plagiarism_enabled,
@@ -142,15 +142,15 @@ def apply(db: Session, actor: audit.Actor, spec: ContestSpec, now: datetime) -> 
         db.add(contest)
         changes.append("contest created (draft)")
     else:
-        if contest.join_policy == JoinPolicy.open and spec.join_policy == "code" and contest.invite_code is not None:
-            warnings.append(f"join_policy open -> code: the invite code this contest had before is valid again; "
+        if contest.access_mode == AccessMode.open and spec.access_mode == "code" and contest.invite_code is not None:
+            warnings.append(f"access mode open -> code: the invite code this contest had before is valid again; "
                             f"if it may have spread, give a new one: judgectl contest code regenerate {contest.slug}")
         for name, value in _fields(spec).items():
             old = getattr(contest, name)
             if old != value:
                 setattr(contest, name, value)
                 changes.append(f"{name}: {_show(old)} -> {_show(value)}")
-    if contest.join_policy == JoinPolicy.code and contest.invite_code is None:
+    if contest.access_mode == AccessMode.code and contest.invite_code is None:
         contest.invite_code = new_invite_code(db)
         changes.append("invite code created")
     db.flush()
@@ -269,7 +269,7 @@ def set_state(db: Session, actor: audit.Actor, contest: Contest, state: ContestS
 
 
 def regenerate_code(db: Session, actor: audit.Actor, contest: Contest, now: datetime) -> str:
-    if contest.join_policy != JoinPolicy.code:
+    if contest.access_mode != AccessMode.code:
         raise ContestError(f"contest {contest.slug} is open: it has no invite code", "contest_is_open")
     contest.invite_code = new_invite_code(db)
     audit.record(db, actor, "contest.code_regenerate", now, object_type="contest", object_id=contest.id,
@@ -287,7 +287,8 @@ def join(db: Session, user: User, contest: Contest, now: datetime, code: Optiona
     decision = access.can_join(user, contest, participation_of(db, contest, user), now, code)
     if not decision:
         raise ContestError(decision.reason, decision.reason)
-    row = Participation(contest_id=contest.id, user_id=user.id, joined_at=now)
+    via = JoinedVia.open if contest.access_mode == AccessMode.open else JoinedVia.code
+    row = Participation(contest_id=contest.id, user_id=user.id, joined_at=now, joined_via=via)
     db.add(row)
     db.flush()
     return row
@@ -359,7 +360,7 @@ def contest_detail(db: Session, c: Contest) -> dict:
     spec = {"format_version": 1, "slug": c.slug, "title": c.title, "description": c.description_md,
             "starts_at": c.starts_at, "ends_at": c.ends_at, "timing_mode": c.timing_mode.value,
             "scoring_mode": c.scoring_mode.value, "icpc_penalty_minutes": c.icpc_penalty_minutes,
-            "leaderboard": c.leaderboard.value, "join_policy": c.join_policy.value,
+            "leaderboard": c.leaderboard.value, "access": {"mode": c.access_mode.value},
             "allow_upsolving": c.allow_upsolving, "submit_cooldown_sec": c.submit_cooldown_sec,
             "max_submissions_per_problem": c.max_submissions_per_problem, "tests_after_end": c.tests_after_end,
             "plagiarism_enabled": c.plagiarism_enabled,
@@ -373,7 +374,7 @@ def contest_detail(db: Session, c: Contest) -> dict:
     if c.languages is not None:
         spec["languages"] = c.languages
     return {"spec": spec, "state": c.state, "created_at": c.created_at,
-            "invite_code": c.invite_code if c.join_policy == JoinPolicy.code else None,
+            "invite_code": c.invite_code if c.access_mode == AccessMode.code else None,
             "participants": db.execute(select(func.count()).select_from(Participation)
                                        .where(Participation.contest_id == c.id)).scalar_one(),
             "rows": [{"id": cp.id, "label": cp.label, "problem": slug, "version": version, "status": status,

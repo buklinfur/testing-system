@@ -22,7 +22,14 @@
     "scoring_mode": { "enum": ["points", "icpc"], "default": "points" },
     "icpc_penalty_minutes": { "type": "integer", "minimum": 0, "maximum": 1440, "default": 20 },
     "leaderboard": { "enum": ["hidden", "visible", "after_end"], "default": "hidden" },
-    "join_policy": { "enum": ["open", "code"], "default": "code" },
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["open", "code"], "default": "code", "description": "open: any student, with a button; code: with the invite code." }
+      },
+      "description": "Who may enter. Absent: mode code."
+    },
     "allow_upsolving": { "type": "boolean", "default": true },
     "languages": {
       "type": "array", "minItems": 1, "uniqueItems": true,
