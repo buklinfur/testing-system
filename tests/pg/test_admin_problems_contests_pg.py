@@ -181,6 +181,33 @@ class AdminProblemsContestsTests(ApiCase):
     def put(self, spec, slug="olymp", dry_run=False):
         return self.call("put", f"/contests/{slug}" + ("?dry_run=true" if dry_run else ""), json=spec)
 
+    def test_every_time_in_a_contest_answer_is_utc_with_z(self):
+        import re
+
+        self.ok(self.upload(zipped(EXAMPLES / "sum-of-two")), 201)
+        spec = self.contest(problems=[{"label": "A", "problem": "sum-of-two", "available_from": "2026-11-10 09:30",
+                                       "due_at": "2026-11-10 12:00:00"}], freeze_at="2026-11-10 17:00",
+                            leaderboard="visible")
+        self.ok(self.put(spec), 201)
+        times = []
+
+        def walk(value):
+            if isinstance(value, dict):
+                for v in value.values():
+                    walk(v)
+            elif isinstance(value, list):
+                for v in value:
+                    walk(v)
+            elif isinstance(value, str) and re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", value):
+                times.append(value)
+
+        detail = self.ok(self.call("get", "/contests/olymp"))
+        walk(detail)
+        walk(self.ok(self.call("get", "/contests"))["items"])
+        self.assertGreaterEqual(len(times), 6)  # starts, ends, freeze, available_from, due_at, created_at, ...
+        self.assertEqual([t for t in times if not re.match(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z$", t)], [])
+        self.assertEqual(detail["spec"]["problems"][0]["due_at"], "2026-11-10T05:00:00Z")  # 12:00 in JUDGE_TIMEZONE
+
     def test_contests_through_json(self):
         for name in ("sum-of-two", "pair-with-sum"):
             self.ok(self.upload(zipped(EXAMPLES / name)), 201)

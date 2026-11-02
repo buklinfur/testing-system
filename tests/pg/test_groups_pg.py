@@ -270,6 +270,84 @@ class GroupServiceTests(PgCase):
         self.apply(contest_yaml())
         self.assertEqual(users.traces(self.s, self.admin)["groups attached to contests"], 1)
 
+    # ---------------------------------------------------------------- class import (В4) and its rollback (K3)
+    def import_csv(self, text):
+        from app.auth import csvimport
+
+        import_id, results = users.import_students(self.s, self.actor, csvimport.parse(text.encode()), T0, "class.csv")
+        self.s.commit()
+        return import_id, results
+
+    def test_class_import_creates_or_fills_groups(self):
+        existing = g.create(self.s, self.actor, "8А", T0)
+        self.s.commit()
+        _id, results = self.import_csv("Фамилия;Имя;Класс\nИванов;Пётр;7Б\nПетров;Иван;7б\nСидоров;Олег;8а\n"
+                                       "Смирнов;Яков;\n")
+        self.assertEqual([r["group"] for r in results], ["7Б", "7Б", "8А", None])
+        made = g.get_group(self.s, "7Б")
+        self.assertEqual([u.login for _m, u in g.members(self.s, made)], ["ivanov.p", "petrov.i"])
+        self.assertEqual([u.login for _m, u in g.members(self.s, existing)], ["sidorov.o"])
+        entry = self.s.execute(select(AuditLog).where(AuditLog.action == "user.import")).scalar_one()
+        self.assertEqual((entry.details["groups_created"], entry.details["groups_joined"]), ([made.id], [existing.id]))
+        self.assertNotIn("password", json.dumps(entry.details))
+
+    def test_a_class_named_like_an_archived_group_is_a_line_error(self):
+        old = g.create(self.s, self.actor, "6Б", T0)
+        g.archive(self.s, self.actor, old, T0)
+        self.s.commit()
+        from app.auth.csvimport import CsvImportError
+
+        with self.assertRaises(CsvImportError) as ctx:
+            self.import_csv("Фамилия;Имя;Класс\nИванов;Пётр;7Б\nПетров;Иван;6б\nСидоров;Олег;6Б\n")
+        self.s.rollback()
+        self.assertEqual([p.split(":")[0] for p in ctx.exception.problems], ["line 3", "line 4"])
+        self.assertIn("archived group", ctx.exception.problems[0])
+        self.assertIsNone(g.live_named(self.s, "7Б"))  # all or nothing
+        self.assertIsNone(users.find_by_login(self.s, "ivanov.p"))
+
+    def test_rollback_deletes_the_groups_it_created_unless_something_uses_them(self):
+        """K3, three cases: nothing else in the group -> deleted; another student added later -> kept; attached to a
+        contest -> kept. A group that existed before only loses the imported students."""
+        before = g.create(self.s, self.actor, "8А", T0)
+        self.s.commit()
+        import_id, _ = self.import_csv("Фамилия;Имя;Класс\nИванов;Пётр;7Б\nПетров;Иван;7В\nСидоров;Олег;7Г\n"
+                                       "Смирнов;Яков;8А\n")
+        g.add_members(self.s, self.actor, g.get_group(self.s, "7В"), [self.a], T0)  # someone else joined later
+        self.s.commit()
+        self.apply(contest_yaml(groups=("7Г",)))  # attached to a contest
+        result = users.import_rollback(self.s, self.actor, import_id, T0)
+        self.s.commit()
+        self.assertEqual(result["deleted"], ["ivanov.p", "petrov.i", "sidorov.o", "smirnov.ya"])
+        self.assertEqual(result["groups_deleted"], ["7Б"])
+        self.assertEqual(result["groups_kept"], ["7В: it has other students", "7Г: it is attached to a contest"])
+        self.assertRaises(GroupError, g.get_group, self.s, "7Б")
+        self.assertEqual([u.login for _m, u in g.members(self.s, g.get_group(self.s, "7В"))], ["student1"])
+        self.assertEqual(g.members(self.s, g.get_group(self.s, "7Г"), with_history=True), [])  # memberships gone
+        self.assertEqual(g.members(self.s, before, with_history=True), [])  # existed before: kept, without them
+        self.assertEqual(g.get_group(self.s, "8А").id, before.id)
+        entry = self.s.execute(select(AuditLog).where(AuditLog.action == "user.import_rollback")).scalar_one()
+        self.assertEqual(entry.details["groups_deleted"], ["7Б"])
+
+    # ---------------------------------------------------------------- time zone (D-024)
+    def test_time_zone(self):
+        self.assertEqual(users.set_timezone(self.s, self.actor, self.a, " Asia/Novosibirsk ", T0), "Asia/Novosibirsk")
+        self.assertEqual(users.set_timezone(self.s, self.actor, self.a, "Asia/Novosibirsk", T0), "Asia/Novosibirsk")
+        self.s.commit()
+        for bad in ("Mars/Olympus", "../etc/passwd", "/etc/localtime", "Asia/Novosibirsk\x00", "x" * 65):
+            with self.subTest(bad=bad), self.assertRaises(users.UserError) as ctx:
+                users.set_timezone(self.s, self.actor, self.a, bad, T0)
+            self.assertEqual(ctx.exception.code, "timezone_invalid")
+        self.assertEqual(self.a.timezone, "Asia/Novosibirsk")
+        self.assertIsNone(users.set_timezone(self.s, self.actor, self.a, "", T0))
+        self.s.commit()
+        self.assertEqual(self.actions("user.set_timezone"), ["user.set_timezone"] * 2)  # unchanged: not audited
+        self.assertIn("time zone Europe/Moscow", self.ok("user", "set-timezone", "student1", "Europe/Moscow")[0])
+        self.assertIn("no time zone", self.ok("user", "set-timezone", "student1", "-")[0])
+        code, _, err = self.run_cli("user", "set-timezone", "student1", "Nowhere/City")
+        self.assertEqual((code, "not a time zone" in err), (1, True))
+        code, _, err = self.run_cli("user", "set-timezone", "admin", "UTC")  # students only here
+        self.assertEqual(code, 1)
+
     # ---------------------------------------------------------------- judgectl group
     def run_cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()

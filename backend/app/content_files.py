@@ -2,7 +2,8 @@
 
 MODULE_4A 5.7, required for the admin API and for statement pictures in 4b:
 * always `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox; default-src 'none'`;
-* only pictures (png, jpeg, gif, webp) are shown inline, the type taken from the file name, never sniffed;
+* only pictures (png, jpeg, webp: D-026, one rule for statements and attachments) are shown inline, the type
+  taken from the file name, never sniffed; a GIF is an attachment like anything else;
 * tests and sources are `text/plain; charset=utf-8` as an attachment; anything else, SVG and HTML included, is
   `application/octet-stream` as an attachment.
 The caller finds the file by its name in the stored list (version `files`), never by a path on disk.
@@ -18,8 +19,7 @@ from fastapi.responses import StreamingResponse
 from .api_errors import ApiError
 from .blobstore import BlobStore
 
-IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-               ".webp": "image/webp"}
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 TEXT_SUFFIXES = frozenset({".in", ".out", ".ans", ".txt", ".md", ".py", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
                            ".hh", ".inc", ".yaml", ".yml", ".csv", ".json"})
 SAFETY = {"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'"}

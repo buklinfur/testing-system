@@ -200,6 +200,9 @@ def user_import(ctx: Context, args) -> int:
     else:
         ctx.print(f"{len(results)} students created ({parsed.encoding}, '{parsed.delimiter}'); "
                   f"logins and passwords are in {args.out} (0600, the passwords are nowhere else)")
+        classes = sorted({r["group"] for r in results if r["group"]})
+        if classes:
+            ctx.print(f"groups: {', '.join(classes)} (judgectl group show <group>)")
     return 0
 
 
@@ -248,6 +251,15 @@ def user_unlock(ctx: Context, args) -> int:
             was = users.unlock(db, ctx.actor, args.login, now)
             subject = args.login.strip().lower()
     ctx.print(f"{subject}: {'lockout lifted' if was else 'was not locked'}; the failure counter is reset")
+    return 0
+
+
+def user_set_timezone(ctx: Context, args) -> int:
+    with ctx.session() as db:
+        user = _user(db, args.login, Role.student)
+        zone_name = users.set_timezone(db, ctx.actor, user, None if args.zone == "-" else args.zone, ctx.clock())
+        login = user.login
+    ctx.print(f"{login}: time zone {zone_name}" if zone_name else f"{login}: no time zone (the browser's is used)")
     return 0
 
 
@@ -323,11 +335,15 @@ def user_imports(ctx: Context, args) -> int:
 def user_import_rollback(ctx: Context, args) -> int:
     confirm(ctx, str(args.import_id), f"Deleting every user of import {args.import_id}", args.yes)
     with ctx.session() as db:
-        logins = users.import_rollback(db, ctx.actor, args.import_id, ctx.clock())
+        result = users.import_rollback(db, ctx.actor, args.import_id, ctx.clock())
     if ctx.json:
-        emit_json(ctx, {"import_id": args.import_id, "deleted": logins})
+        emit_json(ctx, {"import_id": args.import_id, **result})
     else:
-        ctx.print(f"import {args.import_id} rolled back: {len(logins)} users deleted")
+        ctx.print(f"import {args.import_id} rolled back: {len(result['deleted'])} users deleted")
+        if result["groups_deleted"]:
+            ctx.print(f"  groups it created, deleted: {', '.join(result['groups_deleted'])}")
+        for kept in result["groups_kept"]:
+            ctx.print(f"  group kept, {kept}")
     return 0
 
 

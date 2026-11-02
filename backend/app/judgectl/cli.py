@@ -87,6 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = command(user, "unlock", accounts.user_unlock, "lift a brute-force lockout of a login or of an IP address")
     p.add_argument("login", nargs="?")
     p.add_argument("--ip")
+    p = command(user, "set-timezone", accounts.user_set_timezone,
+                "the time zone the web shows a student's times in (IANA, e.g. Asia/Novosibirsk; - clears it)")
+    p.add_argument("login")
+    p.add_argument("zone")
     p = command(user, "set-login", accounts.user_set_login, "change the login of a student")
     p.add_argument("login")
     p.add_argument("new_login")

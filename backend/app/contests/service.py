@@ -442,8 +442,12 @@ def submission_decision(db: Session, user: User, contest: Contest, contest_probl
     """The one way to decide on a submission (dev_seed now, the public API of 4b later): everything access.can_submit
     needs, from the database. `now` is the moment the request was received, taken once by the caller before the
     source is read (a large upload must not become late while it arrives); the submission gets
-    created_at = now and late = decision.late, never recomputed. `user` is the student of the session."""
-    participation, in_group = access_inputs(db, contest, user)
+    created_at = now and late = decision.late, never recomputed. `user` is the student of the session.
+
+    The participation row is locked (SELECT ... FOR UPDATE) before the limit and the cooldown are counted, and the
+    caller writes the submission in the same transaction: two requests at once wait for each other, so the second
+    sees the first and cannot slip past the cooldown or the limit."""
+    participation, in_group = access_inputs(db, contest, user, lock=True)
     last = db.execute(select(func.max(Submission.created_at)).where(
         Submission.user_id == user.id, Submission.contest_problem_id == contest_problem.id)).scalar()
     window = access.contest_window_for(contest, participation)

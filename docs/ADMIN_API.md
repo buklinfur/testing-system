@@ -56,7 +56,7 @@ Caddy. Код: [`backend/app/admin_api/`](../backend/app/admin_api).
 страницу (XSS):
 
 * всегда `X-Content-Type-Options: nosniff` и `Content-Security-Policy: sandbox; default-src 'none'`;
-* показываются в браузере (`inline`) **только картинки** `png`, `jpeg`, `gif`, `webp`, тип — по расширению из списка
+* показываются в браузере (`inline`) **только картинки** `png`, `jpeg`, `webp` (D-026; GIF — вложением), тип — по расширению из списка
   файлов версии, не по содержимому;
 * всё остальное, включая SVG и HTML, — `Content-Disposition: attachment` и `application/octet-stream`; исходники и
   тесты — `text/plain; charset=utf-8` и `attachment`;
@@ -83,9 +83,9 @@ two_factor (только у админов)}`; хешей и секретов н
 | `GET /users/{id}` | — | пользователь | 404 `user_not_found` |
 | `GET /users/{id}/failures` | `limit` (до 200) | `{login, counting, limit, locked_until, items: [{at, kind, ip}]}` | 404 |
 | `POST /users` | `{surname, first_name, login?, display_name?}` | 201 `{user, password}` — **пароль только здесь** | 409 `login_taken`, 422 `login_invalid` / `display_name_required` / `invalid_request` |
-| `POST /users/import` | тело — список класса (`text/csv`, ≤ 1 МБ, формат и кодировки — [`JUDGECTL.md`](JUDGECTL.md)), `?dry_run=true` | 201 `{import_id, users: [{surname, first_name, login, password, display_name}]}`; при `Accept: text/csv` — тот же CSV, что пишет judgectl (BOM, `;`, `attachment; filename="students-import-<id>.csv"`); `dry_run` — 200 `{dry_run, users}` без паролей, ничего не пишется | 413, 415, 422 `csv_invalid` + `problems` с номерами строк (в том числе занятые в базе логины), ничего не создано |
+| `POST /users/import` | тело — список класса (`text/csv`, ≤ 1 МБ, формат и кодировки — [`JUDGECTL.md`](JUDGECTL.md)), `?dry_run=true` | 201 `{import_id, users: [{surname, first_name, login, password, display_name, group}]}` (столбец «класс» — группы, `JUDGECTL.md`); при `Accept: text/csv` — тот же CSV, что пишет judgectl (BOM, `;`, `attachment; filename="students-import-<id>.csv"`); `dry_run` — 200 `{dry_run, users}` без паролей, ничего не пишется | 413, 415, 422 `csv_invalid` + `problems` с номерами строк (в том числе занятые в базе логины), ничего не создано |
 | `GET /users/imports` | курсор | `{items: [{id, at, file, count, by_user_id, by_console, rolled_back}]}` | — |
-| `POST /users/imports/{id}/rollback` | `{confirm_import_id}` = id | `{import_id, deleted: [logins]}` | 404 `import_not_found`, 409 `already_rolled_back` / `users_logged_in` (+ `logins`) / `has_traces` (+ `traces`), 422 `confirmation_mismatch` |
+| `POST /users/imports/{id}/rollback` | `{confirm_import_id}` = id | `{import_id, deleted: [logins], groups_deleted: [названия], groups_kept: ["название: почему"]}` (К3) | 404 `import_not_found`, 409 `already_rolled_back` / `users_logged_in` (+ `logins`) / `has_traces` (+ `traces`), 422 `confirmation_mismatch` |
 | `POST /users/{id}/reset-password` | — | `{user, password}` — новый пароль один раз; сессии и QR-токены отозваны, блокировка снята | 403, 404 |
 | `POST /users/{id}/disable` / `enable` | — | пользователь (отключение отзывает сессии и QR-токены) | 403, 404 |
 | `PUT /users/{id}/login` | `{login}` | пользователь | 403, 404, 409 `login_taken`, 422 `login_invalid` |

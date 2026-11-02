@@ -171,7 +171,7 @@ async def import_class(request: Request, dry_run: bool = False, db: Session = De
 
     import_id, results = await run_in_threadpool(work)
     if dry_run:
-        return JSONResponse({"dry_run": True, "users": [{k: r[k] for k in ("surname", "first_name", "login", "display_name")}
+        return JSONResponse({"dry_run": True, "users": [{k: r[k] for k in ("surname", "first_name", "login", "display_name", "group")}
                                                         for r in results]}, status_code=200)
     if "text/csv" in request.headers.get("accept", ""):
         return Response(("﻿" + csvimport.result_csv(results)).encode("utf-8"), status_code=201,
@@ -186,11 +186,11 @@ def rollback_import(import_id: int, body: ConfirmImport, request: Request, db: S
     if body.confirm_import_id != import_id:
         raise ApiError(422, "confirmation_mismatch", "confirm_import_id must repeat the id of the import")
     try:
-        logins = users.import_rollback(db, actor, import_id, now(request))
+        result = users.import_rollback(db, actor, import_id, now(request))
     except UserError as exc:
         raise refused(exc) from exc
     db.commit()
-    return {"import_id": import_id, "deleted": logins}
+    return {"import_id": import_id, **result}
 
 
 # ----------------------------------------------------------------------------- one student

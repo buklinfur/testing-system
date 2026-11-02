@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -139,6 +140,31 @@ def set_login(db: Session, actor: audit.Actor, user: User, raw_login: str, now: 
     audit.record(db, actor, "user.set_login", now, object_type="user", object_id=user.id,
                  details={"old": old, "new": login})
     return login
+
+
+def checked_timezone(raw: Optional[str]) -> Optional[str]:
+    """An IANA name the server knows ('Asia/Novosibirsk', 'UTC'), or None for empty: the UI then uses the browser's
+    zone (D-024). UserError otherwise; the API answers it with 422."""
+    name = (raw or "").strip()
+    if not name:
+        return None
+    if len(name) > 64 or name.startswith("/") or ".." in name:
+        raise UserError(f"not a time zone: {name!r}", "timezone_invalid")
+    try:
+        return ZoneInfo(name).key
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise UserError(f"not a time zone the server knows: {name!r} (e.g. Asia/Novosibirsk, Europe/Moscow)",
+                        "timezone_invalid") from exc
+
+
+def set_timezone(db: Session, actor: audit.Actor, user: User, raw: Optional[str], now: datetime) -> Optional[str]:
+    """Only how times are shown to this user; stored times stay UTC. Returns the zone, None when cleared."""
+    name = checked_timezone(raw)
+    if name != user.timezone:
+        old, user.timezone = user.timezone, name
+        audit.record(db, actor, "user.set_timezone", now, object_type="user", object_id=user.id,
+                     details={"old": old, "new": name})
+    return name
 
 
 def unlock(db: Session, actor: audit.Actor, raw_login: str, now: datetime) -> bool:
@@ -289,7 +315,8 @@ def rolled_back_imports(db: Session) -> set:
 
 
 def import_rollback(db: Session, actor: audit.Actor, import_id: int, now: datetime) -> list:
-    """Delete every user of one `user import`, if none of them has logged in or left any trace. Returns logins."""
+    """Delete every user of one `user import`, if none of them has logged in or left any trace, and the groups the
+    import created that nothing else uses (K3). Returns {"deleted": logins, "groups_deleted", "groups_kept"}."""
     row = db.get(AuditLog, import_id)
     if row is None or row.action != "user.import":
         raise UserError(f"no user import with id {import_id} (see: judgectl user imports)", "import_not_found")
@@ -316,10 +343,32 @@ def import_rollback(db: Session, actor: audit.Actor, import_id: int, now: dateti
                         traces=with_traces)
     logins = [u.login for u in found]
     for u in found:
-        _erase(db, u)
+        _erase(db, u)  # with their group memberships (В5)
+    groups_deleted, groups_kept = _rollback_groups(db, (row.details or {}).get("groups_created", []))
     audit.record(db, actor, "user.import_rollback", now, object_type="audit_log", object_id=import_id,
-                 details={"logins": logins, "missing": len(ids or (row.details or {}).get("logins", [])) - len(logins)})
-    return logins
+                 details={"logins": logins, "missing": len(ids or (row.details or {}).get("logins", [])) - len(logins),
+                          "groups_deleted": groups_deleted, "groups_kept": groups_kept})
+    return {"deleted": logins, "groups_deleted": groups_deleted, "groups_kept": groups_kept}
+
+
+def _rollback_groups(db: Session, group_ids: list) -> tuple[list, list]:
+    """K3: the groups the import created are deleted (as if the import never happened) unless something else uses
+    them now; existing groups the import added students to only lose those students."""
+    from .. import groups as g
+
+    deleted, kept = [], []
+    for group_id in group_ids:
+        group = db.get(Group, group_id)
+        if group is None:
+            continue
+        why = g.why_kept_after_rollback(db, group)
+        if why is None:
+            deleted.append(group.name)
+            db.delete(group)
+        else:
+            kept.append(f"{group.name}: {why}")
+    db.flush()
+    return deleted, kept
 
 
 # ----------------------------------------------------------------------------- lists (judgectl and the admin API)
@@ -359,7 +408,7 @@ def describe(db: Session, user: User, settings, now: datetime, locks: dict) -> d
     out = {"id": user.id, "login": user.login, "display_name": user.display_name, "role": user.role.value,
            "active": user.is_active, "created_at": user.created_at, "last_login_at": user.last_login_at,
            "last_login_ip": user.last_login_ip, "failures": ratelimit.current_failures(db, settings, now, user.login),
-           "locked_until": locks.get(user.login)}
+           "locked_until": locks.get(user.login), "timezone": user.timezone}
     if user.role == Role.admin:
         out["two_factor"] = two_factor_state(user)
     return out
@@ -367,12 +416,27 @@ def describe(db: Session, user: User, settings, now: datetime, locks: dict) -> d
 
 # ----------------------------------------------------------------------------- class import (judgectl and the admin API)
 def import_students(db: Session, actor: audit.Actor, parsed, now: datetime, source_name: str) -> tuple:
-    """R7, all or nothing: (import id, [{surname, first_name, login, password, display_name}]). Any refused line
-    (a taken or bad login, ...) -> csvimport.CsvImportError with every line number; nothing stays (the caller rolls
-    back). The audit record names the logins and ids, never a password."""
+    """R7, all or nothing: (import id, [{surname, first_name, login, password, display_name, group}]). Any refused
+    line (a taken or bad login, a class named like an archived group, ...) -> csvimport.CsvImportError with every
+    line number; nothing stays (the caller rolls back). A class creates the group or adds to the one of that name
+    (D-020). The audit record names the logins, ids and groups, never a password."""
+    from .. import groups as g
     from .csvimport import CsvImportError
 
     created, problems = {}, []
+    classes = {}  # lower-case name -> (name as first written, existing group or None)
+    for row in parsed.rows:
+        if row.group is None or row.group.lower() in classes:
+            continue
+        existing = g.live_named(db, row.group)
+        if existing is None and g.archived_named(db, row.group):
+            classes[row.group.lower()] = (row.group, "archived")
+        else:
+            classes[row.group.lower()] = (row.group, existing)
+    for row in parsed.rows:
+        if row.group is not None and classes[row.group.lower()][1] == "archived":
+            problems.append((row.line, f"line {row.line}: class {row.group!r} is an archived group "
+                                       "(judgectl group unarchive, or another name)"))
     # explicit logins first, so a generated one never takes a login asked for further down
     for i, row in sorted(enumerate(parsed.rows), key=lambda pair: pair[1].login is None):
         try:
@@ -386,10 +450,20 @@ def import_students(db: Session, actor: audit.Actor, parsed, now: datetime, sour
     for i, row in enumerate(parsed.rows):
         user, password = created[i]
         results.append({"surname": row.surname, "first_name": row.first_name, "login": user.login,
-                        "password": password, "display_name": user.display_name})
+                        "password": password, "display_name": user.display_name, "group": None})
+    groups_created, groups_joined = [], []
+    for key, (name, existing) in classes.items():
+        group = existing or g.create(db, actor, name, now)
+        (groups_joined if existing else groups_created).append(group.id)
+        members = [created[i][0] for i, row in enumerate(parsed.rows) if row.group and row.group.lower() == key]
+        g.add_members(db, actor, group, members, now)
+        for i, row in enumerate(parsed.rows):
+            if row.group and row.group.lower() == key:
+                results[i]["group"] = group.name
     entry = audit.record(db, actor, "user.import", now, object_type="file", object_id=source_name,
                          details={"count": len(results), "encoding": parsed.encoding,
                                   "logins": [r["login"] for r in results],
-                                  "user_ids": [created[i][0].id for i in range(len(parsed.rows))]})
+                                  "user_ids": [created[i][0].id for i in range(len(parsed.rows))],
+                                  "groups_created": groups_created, "groups_joined": groups_joined})
     db.flush()
     return entry.id, results

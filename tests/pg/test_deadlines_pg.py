@@ -198,6 +198,49 @@ class DeadlineTests(PgCase):
         c = self.published(contest_yaml(mode="code"))
         self.assertEqual(service.submission_decision(self.s, self.a, c, c.problems[0], T0).reason, "not_participant")
 
+    def test_two_submissions_at_once_cannot_both_pass_the_cooldown(self):
+        """Two connections submit at the same moment (cooldown 15 s): the participation row is locked until the
+        first one commits, so the second sees it and is refused."""
+        import threading
+        import time
+
+        from app.models import Contest, ContestProblem
+
+        c = self.published(contest_yaml("{label: A, problem: sum}"))  # submit_cooldown_sec: 15 by default
+        service.enter(self.s, self.a, c, T0)
+        self.s.commit()
+        ids = (c.id, c.problems[0].id, self.a.id)
+        barrier, results, errors = threading.Barrier(2), [], []
+
+        def submit():
+            session = self.Session()
+            try:
+                contest, cp, user = (session.get(Contest, ids[0]), session.get(ContestProblem, ids[1]),
+                                     session.get(User, ids[2]))
+                barrier.wait()
+                decision = service.submission_decision(session, user, contest, cp, T0)
+                if decision:
+                    session.add(Submission(user_id=user.id, contest_problem_id=cp.id, language_key="python",
+                                           source_sha256="c" * 64, created_at=T0, late=decision.late))
+                    session.flush()
+                    time.sleep(0.3)  # without the lock the other request would decide in this gap
+                session.commit()
+                results.append(decision.reason)
+            except Exception as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+            finally:
+                session.close()
+
+        threads = [threading.Thread(target=submit) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(results), ["cooldown", "ok"])
+        self.s.expire_all()
+        self.assertEqual(len(self.s.execute(select(Submission).where(Submission.user_id == self.a.id)).all()), 1)
+
     # ---------------------------------------------------------------- judgectl extension
     def run_cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()

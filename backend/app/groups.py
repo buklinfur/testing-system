@@ -18,7 +18,7 @@ from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from .auth import audit
-from .models import Contest, ContestGroup, Group, GroupMember, Role, User
+from .models import Contest, ContestGroup, DeadlineExtension, Group, GroupMember, Role, User
 
 NAME_MAX = 64
 
@@ -47,6 +47,29 @@ def _live_named(db: Session, name: str, but: Optional[int] = None) -> Optional[G
     if but is not None:
         query = query.where(Group.id != but)
     return db.execute(query).scalar_one_or_none()
+
+
+def live_named(db: Session, raw_name: str) -> Optional[Group]:
+    """The group not archived of this name (ignoring case and extra spaces), or None."""
+    return _live_named(db, " ".join((raw_name or "").split()))
+
+
+def archived_named(db: Session, raw_name: str) -> bool:
+    name = " ".join((raw_name or "").split())
+    return db.execute(select(exists().where(func.lower(Group.name) == name.lower(),
+                                            Group.archived_at.is_not(None)))).scalar()
+
+
+def why_kept_after_rollback(db: Session, group: Group) -> Optional[str]:
+    """K3: a group a class import created goes with the import's rollback only while nothing else uses it: no
+    other students (ever), no contest, no extension. Returns why it stays, or None (it may be deleted)."""
+    if db.execute(select(exists().where(GroupMember.group_id == group.id))).scalar():
+        return "it has other students"
+    if db.execute(select(exists().where(ContestGroup.group_id == group.id))).scalar():
+        return "it is attached to a contest"
+    if db.execute(select(exists().where(DeadlineExtension.group_id == group.id))).scalar():
+        return "it has deadline extensions"
+    return None
 
 
 def get_group(db: Session, ref: str) -> Group:
