@@ -6,7 +6,8 @@
 
 ```
 users ──< problems ──< problem_versions ──< test_groups ──< test_cases
-                              │  └──< programs (checker, interactor, validator, solutions)
+                              │  ├──< programs (checker, interactor, validator, solutions)
+                              │  └──< version_checks ──> workers   (проверки версии воркером, 4а.4)
                               │
 contests ──< contest_problems ┘            (контест привязан к конкретной версии)
    │               │  └──< deadline_extensions ──> users | groups   (продления срока)
@@ -147,3 +148,24 @@ auth_failures, auth_lockouts — неудачные попытки входа и
   в режиме с группами, группы, продления, сроки / политики / пояснения задач, посылки с опозданием, пояса
   пользователей, участия, которые сейчас доступа не дают (вошёл при `open`, потом контест стал `code`: при
   `join_policy` такого ученика снова пустили бы).
+
+## Изменения 4а.4 (миграция `b7e3d91a4c62`)
+
+Решения — D-048…D-055 в [`DECISIONS.md`](DECISIONS.md), §5.9 в [`MODULE_4A.md`](MODULE_4A.md); миграцию проверяет
+`tests/pg/test_migrations_pg.py`.
+
+* `version_checks` — проверки версий задач воркером (компиляция чекера и интерактора, прогон эталонов). **Не
+  judgements**: вне справедливой очереди и счётчика загрузки учеников. Столбцы: `problem_version_id`, `reason`
+  (`import` / `recheck`), `status` (`queued` → `running` → `done`), `outcome` (`ready` / `failed`, задан ровно тогда,
+  когда `done` — `CHECK`), `worker_id`, `attempt` (fencing, как у judgements), `failures` (потерянный воркер,
+  внутренняя ошибка; на `JUDGE_MAX_ATTEMPTS` — `failed`), `heartbeat_at`, `progress_done/total` (эталонов прогнано),
+  `report` (`check_report`), `error`, `requested_by` (кто попросил перепроверку; пусто — консоль), `created_at`,
+  `started_at`, `finished_at`. Индексы: одна незавершённая проверка на версию (`uq_version_checks_active`, частичный
+  `WHERE status IN ('queued', 'running')`), очередь `(created_at, id) WHERE status = 'queued'`, история версии
+  `(problem_version_id, id)`.
+* Итог законченной проверки становится `problem_versions.status`, её отчёт копируется в
+  `problem_versions.check_report` (его показывают API и judgectl); строки `version_checks` — история.
+* `version_checks.requested_by` — след пользователя: удалить его нельзя (как с `judgements.requested_by`).
+* `worker_tokens.capabilities`: миграция добавляет `problem_check` всем неотозванным токенам с `cpu`; новые токены
+  по умолчанию `["cpu", "problem_check"]`. Статусы существующих версий не меняются (остаются `ready`).
+* Откат отказывает, пока в `version_checks` есть строки; иначе снимает `problem_check` с токенов и воркеров.

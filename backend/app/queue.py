@@ -67,7 +67,7 @@ def hash_token(token: str) -> str:
 def create_worker_token(session: Session, name: str, capabilities: Optional[list] = None) -> str:
     """Returns the plain token; it is shown once and never stored (only its sha256)."""
     token = "jw_" + secrets.token_urlsafe(32)
-    session.add(WorkerToken(name=name, token_hash=hash_token(token), capabilities=list(capabilities or ["cpu"])))
+    session.add(WorkerToken(name=name, token_hash=hash_token(token), capabilities=list(capabilities or ["cpu", "problem_check"])))
     session.flush()
     return token
 

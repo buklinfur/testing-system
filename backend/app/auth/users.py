@@ -13,7 +13,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..models import (AuditLog, AuthLockout, Contest, ContestGroup, DeadlineExtension, Group, GroupMember, Judgement,
-                      LoginToken, Participation, Problem, ProblemVersion, Role, Submission, User, UserSession)
+                      LoginToken, Participation, Problem, ProblemVersion, Role, Submission, User, UserSession,
+                      VersionCheck)
 from ..timeutil import iso_utc
 from . import audit, login_tokens, ratelimit, sessions
 from .logins import LoginError, checked_login, default_display_name, default_login, unique_login
@@ -257,6 +258,7 @@ TRACES = (
     ("contest participations", Participation.user_id),
     ("submissions", Submission.user_id),
     ("rejudges requested", Judgement.requested_by),
+    ("problem checks requested", VersionCheck.requested_by),
     ("audit records as actor (web actions or logins)", AuditLog.actor_user_id),
     ("groups created", Group.created_by),
     ("students added to groups", GroupMember.added_by),

@@ -518,3 +518,72 @@ class MigrationTests(PgCase):
         with engine.connect() as conn:
             self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "4d8a1c2e9f57")
             self.assertEqual(conn.execute(text("SELECT to_regtype('access_mode')")).scalar_one(), None)
+
+    # ---------------------------------------------------------------- b7e3d91a4c62: checks of problem versions (4a.4)
+    BEFORE_CHECKS = """
+        INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
+          (1, 'admin', '!', 'A', 'admin', true);
+        INSERT INTO problems (id, slug, owner_id) VALUES (1, 'sum', 1);
+        INSERT INTO problem_versions (id, problem_id, version, status, type, titles, statements, config)
+          VALUES (1, 1, 1, 'ready', 'batch', '{}', '{}', '{}');
+        INSERT INTO worker_tokens (id, name, token_hash, capabilities, revoked_at) VALUES
+          (1, 'box', 'h1', '["cpu"]', NULL), (2, 'gpu-box', 'h2', '["cpu", "gpu"]', NULL),
+          (3, 'old', 'h3', '["cpu"]', now()), (4, 'gpu-only', 'h4', '["gpu"]', NULL),
+          (5, 'new', 'h5', '["cpu", "problem_check"]', NULL);
+        INSERT INTO workers (id, name, token_id, capabilities, state, info, stats) VALUES
+          (1, 'box-w0', 1, '["cpu"]', 'idle', '{}', '{}')
+    """
+
+    def token_caps(self, conn):
+        return dict(conn.execute(text("SELECT name, capabilities FROM worker_tokens ORDER BY id")).all())
+
+    def test_checks_migration_allows_the_capability_and_keeps_versions_ready(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "6fca2cdc55b2")
+            self.run_sql(conn, self.BEFORE_CHECKS)
+            self.alembic(conn, "upgrade", "b7e3d91a4c62")
+            self.assertEqual(self.token_caps(conn), {
+                "box": ["cpu", "problem_check"], "gpu-box": ["cpu", "gpu", "problem_check"],
+                "old": ["cpu"],  # revoked: left alone
+                "gpu-only": ["gpu"],  # no cpu: not a judging machine of this kind
+                "new": ["cpu", "problem_check"],  # not doubled
+            })
+            self.assertEqual(conn.execute(text("SELECT status::text FROM problem_versions")).scalar_one(), "ready")
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM version_checks")).scalar_one(), 0)
+
+            # the rules hold for new rows
+            conn.execute(text("INSERT INTO version_checks (id, problem_version_id, reason, status, attempt, failures) "
+                              "VALUES (1, 1, 'import', 'queued', 0, 0)"))
+            for bad in ("INSERT INTO version_checks (problem_version_id, reason, status, attempt, failures) "
+                        "VALUES (1, 'recheck', 'running', 1, 0)",  # a second unfinished check of the version
+                        "UPDATE version_checks SET status = 'done'",  # done without an outcome
+                        "UPDATE version_checks SET outcome = 'ready'",  # an outcome while queued
+                        "INSERT INTO version_checks (problem_version_id, reason, status, attempt, failures) "
+                        "VALUES (1, 'other', 'queued', 0, 0)"):
+                with self.subTest(bad=bad), self.assertRaises(Exception):
+                    with conn.begin_nested():
+                        conn.execute(text(bad))
+            conn.execute(text("UPDATE version_checks SET status = 'done', outcome = 'failed'"))
+            conn.execute(text("INSERT INTO version_checks (problem_version_id, reason, status, attempt, failures) "
+                              "VALUES (1, 'recheck', 'queued', 0, 0)"))  # a finished check does not block a new one
+
+            # down: refused while checks exist, nothing changed
+            before = self.token_caps(conn)
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "downgrade", "6fca2cdc55b2")
+        self.assertIn("version checks: 2", str(caught.exception))
+        self.assertIn("nothing was changed", str(caught.exception))
+        with engine.begin() as conn:
+            self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "b7e3d91a4c62")
+            self.assertEqual(self.token_caps(conn), before)
+            conn.execute(text("DELETE FROM version_checks"))
+            conn.execute(text("""UPDATE workers SET capabilities = '["cpu", "problem_check"]'"""))
+            self.alembic(conn, "downgrade", "6fca2cdc55b2")
+            self.assertEqual(self.token_caps(conn), {"box": ["cpu"], "gpu-box": ["cpu", "gpu"], "old": ["cpu"],
+                                                     "gpu-only": ["gpu"], "new": ["cpu"]})
+            self.assertEqual(conn.execute(text("SELECT capabilities FROM workers")).scalar_one(), ["cpu"])
+            self.assertEqual(conn.execute(text("SELECT to_regclass('version_checks')")).scalar_one(), None)
+            self.assertEqual(conn.execute(text("SELECT to_regtype('check_status')")).scalar_one(), None)
+            self.alembic(conn, "upgrade", "head")

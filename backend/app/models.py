@@ -74,7 +74,7 @@ class VersionStatus(str, enum.Enum):
 
     pending_check = "pending_check"  # imported, the check by a worker (session 4a.4) has not finished
     ready = "ready"  # may be pinned in contests
-    failed = "failed"  # the check found a problem (check_report); never pinned
+    failed = "failed"  # the check found a problem (check_report); new pins refused, earlier pins stay (4a.4)
 
 
 class ProblemType(str, enum.Enum):
@@ -187,6 +187,26 @@ class Verdict(str, enum.Enum):
 class JudgementReason(str, enum.Enum):
     initial = "initial"
     rejudge = "rejudge"
+
+
+class CheckReason(str, enum.Enum):
+    """Why a problem version is checked by a worker (session 4a.4)."""
+
+    import_ = "import"  # the import created the version
+    recheck = "recheck"  # an admin asked again (e.g. after a compiler change)
+
+
+class CheckStatus(str, enum.Enum):
+    queued = "queued"
+    running = "running"
+    done = "done"
+
+
+class CheckOutcome(str, enum.Enum):
+    """The verdict of a finished check; it becomes the version status."""
+
+    ready = "ready"
+    failed = "failed"
 
 
 def pg_enum(cls: type[enum.Enum], name: str) -> Enum:
@@ -739,6 +759,56 @@ class TestResult(Base):
     __table_args__ = (UniqueConstraint("judgement_id", "test_case_id", name="uq_test_results_judgement_test"),)
 
 
+class VersionCheck(Base):
+    """A worker checks a problem version (session 4a.4, docs/QUEUE.md "Проверки задач"): it compiles the checker
+    and the interactor and runs the reference solutions against their expected verdicts.
+
+    Not a judgement: checks are outside the fair queue and the students' load indicator. A worker takes one only
+    when no submission is waiting for it, and at most `JUDGE_MAX_CONCURRENT_CHECKS` run at once.
+
+    * status: queued -> running -> done. The outcome (ready / failed) of a done check becomes the version status
+      and its report is copied to problem_versions.check_report; the rows here are the history.
+    * attempt is the fencing token (as in judgements); failures counts lost workers and internal errors, at
+      max_attempts the check ends failed.
+    * heartbeat_at: the last heartbeat about this check.
+    """
+
+    __tablename__ = "version_checks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    problem_version_id: Mapped[int] = mapped_column(ForeignKey("problem_versions.id"), nullable=False)
+    reason: Mapped[CheckReason] = mapped_column(pg_enum(CheckReason, "check_reason"), nullable=False)
+    status: Mapped[CheckStatus] = mapped_column(
+        pg_enum(CheckStatus, "check_status"), nullable=False, default=CheckStatus.queued
+    )
+    outcome: Mapped[Optional[CheckOutcome]] = mapped_column(pg_enum(CheckOutcome, "check_outcome"))
+    worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"))
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    progress_done: Mapped[Optional[int]] = mapped_column(Integer)  # reference solutions run so far
+    progress_total: Mapped[Optional[int]] = mapped_column(Integer)
+    report: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB)  # the check_report (docs/WORKER_PROTOCOL.md)
+    error: Mapped[Optional[str]] = mapped_column(Text)  # the last internal error or why the check gave up
+    requested_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))  # null: console import or recheck
+    created_at: Mapped[datetime] = utcnow_column()
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    version: Mapped[ProblemVersion] = relationship()
+
+    __table_args__ = (
+        # at most one unfinished check per version (a recheck never doubles it)
+        Index("uq_version_checks_active", "problem_version_id", unique=True,
+              postgresql_where=text("status IN ('queued', 'running')")),
+        # the checks waiting for a worker, oldest first
+        Index("ix_version_checks_queue", "created_at", "id", postgresql_where=text("status = 'queued'")),
+        # the history of a version
+        Index("ix_version_checks_version", "problem_version_id", "id"),
+        CheckConstraint("(status = 'done') = (outcome IS NOT NULL)", name="outcome_when_done"),
+    )
+
+
 # --------------------------------------------------------------------------- infrastructure
 class WorkerToken(Base):
     """Credential of a machine (or pool) of workers. Only sha256(token) is stored; tokens are 256-bit random."""
@@ -748,7 +818,8 @@ class WorkerToken(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=lambda: ["cpu"])  # allowed maximum
+    # allowed maximum; "problem_check" lets workers take checks of problem versions (4a.4)
+    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=lambda: ["cpu", "problem_check"])
     created_at: Mapped[datetime] = utcnow_column()
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

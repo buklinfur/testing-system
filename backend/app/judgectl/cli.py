@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
                                                                               metavar="COMMAND")
     p = command(token, "create", ops.worker_token_create, "new worker token (shown once, last line)", json=True)
     p.add_argument("name")
-    p.add_argument("--caps", default="cpu")
+    p.add_argument("--caps", default="cpu,problem_check")
     command(token, "revoke", ops.worker_token_revoke, "revoke a worker token").add_argument("name")
 
     problem = groups.add_parser("problem", help="problems and their versions").add_subparsers(

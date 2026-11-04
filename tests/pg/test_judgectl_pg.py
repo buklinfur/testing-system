@@ -21,7 +21,7 @@ if URL and HAVE_SA:
     from app.judgectl.core import Context
     from app.auth import sessions
     from app.models import (AuditLog, AuthFailure, AuthFailureKind, AuthLockout, Judgement, LoginToken, Participation,
-                            Role, SessionState, User, UserSession, WorkerToken)
+                            Role, SessionState, User, UserSession, VersionCheck, WorkerToken)
     from app.settings import AuthSettings, Settings
 
 T0 = datetime(2026, 10, 27, 9, 0, 0, tzinfo=timezone.utc)
@@ -307,6 +307,9 @@ class JudgectlTests(PgCase):
             "contest participations": lambda u: self.s.add(Participation(contest_id=self.seed["cp"].contest_id,
                                                                         user_id=u.id, joined_via="open")),
             "rejudges requested": lambda u: self.s.execute(Judgement.__table__.update().values(requested_by=u.id)),
+            "problem checks requested": lambda u: self.s.add(VersionCheck(
+                problem_version_id=self.seed["cp"].problem_version_id, reason="recheck", status="done",
+                outcome="ready", requested_by=u.id)),
             "audit records as actor": lambda u: audit.record(self.s, audit.Actor(user_id=u.id), "auth.login", T0),
         }
         for n, (label, make) in enumerate(traced.items(), start=1):
