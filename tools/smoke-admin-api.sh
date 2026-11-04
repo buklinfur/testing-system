@@ -9,7 +9,7 @@
 # temporary directory and are never printed.
 #
 # Submissions: the student API (4b) does not exist yet, so a student "submits" with dev_seed:
-#   SEED_CMD=/opt/judge/tools/seed-as-judge.sh tools/smoke-admin-api.sh ...
+#   SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh ...
 # (dev only; it runs dev_seed as judge on this database, as dev-student-1 and dev-student-2). Without SEED_CMD
 # the submission checks are skipped (SKIP) and each line names the dev_seed command and the result it would
 # check; that is a description only: the contest is archived and the import rolled back by the end of the run,
