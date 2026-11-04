@@ -207,3 +207,16 @@ two_factor (только у админов)}`; хешей и секретов н
 фильтр с `expect` равным этому числу. Новые проверки встают в очередь с приоритетом перепроверки, история не теряется
 ([`QUEUE.md`](QUEUE.md)); уже ждущая проверка не удваивается, а нацеливается заново (`retargeted`). Аудит:
 `submission.rejudge` (одна посылка), `submissions.rejudge` (пачка: фильтр и числа).
+
+### 5.7. Система, аудит, языки
+
+| Метод и путь | Параметры | Ответ |
+|---|---|---|
+| `GET /system` | — | `{migration: {current, head, ok}, load: {level, queue_length, workers_online, workers_busy, typical_seconds, …}, metrics: {queue_length, oldest_queued_age_s, in_flight, workers_by_state, typical_seconds, median_wait_s, finished_by_verdict, requeued_total}, workers: [{id, name, state, heartbeat_age_s, judgement_id, capabilities, info, stats}], workers_known, config_problems: [...], timezone}` — всё на один момент базы (`read_one_moment`); тот же сервис `app/system.py`, что `judgectl status`. Хранилища блобов здесь нет: оно на диске, его показывает только консоль |
+| `GET /audit` | `action` (точное имя или префикс с точкой на конце: `contest.` — все `contest.*`), `object_type`, `object_id`, `actor_user_id`, `console=true\|false` (только консоль / только веб), `since`, `until` (`since ≤ at < until`; ISO 8601, без смещения — `JUDGE_TIMEZONE`), курсор | `{items: [{id, at, action, actor_user_id, actor_cli, ip, object_type, object_id, details}]}`; 422 `time_invalid` |
+| `GET /languages` | — | `{items: [{key, name, enabled}]}` |
+
+В `details` аудита нет паролей, QR-токенов и кодов TOTP: тест создаёт их все (пароли учеников и админа, сброс,
+импорт класса, QR-токены, вход с кодом) и ищет их в ответе `/audit`. `details` — недоверенный текст (§4.1): в нём
+бывают названия и логины.
+

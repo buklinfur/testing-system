@@ -237,7 +237,7 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 
 ### status — состояние установки
 
-`judgectl status [--details]` (и `--json`), код выхода 1, если база недоступна или не на последней миграции:
+`judgectl status [--details]` (и `--json`), код выхода 1, если база недоступна или не на последней миграции. Всё, кроме блобов, берётся из того же `app/system.py`, что `GET /api/admin/system`:
 
 * база и миграция (`alembic_version` против головы миграций в коде: «run the migrations», если отстаёт);
 * воркеры онлайн и занятые, длина очереди и уровень загрузки;

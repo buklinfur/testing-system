@@ -8,6 +8,7 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from .. import queue as q
+from .. import system
 from ..auth import audit
 from ..blobstore import valid_sha256
 from ..models import (Blob, Judgement, Problem, ProblemVersion, QueueEvent, Submission, TestResult, User, Worker,
@@ -200,22 +201,7 @@ def blob_files(root: Path) -> set:
     return {p.name for sub in root.iterdir() if sub.is_dir() for p in sub.iterdir() if valid_sha256(p.name)}
 
 
-def migration_head() -> Optional[str]:
-    from alembic.script import ScriptDirectory
-
-    from .. import __file__ as app_init
-
-    return ScriptDirectory(str(Path(app_init).resolve().parent.parent / "migrations")).get_current_head()
-
-
-def config_problems(settings) -> list:
-    from ..public_main import PublicConfigError, check_config  # here: the rest of judgectl needs no FastAPI
-
-    try:
-        check_config(settings)
-    except PublicConfigError as exc:
-        return [line.strip(" -") for line in str(exc).splitlines()[1:]]
-    return []
+migration_head = system.migration_head  # kept here for older imports
 
 
 def status(ctx: Context, args) -> int:
@@ -224,22 +210,21 @@ def status(ctx: Context, args) -> int:
     out, bad = {}, False
     try:
         with ctx.session() as db:
-            q.read_one_moment(db)
-            has_table = db.execute(text("SELECT to_regclass('alembic_version') IS NOT NULL")).scalar()
-            out["migration"] = db.execute(text("SELECT version_num FROM alembic_version")).scalar() if has_table else None
-            snap = q.load_snapshot(db, ctx.settings.queue).to_dict()
-            out["queue"] = {k: snap[k] for k in ("level", "queue_length", "workers_online", "workers_busy")}
-            out["workers_known"] = db.execute(select(func.count()).select_from(Worker)).scalar_one()
+            snap = system.snapshot(db, ctx.settings)  # the same as GET /api/admin/system
+            out["migration"] = snap["migration"]["current"]
+            out["queue"] = {k: snap["load"][k] for k in ("level", "queue_length", "workers_online", "workers_busy")}
+            out["workers_known"] = snap["workers_known"]
+            config = snap["config_problems"]
             rows = set(db.execute(select(Blob.sha256)).scalars())
             out["blob_rows_unreferenced"] = db.execute(text(UNREFERENCED_BLOBS)).scalar_one()
         out["database"] = "ok"
     except SQLAlchemyError as exc:
         out["database"] = f"unreachable: {exc.__class__.__name__}: {str(exc).splitlines()[0][:160]}"
-        rows, bad = None, True
-    out["migration_head"] = migration_head()
+        rows, bad, config = None, True, system.config_problems(ctx.settings)
+    out["migration_head"] = system.migration_head()
     if out["database"] == "ok" and out["migration"] != out["migration_head"]:
         bad = True
-    out["config_problems"] = config_problems(ctx.settings)
+    out["config_problems"] = config
     out["timezone"] = ctx.settings.timezone
     if rows is not None:
         files = blob_files(Path(ctx.settings.blob_dir))
