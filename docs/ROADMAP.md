@@ -47,6 +47,7 @@
 |---|---|
 | 4а.3b | Эндпоинты групп и продлений; `PUT /api/auth/profile {timezone}` (422 для неверного пояса); `timezone` в создании и изменении ученика через API; `joined_via` в `contest participants` и в API участников; тесты 403 для ученика и `mfa_pending` на `/api/admin/groups*` и продлениях; описание групп и продлений в `ADMIN_API.md` и `openapi-admin.json` |
 | 4б | `queue.read_one_moment()` перед `load_snapshot`; серверная страховка для воркера «idle, но держит задание»; отказ heartbeat после явного deregister (нестабильный `test_stop_gives_the_running_job_back…`); картинки условия по правилам отдачи файлов; тесты подмены идентификаторов на всех эндпоинтах ученика; список контестов ученика = `can_view_contest` **или** `can_see_own_results`, контесты только по второму — в режиме «только мои результаты» (без условий, сдачи и таблицы; `CONTESTS.md` §4); фильтр таблицы результатов по группам |
+| 5 | Недоверенный текст (`ADMIN_API.md` §4.1): исходники, `compile_log`, `checker_message`, `stderr/output_excerpt`, имена файлов архива, `display_name`, названия групп, `reason` продлений — только как текст (без `innerHTML` / `dangerouslySetInnerHTML`, без рендера Markdown); `note_md`, описания контестов и условия — Markdown только через санитайзер; картинки — только с путей API |
 | 6 | Сборщик блобов без ссылок; лимит размера тела в Caddy; заголовки безопасности; TLS; удаление `judge-dev` и правила sudoers |
 | Перед учениками | `reset-production.sh` (в базе тестовые данные); проверить, что ключ `JUDGE_SECRET_KEY` сохранён вне машины |
 

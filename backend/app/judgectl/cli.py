@@ -209,6 +209,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--contest-problem-id", type=int)
     p.add_argument("--problem-version", help="<slug>@<version>: every contest problem pinned to it")
     p.add_argument("--verdicts", default="", help="only submissions whose current verdict is one of these, e.g. WA,TL")
+    p.add_argument("--dry-run", action="store_true", help="only count what would be rejudged")
+    p = command(submission, "list", submissions.submission_list,
+                "newest submissions; filters as in the admin API (verdict and status of the current judgement)",
+                json=True)
+    p.add_argument("--contest")
+    p.add_argument("--label", help="with --contest: one problem of it")
+    p.add_argument("--problem", help="slug of the problem, in any contest")
+    p.add_argument("--user", help="login of the student")
+    p.add_argument("--group", help="current members of the group (name or #id)")
+    p.add_argument("--verdicts", default="", help="e.g. WA,TL")
+    p.add_argument("--status", choices=["queued", "compiling", "running", "finished", "internal_error"])
+    late = p.add_mutually_exclusive_group()
+    late.add_argument("--late", dest="late", action="store_true", default=None, help="only late ones")
+    late.add_argument("--not-late", dest="late", action="store_false", help="only the ones on time")
+    p.add_argument("--last", type=int, default=50)
 
     p = groups.add_parser("status", help="database, migrations, workers, queue, configuration, blob store",
                           parents=[common])

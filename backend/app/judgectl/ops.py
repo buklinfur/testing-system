@@ -57,7 +57,7 @@ def queue_rejudge(ctx: Context, args) -> int:
 
     return submission_rejudge(ctx, Namespace(id=args.submission, contest=None, problem=None,
                                              contest_problem_id=args.contest_problem, problem_version=None,
-                                             verdicts=args.verdicts or None))
+                                             verdicts=args.verdicts or None, dry_run=False))
 
 
 def queue_judgements(ctx: Context, args) -> int:

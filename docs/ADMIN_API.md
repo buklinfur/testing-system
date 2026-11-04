@@ -64,6 +64,27 @@ Caddy. Код: [`backend/app/admin_api/`](../backend/app/admin_api).
 
 То же правило обязательно для картинок условия в API ученика (4б).
 
+### 4.1. Недоверенный текст
+
+Часть полей в ответах API написали ученики или их программы, часть — люди без особых прав (названия, причины). Сервер
+отдаёт их **как есть** (не экранирует и не чистит: экранировать — задача того, кто выводит), поэтому фронтенд
+(модуль 5) обязан:
+
+* **только как текст** — без `innerHTML`, `dangerouslySetInnerHTML`, `v-html`, `document.write`, без рендера Markdown и
+  без «умных» ссылок:
+  - исходник посылки (`source.text`) и имена файлов архива (`source.files[].name`, `entry_file`);
+  - `compile_log`, `error` проверки, `checker_message`, `stderr_excerpt`, `output_excerpt` тестов;
+  - ответы посылок без кода (`answers`);
+  - `display_name`, логины, названия групп, `reason` продлений, имена файлов задач и тестов;
+  - сообщения ошибок (`message`, `problems`) и предупреждения `apply` (в них встречаются названия из файлов);
+* **Markdown — только через санитайзер** (разрешённый список тегов и атрибутов, без `script`, `style`, `iframe`,
+  обработчиков `on*`, ссылок `javascript:` / `data:`): `note_md` задачи контеста, `description` контеста, условия
+  задач;
+* картинки — только с разрешённых путей этого же API (§4), никогда по URL из текста.
+
+В тестах API такие значения нарочно содержат `<script>` и теги: сервер возвращает их байт в байт. Обязательство
+модуля 5 записано в [`ROADMAP.md`](ROADMAP.md).
+
 ## 5. Эндпоинты
 
 | Метод и путь | Ответ |
@@ -168,3 +189,21 @@ two_factor (только у админов)}`; хешей и секретов н
 | `POST /contests/{slug}/problems/{label}/extensions` | `{user_id \| group_id, due_at, reason?}` — ровно одно из двух; `due_at` как в `contest.yaml` (без смещения — `JUDGE_TIMEZONE`) | 201 `{extension, replaced: null}`; для того же ученика или группы — 200 `{extension, replaced: <прежний срок>}` (D-038) | 404 `user_not_found` / `group_not_found` / `contest_problem_not_found`, 409 `no_deadline` / `group_archived`, 422 `extension_not_later` / `extension_subject` / `not_a_student` / `due_at_invalid` |
 | `POST /contests/{slug}/problems/{label}/extensions/{id}/delete` | — | 204 | 404 `extension_not_found` — в том числе для продления другой задачи или другого контеста |
 
+### 5.6. Посылки
+
+Тот же сервис, что `judgectl submission` (`app/submissions/view.py`, `rejudge.py`). Это вид преподавателя: все
+тесты, включая скрытые, внутренние ошибки, вывод программы — ученику его не отдавать никогда (4б делает свой).
+Почти всё здесь — недоверенный текст (§4.1).
+
+| Метод и путь | Тело / параметры | Ответ | Ошибки |
+|---|---|---|---|
+| `GET /submissions` | `contest`, `label` (только с `contest`), `problem` (slug), `user_id`, `group_id` (**текущие** члены группы), `verdict`, `status` (вердикт и статус **текущей** проверки), `late`, курсор | `{items: [{id, user: {id, login, display_name}, contest, label, problem, version, language, archive, created_at, late, judgement: {id, status, verdict, score} \| null}]}` | 404 `contest_not_found` / `contest_problem_not_found` / `problem_not_found` / `group_not_found`, 422 `label_needs_contest`, 422 `invalid_request` (неизвестный вердикт или статус) |
+| `GET /submissions/{id}` | `?judgement_id=` (тесты другой проверки этой посылки) | то же + `entry_file`, `ip`, `answers`, `source: {name, size, missing, text, truncated}` (текст — до 256 КБ, байты не UTF-8 заменены) или `{name, size, files: [{name, size}], entry_file}` для архива; `judgements` — **вся история** (`reason`, `status`, `verdict`, `score`, `version`, `current`, `attempt`, `failures`, `priority`, `worker`, `requested_by`, времена, `tests_done/total`, `compile_log`, `error`, `summary`); `tests_of` и `tests` — **все** тесты (`test`, `group`, `verdict`, `time_ms`, `memory_kb`, `exit_code`, `signal`, `tl_kind`, `visible_to_student`, `checker_message`, `stderr_excerpt`, `output_excerpt`) | 404 `submission_not_found` / `judgement_not_found` |
+| `GET /submissions/{id}/source` | — | файл: один исходник — `text/plain; charset=utf-8`, архив — `application/zip`; всегда `attachment` (`submission-<id>.py` / `.zip`), `nosniff`, `sandbox`-CSP (§4) | 404 `submission_not_found` / `no_source` (посылка с ответами) / `file_missing` |
+| `POST /submissions/{id}/rejudge` | — | `{submission, kind: created \| retargeted \| already_running, judgement}` | 404 |
+| `POST /submissions/rejudge` | `{contest+label \| contest_problem_id \| problem_version: "<slug>@<n>" \| submission_ids, verdicts?, user_id?, group_id?}` + **`dry_run: true` или `expect: N`** | `dry_run` → `{affected, dry_run: true}`, ничего не меняется; `expect` → `{affected, contest_problems, created, retargeted, already_running, dry_run: false}` | 422 `rejudge_needs_filter` (нет ни задачи, ни версии, ни id посылок: «перепроверить всё» нельзя), 422 `dry_run_or_expect` (нужно ровно одно), 409 `count_changed` + `affected` (фильтр выбирает уже другое число: ничего не сделано), 404 как у списка, `version_not_found` |
+
+Перепроверка — в два шага (MODULE_4A §5.7): сначала `dry_run` показывает, сколько посылок затронет фильтр, потом тот же
+фильтр с `expect` равным этому числу. Новые проверки встают в очередь с приоритетом перепроверки, история не теряется
+([`QUEUE.md`](QUEUE.md)); уже ждущая проверка не удваивается, а нацеливается заново (`retargeted`). Аудит:
+`submission.rejudge` (одна посылка), `submissions.rejudge` (пачка: фильтр и числа).
