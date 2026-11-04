@@ -19,11 +19,13 @@ from typing import Optional
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session
 
+from . import problem_checks as checks
 from .loadinfo import LoadSnapshot, estimate_wait_seconds, typical_judge_seconds
 from .models import (
     ContestProblem, Judgement, JudgementReason, JudgementStatus, QueueEvent, Submission, TestCase,
-    TestGroup, TestResult, Verdict, Worker, WorkerToken,
+    TestGroup, TestResult, Verdict, VersionCheck, Worker, WorkerToken,
 )
+from .models import CheckStatus
 from .settings import QueueSettings
 
 PRIORITY_URGENT = -10
@@ -98,6 +100,8 @@ def register_worker(session: Session, token: WorkerToken, name: str, capabilitie
         # a restarted process cannot be running anything: whatever the old instance held is lost
         for j in _held_by(session, worker.id):
             _fail_attempt(session, j, "worker restarted", settings)
+        for check in checks.held_by(session, worker.id):
+            checks.fail_attempt(session, check, "worker_lost", "worker restarted", settings)
     worker.instance_id = str(uuid.uuid4())
     worker.capabilities = list(capabilities)
     worker.info = info
@@ -119,6 +123,8 @@ def _held_by(session: Session, worker_id: int) -> list:
 def deregister_worker(session: Session, worker: Worker) -> None:
     for j in _held_by(session, worker.id):
         _release(session, j, "worker deregistered")
+    for check in checks.held_by(session, worker.id):
+        checks.release(session, check, "worker deregistered")
     worker.state = "stopped"
     _event(session, "worker_stopped", worker.id)
 
@@ -253,6 +259,20 @@ def claim(session: Session, worker: Worker, settings: QueueSettings) -> Optional
     return session.get(Judgement, row.id, populate_existing=True)
 
 
+def claim_next(session: Session, worker: Worker, settings: QueueSettings):
+    """The next job of `worker`: a Judgement, a VersionCheck, or None (D-049).
+
+    Phase 1 is the fair claim of submissions (CLAIM_SQL, unchanged). Only if it finds nothing that THIS worker can
+    take does phase 2 hand out a check of a problem version, and only while fewer than max_concurrent_checks run.
+    Both phases run in one transaction under the one claim advisory lock (taken by `claim`), so claims are serialized
+    and the quota count of phase 2 always sees the checks the previous claimers committed.
+    """
+    j = claim(session, worker, settings)
+    if j is not None:
+        return j
+    return checks.claim_check(session, worker, settings)
+
+
 def queue_position(session: Session, settings: QueueSettings, judgement_id: Optional[int] = None,
                    user_id: Optional[int] = None) -> Optional[int]:
     """1-based place in the fair order (of a judgement, or the best place of a student's queued judgements)."""
@@ -264,11 +284,16 @@ def queue_position(session: Session, settings: QueueSettings, judgement_id: Opti
 
 # ---------------------------------------------------------------------------------- heartbeat / release
 def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Optional[int], attempt: Optional[int],
-              phase: Optional[str], tests_done: Optional[int], tests_total: Optional[int], stats: dict) -> dict:
+              phase: Optional[str], tests_done: Optional[int], tests_total: Optional[int], stats: dict,
+              check_id: Optional[int] = None) -> dict:
+    """A heartbeat about the worker and the job it holds: a judgement (judgement_id) or a check (check_id; then
+    tests_done / tests_total count reference solutions)."""
     worker.last_heartbeat = func.now()
     worker.state = state if state in ("idle", "busy", "draining", "stopped") else "idle"
     worker.stats = stats or {}
     cancel = False
+    if check_id is not None:
+        cancel = checks.heartbeat(session, worker, check_id, attempt, tests_done, tests_total)
     if judgement_id is not None:
         values = {"status": JudgementStatus.running if phase == "running" else JudgementStatus.compiling}
         if tests_done is not None:
@@ -337,6 +362,7 @@ def reap(session: Session, settings: QueueSettings) -> dict:
     session.execute(update(Worker).where(
         Worker.state != "stopped", Worker.last_heartbeat < now - timedelta(seconds=settings.heartbeat_timeout_s)
     ).values(state="stopped"))
+    out.update({k: n for k, n in checks.reap(session, settings).items() if n})  # problem checks: only if any
     session.execute(text("DELETE FROM queue_events WHERE at < now() - CAST(:d AS double precision) * interval '1 day'"),
                     {"d": settings.event_retention_days})
     return out
@@ -421,9 +447,10 @@ def _recent_durations(session: Session, limit: int = 50) -> list:
 def _workers_online(session: Session, settings: QueueSettings) -> tuple:
     """(capacity, busy, by_state) of workers with a fresh heartbeat.
 
-    capacity counts idle and busy workers only: a draining worker takes no new jobs. busy counts the workers
-    that actually hold a job in progress (the judgements table), not the state flag, which the heartbeat
-    updates only every few seconds.
+    capacity counts idle and busy workers only: a draining worker takes no new jobs. A worker that holds a check of
+    a problem version is not capacity either: it cannot take a submission until the check ends (D-050); the check
+    itself is not counted anywhere the students see. busy counts the workers that actually hold a judgement in
+    progress (the judgements table), not the state flag, which the heartbeat updates only every few seconds.
     """
     cutoff = _now() - timedelta(seconds=settings.heartbeat_timeout_s)
     fresh = (Worker.last_heartbeat >= cutoff, Worker.state != "stopped")
@@ -432,7 +459,10 @@ def _workers_online(session: Session, settings: QueueSettings) -> tuple:
     holding = select(Judgement.worker_id).where(Judgement.status.in_(IN_FLIGHT))
     busy = session.execute(select(func.count()).select_from(Worker).where(
         *fresh, Worker.state.in_(("idle", "busy")), Worker.id.in_(holding))).scalar_one()
-    return by_state.get("idle", 0) + by_state.get("busy", 0), busy, by_state
+    checking = session.execute(select(func.count()).select_from(Worker).where(
+        *fresh, Worker.state.in_(("idle", "busy")), Worker.id.in_(checks.checking_worker_ids(session)),
+        Worker.id.not_in(holding))).scalar_one()
+    return by_state.get("idle", 0) + by_state.get("busy", 0) - checking, busy, by_state
 
 
 def read_one_moment(session: Session) -> None:
@@ -477,6 +507,7 @@ def collect_metrics(session: Session, settings: QueueSettings) -> dict:
         "median_wait_s": waits[len(waits) // 2] if waits else 0.0,
         "finished_by_verdict": {(v.value if v else "none"): n for v, n in finished.items()},
         "requeued_total": int(requeued),
+        "checks": checks.overview(session),  # problem checks: for admins only, never in the students' numbers
     }
 
 
@@ -485,10 +516,12 @@ def worker_table(session: Session, settings: QueueSettings) -> list:
     now = _now()
     held = {r.worker_id: r.id for r in session.execute(select(Judgement.worker_id, Judgement.id).where(
         Judgement.status.in_(IN_FLIGHT))).all()}
+    checking = {r.worker_id: r.id for r in session.execute(select(VersionCheck.worker_id, VersionCheck.id).where(
+        VersionCheck.status == CheckStatus.running)).all()}
     rows = []
     for w in session.execute(select(Worker).order_by(Worker.name)).scalars():
         age = (now - w.last_heartbeat).total_seconds() if w.last_heartbeat else None
         online = age is not None and age <= settings.heartbeat_timeout_s and w.state != "stopped"
         rows.append({"id": w.id, "name": w.name, "state": w.state if online else "offline", "heartbeat_age_s": age,
-                     "judgement_id": held.get(w.id), "capabilities": w.capabilities, "info": w.info, "stats": w.stats})
+                     "judgement_id": held.get(w.id), "check_id": checking.get(w.id), "capabilities": w.capabilities, "info": w.info, "stats": w.stats})
     return rows

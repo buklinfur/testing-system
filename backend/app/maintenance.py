@@ -30,14 +30,15 @@ def main() -> int:
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    log.info("started: heartbeat timeout %.0fs, max attempts %d", settings.heartbeat_timeout_s, settings.max_attempts)
+    log.info("started: heartbeat timeout %.0fs, max attempts %d, check timeout %.0fs", settings.heartbeat_timeout_s,
+             settings.max_attempts, settings.check_timeout_s)
     last_prune = 0.0
     while not stop.is_set():
         try:
             with session_scope() as session:
                 out = q.reap(session, settings)
-            if out["requeued"] or out["gave_up"]:
-                log.warning("requeued=%d gave_up=%d", out["requeued"], out["gave_up"])
+            if any(out.values()):  # judgements: requeued, gave_up; problem checks: checks_* (only when not zero)
+                log.warning(" ".join(f"{k}=%d" for k in out), *out.values())
         except Exception:  # noqa: BLE001 - the loop must survive a database hiccup
             log.exception("reaper pass failed")
         if time.monotonic() - last_prune >= PRUNE_EVERY_S:

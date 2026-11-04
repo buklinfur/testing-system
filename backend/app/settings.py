@@ -14,6 +14,9 @@ class QueueSettings:
     recent_window_s: float = 300.0  # the "recently started" window of the fair order
     event_retention_days: int = 14
     reaper_interval_s: float = 5.0
+    # checks of problem versions (4a.4): taken only when no submission waits, at most this many at once
+    max_concurrent_checks: int = 1  # JUDGE_MAX_CONCURRENT_CHECKS
+    check_timeout_s: float = 600.0  # JUDGE_CHECK_TIMEOUT_SEC: a longer check ends failed (reason "timeout")
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,8 @@ class Settings:
                 recent_window_s=float(env.get("JUDGE_FAIR_WINDOW_S", q.recent_window_s)),
                 event_retention_days=int(env.get("JUDGE_EVENT_RETENTION_DAYS", q.event_retention_days)),
                 reaper_interval_s=float(env.get("JUDGE_REAPER_INTERVAL_S", q.reaper_interval_s)),
+                max_concurrent_checks=int(env.get("JUDGE_MAX_CONCURRENT_CHECKS", q.max_concurrent_checks)),
+                check_timeout_s=float(env.get("JUDGE_CHECK_TIMEOUT_SEC", q.check_timeout_s)),
             ),
             imports=ImportSettings(
                 max_archive_bytes=int(env.get("JUDGE_IMPORT_MAX_ARCHIVE_MB", i.max_archive_bytes // mib)) * mib,
