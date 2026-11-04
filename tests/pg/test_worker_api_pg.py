@@ -28,7 +28,7 @@ if URL and HAVE_SA and HAVE_API:
     from worker.client import ApiClient
 
 BASE = "/internal/worker/v1"
-# the fields of a judgement job before 4a.4; `kind` is the only addition (a worker of 4a.3 ignores it)
+# the fields of a judgement job before 4a.4; `kind` and `release` are the additions (a worker of 4a.3 ignores them)
 JUDGEMENT_JOB_FIELDS_4A3 = {"judgement_id", "attempt", "reason", "submission_id", "problem_version_id",
                             "manifest_sha256", "language", "source_sha256", "is_archive", "entry_file", "answers",
                             "deadline_s"}
@@ -211,8 +211,8 @@ class CheckProtocolTests(PgCase):
         self.submission(self.student(1))
         self.s.commit()
         job = self.claim(self.register("w0"))
-        self.assertEqual(set(job), JUDGEMENT_JOB_FIELDS_4A3 | {"kind"})
-        self.assertEqual(job["kind"], "judgement")
+        self.assertEqual(set(job), JUDGEMENT_JOB_FIELDS_4A3 | {"kind", "release"})
+        self.assertEqual((job["kind"], job["release"]), ("judgement", f"/judgements/{job['judgement_id']}/release"))
 
     def test_the_worker_client_of_4a3_reads_the_new_job(self):
         """worker/client.py (unchanged since 4a.3) returns the job dict as it came: an extra field is just a key that
@@ -258,7 +258,7 @@ class CheckProtocolTests(PgCase):
     def test_full_check_cycle(self):
         h = self.register("w0")
         job = self.claim(h)
-        self.assertEqual(job["kind"], "problem_check")
+        self.assertEqual((job["kind"], job["release"]), ("problem_check", f"/problem-checks/{self.check.id}/release"))
         self.assertEqual((job["check_id"], job["attempt"], job["reason"], job["problem_version_id"]),
                          (self.check.id, 1, "import", self.version.id))
         self.assertEqual(job["deadline_s"], 321.0, "JUDGE_CHECK_TIMEOUT_SEC")

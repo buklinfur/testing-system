@@ -30,7 +30,7 @@ class WorkerConfig:
     api_url: str = "http://127.0.0.1:8001"
     token: str = ""
     machine: str = field(default_factory=lambda: socket.gethostname().split(".")[0])
-    capabilities: tuple = ("cpu",)
+    capabilities: tuple = ("cpu", "problem_check")  # problem_check: checks of problem versions (4a.4)
 
     workers: int = 5  # of 8 cores: one reserved for the system, two stay free for PostgreSQL/API/WSL
     reserve_cores: int = 1
@@ -65,7 +65,7 @@ class WorkerConfig:
             api_url=env.get("JUDGE_API_URL", default.api_url).rstrip("/"),
             token=token,
             machine=env.get("JUDGE_MACHINE_NAME") or default.machine,
-            capabilities=tuple(c.strip() for c in env.get("JUDGE_CAPABILITIES", "cpu").split(",") if c.strip()),
+            capabilities=tuple(c.strip() for c in env.get("JUDGE_CAPABILITIES", "cpu,problem_check").split(",") if c.strip()),
             workers=_int(env, "JUDGE_WORKERS", default.workers),
             reserve_cores=_int(env, "JUDGE_RESERVE_CORES", default.reserve_cores),
             pin_cpus=_bool(env, "JUDGE_PIN_CPUS", default.pin_cpus),

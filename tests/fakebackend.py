@@ -274,7 +274,8 @@ class FakeBackend:
         c = queued[0]
         c.update(status="running", worker=worker["id"], attempt=c["attempt"] + 1)
         manifest = self.versions[c["version_id"]]
-        return {"kind": "problem_check", "check_id": c["id"], "attempt": c["attempt"], "reason": "import",
+        return {"kind": "problem_check", "release": f"/problem-checks/{c['id']}/release",
+                "check_id": c["id"], "attempt": c["attempt"], "reason": "import",
                 "problem": f"{manifest['slug']}@{c['version_id']}", "problem_version_id": c["version_id"],
                 "manifest_sha256": manifest_digest(manifest), "solutions": c["solutions"],
                 "deadline_s": self.check_deadline_s}
@@ -294,7 +295,8 @@ class FakeBackend:
         best = min(queued, key=lambda j: fair_key(dict(j, user_id=j["user_id"]), inflight, recent))
         best.update(status="compiling", worker=worker["id"], attempt=best["attempt"] + 1, started_at=time.monotonic())
         manifest = self.versions[best["version_id"]]
-        return {"kind": "judgement", "judgement_id": best["id"], "attempt": best["attempt"], "reason": "initial", "submission_id": best["id"],
+        return {"kind": "judgement", "release": f"/judgements/{best['id']}/release",
+                "judgement_id": best["id"], "attempt": best["attempt"], "reason": "initial", "submission_id": best["id"],
                 "problem_version_id": best["version_id"], "manifest_sha256": manifest_digest(manifest),
                 "language": best["language"], "source_sha256": best["source_sha256"], "is_archive": best["is_archive"],
                 "entry_file": best["entry"], "answers": best["answers"], "deadline_s": 600}

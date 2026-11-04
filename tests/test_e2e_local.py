@@ -218,5 +218,90 @@ class QuizTests(unittest.TestCase):
         self.assertEqual(grade_text(problem, {"a1": "11", "a2": "length"})["score"], 0.0)
 
 
+class SelfcheckTests(unittest.TestCase):
+    """Checks of problem versions (4a.4): compile_jury and selfcheck with sources given by the caller."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+
+    @staticmethod
+    def sol(name, source, expect, language="python"):
+        return {"name": name, "language": language, "source": source.encode() if isinstance(source, str) else source,
+                "expect": expect}
+
+    def test_compile_jury_reports_each_program(self):
+        j = judge()
+        self.assertEqual(j.compile_jury(Problem.load(EXAMPLES / "sum-of-two")), [], "built-in checker: nothing to build")
+        self.assertEqual(j.compile_jury(Problem.load(EXAMPLES / "pair-with-sum")),
+                         [{"role": "checker", "name": "check.cpp", "ok": True, "log": ""}])
+        self.assertEqual(j.compile_jury(Problem.load(EXAMPLES / "guess-number")),
+                         [{"role": "interactor", "name": "interactor.cpp", "ok": True, "log": ""}])
+
+    def test_a_checker_that_does_not_compile_is_a_fact_about_the_problem(self):
+        problem = copy_problem("pair-with-sum", self.tmp)
+        (problem.root / "checker/check.cpp").write_text("int main( { syntax error\n")
+        rows = judge().compile_jury(problem)
+        self.assertEqual([(r["role"], r["name"], r["ok"]) for r in rows], [("checker", "check.cpp", False)])
+        self.assertIn("cannot compile check.cpp", rows[0]["log"])
+        self.assertIn("error", rows[0]["log"])
+
+    def test_selfcheck_with_given_sources(self):
+        problem = Problem.load(EXAMPLES / "sum-of-two")
+        progress = []
+        rows = judge().selfcheck(problem, solutions=[
+            self.sol("ok.py", "a, b = map(int, input().split())\nprint(a + b)\n", "OK"),
+            self.sol("wa.py", "print(0)\n", "WA"),
+            self.sol("re.py", "raise SystemExit(3)\n", "RE"),
+            self.sol("ce.cpp", "int main( {", "CE", language="cpp"),
+            self.sol("liar.py", "print(0)\n", "OK"),
+        ], progress=lambda done, total: progress.append((done, total)))
+        self.assertEqual([(r["name"], r["got"], r["ok"]) for r in rows],
+                         [("ok.py", "OK", True), ("wa.py", "WA", True), ("re.py", "RE", True), ("ce.cpp", "CE", True),
+                          ("liar.py", "WA", False)])
+        self.assertEqual(progress, [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)])
+        self.assertIsNone(rows[0]["first_fail"])
+        self.assertEqual(rows[4]["first_fail"]["verdict"], "WA")
+        self.assertEqual(rows[4]["first_fail"]["group"], "samples")
+        self.assertEqual(rows[4]["expected"], "OK")
+        self.assertIn("error", rows[3]["message"].lower(), "the compile log of a CE solution")
+        self.assertNotIn("path", rows[0], "a worker's rows name the solution, there is no package path")
+
+    def test_a_cancel_carries_the_finished_rows(self):
+        from runner.judge import JudgeCancelled
+        problem = Problem.load(EXAMPLES / "sum-of-two")
+        done = []
+
+        def cancel():  # nothing to stop during the first solution, stop as soon as the second one starts
+            return len(done) >= 1
+        with self.assertRaises(JudgeCancelled) as caught:
+            judge().selfcheck(problem, solutions=[
+                self.sol("a.py", "a, b = map(int, input().split())\nprint(a + b)\n", "OK"),
+                self.sol("b.py", "print(0)\n", "WA")], cancel=cancel, progress=lambda d, t: done.append(d))
+        self.assertEqual([(r["name"], r["ok"]) for r in caught.exception.partial], [("a.py", True)])
+
+    def test_selfcheck_without_solutions_reads_the_package_as_before(self):
+        """runner.cli selfcheck <package>: problem.yaml solutions, rows keyed by path, exit code 0."""
+        for name in ("sum-of-two", "pair-with-sum", "guess-number"):
+            with self.subTest(problem=name):
+                rows = judge().selfcheck(Problem.load(EXAMPLES / name))
+                data = yaml.safe_load((EXAMPLES / name / "problem.yaml").read_text(encoding="utf-8"))
+                self.assertEqual([(r["path"], r["expected"]) for r in rows],
+                                 [(s["path"], s["expect"]) for s in data["solutions"]])
+                self.assertTrue(all(r["ok"] for r in rows), rows)
+                self.assertTrue(all(isinstance(r["score"], float) for r in rows))
+
+    def test_the_cli_selfcheck_prints_as_before(self):
+        import subprocess
+        out = subprocess.run([sys.executable, "-m", "runner.cli", "--backend", "local", "selfcheck",
+                              str(EXAMPLES / "sum-of-two")], cwd=ROOT, capture_output=True, text=True, timeout=120,
+                             env=dict(os.environ, JUDGE_ALLOW_UNSAFE_LOCAL="1"))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.splitlines(), [
+            "ok   solutions/ok.py: expected OK, got OK, score 100.0 ",
+            "ok   solutions/wa_int_overflow.cpp: expected WA, got WA, score 40.0 "])  # byte for byte as before 4a.4
+
+
 if __name__ == "__main__":
     unittest.main()

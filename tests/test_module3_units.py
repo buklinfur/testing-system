@@ -351,14 +351,27 @@ EXAMPLES = ROOT / "problems-examples"
 class StaleCancelTests(unittest.TestCase):
     """A heartbeat reply describes the job as it was when the heartbeat was sent (found in the stage 6 load run)."""
 
-    def worker(self, judgement_id, attempt):
+    def worker(self, judgement_id, attempt, check_id=None):
         from types import SimpleNamespace
         return SimpleNamespace(_lock=threading.Lock(), lease_lost=threading.Event(),
-                               _state={"judgement_id": judgement_id, "attempt": attempt})
+                               _state={"judgement_id": judgement_id, "check_id": check_id, "attempt": attempt})
 
-    def cancel(self, w, judgement_id, attempt):
+    def cancel(self, w, judgement_id, attempt, check_id=None):
         from worker.process import WorkerProcess
-        WorkerProcess._on_cancel(w, judgement_id, attempt)
+        WorkerProcess._on_cancel(w, judgement_id, attempt, check_id)
+
+    def test_cancel_for_the_held_check_is_applied(self):
+        w = self.worker(None, 1, check_id=7)
+        self.cancel(w, None, 1, check_id=7)
+        self.assertTrue(w.lease_lost.is_set())
+
+    def test_a_cancel_about_a_judgement_does_not_hit_a_check_with_the_same_number(self):
+        w = self.worker(None, 1, check_id=30)  # judgement 30 finished, check 30 claimed (ids of two tables)
+        self.cancel(w, 30, 1)
+        self.assertFalse(w.lease_lost.is_set())
+        w = self.worker(30, 1)
+        self.cancel(w, None, 1, check_id=30)
+        self.assertFalse(w.lease_lost.is_set())
 
     def test_cancel_for_the_held_attempt_is_applied(self):
         w = self.worker(30, 1)

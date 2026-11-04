@@ -134,7 +134,7 @@ class CheckResultBody(BaseModel):
 def judgement_job(session: Session, j: Judgement, settings) -> dict:
     sub = j.submission
     return {
-        "kind": "judgement",
+        "kind": "judgement", "release": f"/judgements/{j.id}/release",
         "judgement_id": j.id, "attempt": j.attempt, "reason": j.reason.value, "submission_id": sub.id,
         "problem_version_id": j.problem_version_id,
         "manifest_sha256": manifest_digest_for_claim(session, j.problem_version_id),
@@ -150,7 +150,7 @@ def check_job(session: Session, check: VersionCheck, settings) -> dict:
     solutions = session.execute(select(Program).where(
         Program.version_id == version.id, Program.role == ProgramRole.solution).order_by(Program.id)).scalars()
     return {
-        "kind": "problem_check",
+        "kind": "problem_check", "release": f"/problem-checks/{check.id}/release",
         "check_id": check.id, "attempt": check.attempt, "reason": check.reason.value,
         "problem": f"{version.problem.slug}@{version.version}",
         "problem_version_id": version.id,

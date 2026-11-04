@@ -35,9 +35,11 @@
 ## job (ответ claim)
 
 Поле `kind` различает задания: `"judgement"` (посылка) или `"problem_check"` (проверка версии задачи, ниже).
+Поле `release` — путь, по которому задание возвращается (`/judgements/{id}/release`, `/problem-checks/{id}/release`):
+задание незнакомого вида воркер не выполняет, а возвращает по этому пути (D-056).
 
 ```json
-{"kind": "judgement", "judgement_id": 12, "attempt": 1, "reason": "initial", "submission_id": 7,
+{"kind": "judgement", "release": "/judgements/12/release", "judgement_id": 12, "attempt": 1, "reason": "initial", "submission_id": 7,
  "problem_version_id": 3, "manifest_sha256": "…64 hex…",
  "language": "cpp", "source_sha256": "…", "is_archive": false, "entry_file": null,
  "answers": null, "deadline_s": 1800}
@@ -71,7 +73,7 @@
 больше `JUDGE_MAX_CONCURRENT_CHECKS` проверок (порядок и квота — `QUEUE.md`, «Проверки задач»).
 
 ```json
-{"kind": "problem_check", "check_id": 5, "attempt": 1, "reason": "import", "problem": "sum-of-two@3",
+{"kind": "problem_check", "release": "/problem-checks/5/release", "check_id": 5, "attempt": 1, "reason": "import", "problem": "sum-of-two@3",
  "problem_version_id": 3, "manifest_sha256": "…64 hex…",
  "solutions": [{"name": "solutions/ok.py", "language": "python", "source_sha256": "…", "expect": "OK"},
                {"name": "solutions/wa.cpp", "language": "cpp", "source_sha256": "…", "expect": "WA"}],

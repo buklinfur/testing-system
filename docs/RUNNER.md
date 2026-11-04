@@ -144,3 +144,16 @@ python -m runner.cli judge problems-examples/sum-of-two project.zip --lang cpp -
 * `judge_submission(..., cancel=None, progress=None)`: `cancel()` опрашивается между шагами (бросает `JudgeCancelled`, вердикта нет);
   `progress(phase, done, total)` сообщает «compiling»/«running» и число проверенных тестов. Один тест не прерывается, он ограничен лимитами.
 * Форматы задачи, протоколы чекера и интерактора не изменялись; все 60 прежних тестов проходят.
+
+## Дополнения сессии 4а.4 (проверка версий задач воркером)
+
+* `Judge.compile_jury(problem) -> [{role, name, ok, log}]`: компилирует свой чекер и интерактор (какие есть) через
+  тот же кэш. Ошибка компиляции (или чекер не на C/C++) — `ok: false` и лог (до 16 КиБ): это свойство задачи
+  (`JuryCompileError`). Сбой песочницы при компиляции — исключение (`JudgeError`/`SandboxError`): свойство машины.
+* `Judge.selfcheck(problem, solutions=None, cancel=None, progress=None)`: `solutions` — список
+  `{name, language, source: bytes, expect}` (воркер получает эталоны в задании, в манифесте их нет). Без него — как
+  раньше: `solutions` из `problem.yaml` в папке пакета, строки с ключом `path`; `runner.cli selfcheck` печатает то
+  же самое, что до 4а.4 (тест `tests/test_e2e_local.py`, `SelfcheckTests`). В строке ещё `language`, `first_fail`
+  (`group`, `test`, `index`, `verdict` первого неудачного теста), `message` (сообщение чекера или лог компиляции
+  CE-эталона). `cancel()` опрашивается между тестами; при остановке `JudgeCancelled.partial` содержит строки
+  законченных эталонов. `progress(done, total)` — после каждого эталона.
