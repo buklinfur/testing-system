@@ -13,21 +13,31 @@
 | Запрос | Назначение |
 |---|---|
 | `POST /register` `{name, capabilities, info}` → `{worker_id, instance}` | создаёт/перехватывает воркера по имени, новый `instance`; возвращает прошлые задания в очередь |
-| `POST /claim` → `{job: {...} \| null}` | следующее задание в справедливом порядке с учётом `capabilities` |
-| `POST /heartbeat` `{state, judgement_id, attempt, phase, tests_done, tests_total, stats}` → `{cancel}` | жив / прогресс; `cancel=true`: задание отобрано |
+| `POST /claim` → `{job: {...} \| null}` | следующее задание: посылка в справедливом порядке с учётом `capabilities`, иначе проверка задачи (ниже) |
+| `POST /heartbeat` `{state, judgement_id \| check_id, attempt, phase, tests_done, tests_total, stats}` → `{cancel}` | жив / прогресс; `cancel=true`: задание отобрано |
 | `GET /problem-versions/{id}/manifest` → `{manifest_sha256, manifest}` | описание задачи, файлы по sha256 |
 | `GET /blobs/{sha256}` | содержимое файла (потоком); воркер сверяет хеш |
 | `POST /judgements/{id}/result` | результат; повтор безопасен |
 | `POST /judgements/{id}/release` `{attempt, reason}` | вернуть задание (остановка), не считается провалом |
+| `POST /problem-checks/{id}/result` `{attempt, outcome, report}` или `{attempt, error}` | итог проверки версии задачи; повтор безопасен |
+| `POST /problem-checks/{id}/release` `{attempt, reason}` → `{released}` | вернуть проверку (остановка), не считается провалом |
 | `POST /deregister` | воркер остановился |
 
 Коды: 401 токен неверен/отозван; 403 запрос пришёл через прокси, чужое имя или токен не разрешает capability; **409** `superseded` (зарегистрировался другой
-процесс с этим именем) или `lease_lost` (результат от чужой/старой попытки); 422 результат не сходится с версией задачи.
+процесс с этим именем) или `lease_lost` (результат от чужой/старой попытки, а у проверки ещё — сервер уже завершил её
+по таймауту или после `max_attempts`); 422 результат не сходится с версией задачи или отчёт проверки неверен.
+
+Версия протокола остаётся `v1`: поля только добавляются. Воркер разбирает задание по известным ему полям и лишние
+игнорирует (`worker/client.py` отдаёт словарь как есть; тесты: `tests/pg/test_worker_api_pg.py`,
+`tests/test_worker_e2e.py`). Воркер без capability `problem_check` проверок не получает никогда, поэтому воркер
+версии 4а.3 работает с бэкендом 4а.4 без изменений.
 
 ## job (ответ claim)
 
+Поле `kind` различает задания: `"judgement"` (посылка) или `"problem_check"` (проверка версии задачи, ниже).
+
 ```json
-{"judgement_id": 12, "attempt": 1, "reason": "initial", "submission_id": 7,
+{"kind": "judgement", "judgement_id": 12, "attempt": 1, "reason": "initial", "submission_id": 7,
  "problem_version_id": 3, "manifest_sha256": "…64 hex…",
  "language": "cpp", "source_sha256": "…", "is_archive": false, "entry_file": null,
  "answers": null, "deadline_s": 1800}
@@ -54,3 +64,46 @@
 `tl_kind` бывает только у `TL`: `"cpu"` или `"wall"` (иначе 422); у других вердиктов бэкенд его не сохраняет.
 `visible_to_student` вычисляет воркер тем же `runner.explain.student_view`, который уже проверен тестами раннера (одна логика, а не две).
 Вердикт `IE` бэкенд повторяет до `max_attempts`, потом фиксирует.
+
+## Проверка версии задачи (`kind: "problem_check"`, сессия 4а.4)
+
+Выдаётся только воркеру с capability `problem_check` и только когда для него нет ни одной посылки; одновременно идёт не
+больше `JUDGE_MAX_CONCURRENT_CHECKS` проверок (порядок и квота — `QUEUE.md`, «Проверки задач»).
+
+```json
+{"kind": "problem_check", "check_id": 5, "attempt": 1, "reason": "import", "problem": "sum-of-two@3",
+ "problem_version_id": 3, "manifest_sha256": "…64 hex…",
+ "solutions": [{"name": "solutions/ok.py", "language": "python", "source_sha256": "…", "expect": "OK"},
+               {"name": "solutions/wa.cpp", "language": "cpp", "source_sha256": "…", "expect": "WA"}],
+ "deadline_s": 600}
+```
+* Манифест тот же, что для посылок (его дайджест — ключ кэша воркера, эталонов в нём нет); эталоны приходят в самом
+  задании и скачиваются как блобы. `reason`: `import` или `recheck`. `deadline_s` = `JUDGE_CHECK_TIMEOUT_SEC`.
+* Воркер компилирует чекер и интерактор (если есть), затем прогоняет эталоны и сверяет вердикт первого неудачного
+  теста с `expect` (`PROBLEM_FORMAT.md` §9).
+* Heartbeat: `{"state": "busy", "check_id": 5, "attempt": 1, "tests_done": 1, "tests_total": 2, …}`;
+  `tests_done`/`tests_total` считают эталоны. `cancel=true` — проверка отобрана, воркер её бросает.
+* `release` — при остановке воркера: проверка возвращается в очередь, провал не засчитывается.
+
+### Итог проверки
+
+```json
+{"attempt": 1, "outcome": "failed", "report": {
+  "outcome": "failed", "reason": "solution_mismatch", "worker": "judge-0", "toolchain_id": "…", "duration_ms": 8100,
+  "programs": [{"role": "checker", "name": "checker.cpp", "ok": true, "log": ""}],
+  "solutions": [{"name": "solutions/wa.cpp", "language": "cpp", "expected": "WA", "got": "OK", "ok": false,
+                 "score": "100", "first_fail": null, "message": "", "error": null}]}}
+```
+* `outcome` — `ready` или `failed`, он становится статусом версии; `report` копируется в `problem_versions.check_report`
+  (история — в `version_checks`).
+* `report.outcome` обязан совпадать с `outcome`. `report.reason` у `failed` обязателен, у `ready` — `null` или
+  `nothing_to_check`. Допустимые причины: `checker_compile_failed`, `interactor_compile_failed`, `solution_mismatch`,
+  `timeout` (воркер остановился по `deadline_s`, отчёт частичный), `internal_error`, `worker_lost`, `nothing_to_check`.
+* Поле `by` ставит только сервер (`"by": "server"` — проверку завершил сервер: таймаут или `max_attempts`), отчёт с
+  ним отклоняется. `programs` и `solutions` — списки; отчёт больше 512 КиБ отклоняется (логи компиляции обрезает
+  воркер). Нарушение любого правила — **422**, ничего не меняется.
+* `{"attempt": 1, "error": "…"}` — сбой самого воркера, а не задачи: проверка возвращается в очередь
+  (`{"status": "requeued"}`), после `JUDGE_MAX_ATTEMPTS` сбоев завершается `failed` с причиной `internal_error`
+  (`{"status": "recorded"}`).
+* Ответы: `recorded`, `requeued`, `already_recorded` (тот же итог прислан повторно). **409** `lease_lost`: попытка или
+  воркер не те, проверки нет, или сервер уже завершил её сам.

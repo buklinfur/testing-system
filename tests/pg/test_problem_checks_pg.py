@@ -222,7 +222,12 @@ class ProblemCheckQueueTests(PgCase):
         self.assertEqual((c.progress_done, c.progress_total), (1, 3))
         for bad in ({"attempt": 1}, {"attempt": 1, "outcome": "maybe", "report": {}},
                     {"attempt": 1, "outcome": "ready", "report": self.report("failed")},
-                    {"attempt": 1, "outcome": "ready", "report": "text"}):
+                    {"attempt": 1, "outcome": "ready", "report": "text"},
+                    {"attempt": 1, "outcome": "failed", "report": self.report("failed", reason=None)},
+                    {"attempt": 1, "outcome": "failed", "report": self.report("failed", reason="bad luck")},
+                    {"attempt": 1, "outcome": "ready", "report": self.report(by="server")},
+                    {"attempt": 1, "outcome": "ready", "report": self.report(solutions="ok")},
+                    {"attempt": 1, "outcome": "ready", "report": self.report(log="x" * checks.MAX_REPORT_BYTES)}):
             with self.subTest(bad=bad), self.assertRaises(checks.BadCheckResult):
                 checks.finish(self.s, w, c.id, bad, self.settings)
             self.s.rollback()

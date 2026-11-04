@@ -82,5 +82,22 @@ class ProxyHeaderTests(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+
+class LocalhostOnlyTests(unittest.TestCase):
+    """The internal API listens on localhost only (the first line of defence; the proxy headers are the second)."""
+
+    def test_the_systemd_unit_binds_localhost(self):
+        unit = (ROOT / "deploy/systemd/judge-api-internal.service").read_text()
+        exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+        self.assertIn("app.internal_main:app", exec_start)
+        self.assertIn("--host 127.0.0.1", exec_start)
+        self.assertNotIn("0.0.0.0", unit)
+        self.assertNotIn("--proxy-headers", exec_start)
+
+    def test_the_worker_default_url_is_local(self):
+        env = (ROOT / "deploy/env/worker.env.example").read_text()
+        self.assertIn("JUDGE_API_URL=http://127.0.0.1:8001", env)
+
+
 if __name__ == "__main__":
     unittest.main()

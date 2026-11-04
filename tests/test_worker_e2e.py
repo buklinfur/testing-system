@@ -103,6 +103,29 @@ class WorkerE2E(unittest.TestCase):
         self.assertEqual(h.backend.manifest_downloads, manifests, "manifest is not fetched twice")
         self.assertEqual(h.backend.blob_downloads - downloads, 1, "only the new source is downloaded")
 
+    def test_extra_job_fields_are_ignored_and_checks_are_not_taken_without_the_capability(self):
+        """Protocol v1 only grows: a judgement job now carries `kind` (and may carry fields a later backend adds);
+        the worker reads the fields it knows by name. A worker that does not announce problem_check never gets a
+        check, even when one is queued and nothing else is."""
+        h = WorkerHarness(self, capabilities=("cpu",))
+        h.backend.add_problem(EX / "sum-of-two", 1)
+        check = h.backend.add_check(1, [{"name": "solutions/ok.py", "language": "python", "source": OK_SUM,
+                                         "expect": "OK"}])
+        real = h.backend._claim_judgement
+
+        def with_future_fields(worker):
+            job = real(worker)
+            if job:
+                job.update(future_field={"nested": [1, 2]}, another="x")
+            return job
+        h.backend._claim_judgement = with_future_fields
+        h.start_worker()
+        j1 = h.backend.submit(user=1, version_id=1, source=OK_SUM)
+        wait_for(lambda: h.job(j1)["status"] == "finished", what="the job")
+        self.assertEqual(h.backend.results[j1]["verdict"], "OK")
+        time.sleep(0.5)  # several idle polls
+        self.assertEqual((h.backend.checks[check]["status"], h.backend.checks[check]["attempt"]), ("queued", 0))
+
     def test_second_process_reuses_the_disk_cache(self):
         h = WorkerHarness(self)
         h.backend.add_problem(EX / "sum-of-two", 1)

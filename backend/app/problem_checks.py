@@ -16,6 +16,7 @@ import app.queue: the queue calls it (claim, register, deregister, reaper, load)
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -31,6 +32,10 @@ CAPABILITY = "problem_check"
 TIMEOUT_GRACE_S = 60.0  # the worker stops itself at the timeout; the reaper steps in only this much later
 # programs that make a version worth checking: a custom checker, an interactor, reference solutions (D-051)
 CHECKED_ROLES = (ProgramRole.checker, ProgramRole.interactor, ProgramRole.solution)
+# reasons a report may carry (docs/WORKER_PROTOCOL.md); a ready report has none
+REPORT_REASONS = frozenset({"checker_compile_failed", "interactor_compile_failed", "solution_mismatch", "timeout",
+                            "internal_error", "worker_lost", "nothing_to_check"})
+MAX_REPORT_BYTES = 512 * 1024  # compile logs are cut by the worker; a bigger report is a bug, not data
 
 
 class CheckError(Exception):
@@ -253,12 +258,28 @@ def finish(session: Session, worker: Worker, check_id: int, payload: dict, setti
         outcome = CheckOutcome(outcome)
     except ValueError as exc:
         raise BadCheckResult(f"bad outcome: {outcome!r}") from exc
-    if not isinstance(report, dict) or report.get("outcome") != outcome.value:
-        raise BadCheckResult("the report must be an object with the same outcome")
+    _validate_report(report, outcome)
     if worker.state == "busy":
         worker.state = "idle"
     _close(session, check, outcome, report)
     return "recorded"
+
+
+def _validate_report(report, outcome: CheckOutcome) -> None:
+    if not isinstance(report, dict) or report.get("outcome") != outcome.value:
+        raise BadCheckResult("the report must be an object with the same outcome")
+    if "by" in report:
+        raise BadCheckResult("'by' is set by the server only")
+    reason = report.get("reason")
+    if reason is not None and reason not in REPORT_REASONS:
+        raise BadCheckResult(f"unknown reason: {reason!r}")
+    if outcome == CheckOutcome.failed and reason is None:
+        raise BadCheckResult("a failed report needs a reason")
+    for key in ("programs", "solutions"):
+        if not isinstance(report.get(key, []), list):
+            raise BadCheckResult(f"'{key}' must be a list")
+    if len(json.dumps(report)) > MAX_REPORT_BYTES:
+        raise BadCheckResult(f"the report is larger than {MAX_REPORT_BYTES} bytes")
 
 
 # ---------------------------------------------------------------------------------- reaper
