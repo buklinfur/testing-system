@@ -14,6 +14,11 @@
   personal contest, and every submission goes through service.submission_decision (access, window, upsolving,
   deadline and extensions, cooldown, limit, language) and keeps its `late`. A refusal stops dev_seed with its
   reason and exit code 1. Not with --package.
+* `--item ID [--text-file F]`: hand in work on manual assignment ID (the class feed, 4v.1) as student
+  `dev-student-N` would through the API of 4b.2: classroom.works.submit_work with the rules of
+  classroom/access.py (audience, available_from, deadline and extensions, already graded, the answer and its
+  limit); the text of F is the answer (none: just «сдано», for answer_kind mark). Prints {submission_id, work_id,
+  late, status}; a refusal stops with its code and exit code 1. Not with --package / --contest.
 * `--user N`: the submissions belong to student `dev-student-N` (created on demand), default 1.
 * `--source` / `--archive` / `--entry`: the solution (a zip for `--archive`); without `--source` a correct
   Python a + b solution is sent. Code-less problems (choice, text_answer) are not supported here.
@@ -40,6 +45,8 @@ from protocol.problem_package import PackageError
 from . import queue as q
 from .auth import audit
 from .blobstore import BlobStore
+from .classroom import items as feed
+from .classroom import works
 from .contests import access, service
 from .db import session_scope
 from .models import AccessMode, Contest, ContestProblem, ContestState, Language, ProblemType, ProblemVersion, Role, \
@@ -155,6 +162,26 @@ def submit_to_contest(session: Session, blobs: BlobStore, args, student: User, s
     return out
 
 
+def hand_in(blobs: BlobStore, settings: Settings, args) -> int:
+    """--item: one hand-in as the student would make it (the receipt time is taken before the text is read)."""
+    now = datetime.now(timezone.utc)
+    text = args.text_file.read_text(encoding="utf-8") if args.text_file else None
+    with session_scope() as session:
+        student = _student(session, args.user)
+        try:
+            item = feed.get_item(session, args.item)
+            sub, decision = works.submit_work(session, student, item, now, blobs=blobs, text=text,
+                                              text_limit=settings.assignment_text_max_bytes)
+        except feed.FeedError as exc:
+            print(f"dev_seed: refused: {exc.code} ({exc})", file=sys.stderr)
+            session.rollback()
+            return 1
+        work = works.work_of(session, item, student)
+        print(json.dumps({"submission_id": sub.id, "work_id": work.id, "late": decision.late,
+                          "status": work.status.value, "login": student.login}))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="dev_seed")
     parser.add_argument("--package", type=Path, help="problem package directory (default: built-in dev-sum)")
@@ -166,7 +193,13 @@ def main(argv=None) -> int:
     parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--contest", help="slug of a published contest (with --label): through the access rules")
     parser.add_argument("--label", help="the problem's label in --contest")
+    parser.add_argument("--item", type=int, help="id of a manual assignment of the class feed: hand in work")
+    parser.add_argument("--text-file", type=Path, help="with --item: the text answer")
     args = parser.parse_args(argv)
+    if args.text_file and args.item is None:
+        parser.error("--text-file goes with --item")
+    if args.item is not None and (args.contest or args.package):
+        parser.error("--item hands in work on an assignment: not with --contest or --package")
     if (args.contest is None) != (args.label is None):
         parser.error("--contest and --label go together")
     if args.contest and args.package:
@@ -176,7 +209,10 @@ def main(argv=None) -> int:
         return 2
     if args.archive and not args.source:
         parser.error("--archive needs --source")
-    blobs = BlobStore(Settings.from_env().blob_dir)
+    settings = Settings.from_env()
+    blobs = BlobStore(settings.blob_dir)
+    if args.item is not None:
+        return hand_in(blobs, settings, args)
     source = args.source.read_bytes() if args.source else DEFAULT_SOURCE
     out = []
     with session_scope() as session:

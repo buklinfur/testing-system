@@ -93,6 +93,12 @@ def check_grade(item, score: Optional[Decimal], passed: Optional[bool]) -> Decis
     raise ValueError(f"not an assignment scale: {grading!r}")
 
 
+def seen_at_once(item) -> bool:
+    """Grades a student sees without a release: grades_release = immediate, and always with grading = none - there
+    «graded» only means «принято», there is nothing to hold back."""
+    return _v(item.grades_release) == "immediate" or _v(item.grading) == "none"
+
+
 def _released_ids(reviews: Sequence) -> set:
     return {r.release_of for r in reviews if _v(r.action) == "released"}
 
@@ -103,8 +109,8 @@ def _last(reviews: Sequence, action: str):
 
 def release_target(item, reviews: Sequence) -> tuple:
     """(the graded row a release publishes, None) or (None, the refusal code): the current grade (the last graded
-    row) of an assignment with grades_release = manual, once."""
-    if _v(item.grades_release) != "manual":
+    row) of an assignment with grades_release = manual, once; with grading = none there is nothing to release."""
+    if seen_at_once(item):
         return None, "release_not_needed"
     current = _last(reviews, "graded")
     if current is None:
@@ -115,17 +121,18 @@ def release_target(item, reviews: Sequence) -> tuple:
 
 
 def visible_grade(item, reviews: Sequence):
-    """The graded row the student sees: the last one (immediate), or the last one that was released (manual)."""
-    if _v(item.grades_release) == "immediate":
+    """The graded row the student sees: the last one (immediate, or grading = none), or the last one that was
+    released (manual)."""
+    if seen_at_once(item):
         return _last(reviews, "graded")
     released = _released_ids(reviews)
     return next((r for r in reversed(reviews) if _v(r.action) == "graded" and r.id in released), None)
 
 
 def _seen(item, reviews: Sequence) -> set:
-    """Ids of the graded rows a student may see: all (immediate) or the released ones (manual)."""
+    """Ids of the graded rows a student may see: all (seen_at_once) or the released ones (manual)."""
     graded = {r.id for r in reviews if _v(r.action) == "graded"}
-    return graded if _v(item.grades_release) == "immediate" else graded & _released_ids(reviews)
+    return graded if seen_at_once(item) else graded & _released_ids(reviews)
 
 
 def student_view(item, now: datetime, events: Sequence, extensions: Iterable[datetime] = ()) -> dict:

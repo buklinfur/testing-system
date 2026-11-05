@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from ..models import (AuditLog, AuthLockout, Contest, ContestGroup, DeadlineExtension, Group, GroupMember, Judgement,
-                      LoginToken, Participation, Problem, ProblemVersion, Role, Submission, User, UserSession,
-                      VersionCheck)
+from ..models import (AssignmentReview, AssignmentWork, AuditLog, AuthLockout, Contest, ContestGroup,
+                      DeadlineExtension, FeedItem, FeedItemAudience, Group, GroupMember, Judgement, LoginToken,
+                      Participation, Problem, ProblemVersion, Role, Submission, User, UserSession, VersionCheck)
 from ..timeutil import iso_utc
 from . import audit, login_tokens, ratelimit, sessions
 from .logins import LoginError, checked_login, default_display_name, default_login, unique_login
@@ -266,6 +266,12 @@ TRACES = (
     ("groups attached to contests", ContestGroup.added_by),
     ("deadline extensions given", DeadlineExtension.created_by),
     ("deadline extensions", DeadlineExtension.user_id),
+    # the class feed (4v.1): what a teacher made and did, and a student's own work or personal addressing
+    ("feed items created", FeedItem.created_by),
+    ("feed addressees added", FeedItemAudience.added_by),
+    ("feed items addressed personally", FeedItemAudience.user_id),
+    ("assignment works", AssignmentWork.user_id),
+    ("assignment reviews", AssignmentReview.reviewer_id),
 )
 
 

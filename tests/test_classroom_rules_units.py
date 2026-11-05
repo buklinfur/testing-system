@@ -434,6 +434,13 @@ class StudentViewTests(unittest.TestCase):
         v = self.view([handed(), graded(1)], assignment(grading="none", max_points=None, grades_release="immediate"))
         self.assertEqual((v["status"], v["grade"]["score"], v["grade"]["passed"]), ("graded", None, None))
 
+    def test_grading_none_is_seen_at_once_whatever_grades_release(self):
+        """«Принято» has nothing to hold back: no release needed, even with grades_release = manual."""
+        item = assignment(grading="none", max_points=None, grades_release="manual")
+        v = self.view([handed(), graded(1, comment="принято")], item)
+        self.assertEqual((v["status"], v["grade"]["comment"]), ("graded", "принято"))
+        self.assertEqual(grading.release_target(item, reviews([graded(1)])), (None, "release_not_needed"))
+
     def test_late_and_missing_are_computed_flags(self):
         self.assertEqual(self.view([handed(late=False), handed(late=True)])["late"], True)
         self.assertEqual(self.view([handed(late=True), handed(late=False)])["late"], False)  # the latest counts
