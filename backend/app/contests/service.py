@@ -13,12 +13,13 @@ from typing import Optional
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
+from .. import extensions as ext
 from .. import groups as g
 from .. import problem_checks as checks
 from .. import queue as q
 from ..auth import audit
 from ..models import (AccessMode, AfterDueStatement, AfterDueSubmit, Contest, ContestGroup, ContestProblem,
-                      ContestState, DeadlineExtension, Group, GroupMember, JoinedVia, Language,
+                      ContestState, DeadlineExtension, Group, JoinedVia, Language,
                       LeaderboardMode, Participation, Problem, ProblemVersion, ScoringMode, Submission, TimingMode,
                       User, VersionStatus)
 from . import access
@@ -456,14 +457,7 @@ def counted_submissions(db: Session, contest_problem_id: int, user_id: int, sinc
 def extensions_for(db: Session, contest_problem: ContestProblem, user: User) -> list[datetime]:
     """access.py's `extensions`: the student's own extension and those of the groups (not archived) they are in
     now (deadlines.py gives and removes them)."""
-    own = select(DeadlineExtension.due_at).where(DeadlineExtension.contest_problem_id == contest_problem.id,
-                                                 DeadlineExtension.user_id == user.id)
-    by_group = (select(DeadlineExtension.due_at)
-                .join(GroupMember, GroupMember.group_id == DeadlineExtension.group_id)
-                .join(Group, Group.id == DeadlineExtension.group_id)
-                .where(DeadlineExtension.contest_problem_id == contest_problem.id, GroupMember.user_id == user.id,
-                       GroupMember.removed_at.is_(None), Group.archived_at.is_(None)))
-    return list(db.execute(own.union_all(by_group)).scalars())
+    return ext.due_moments(db, DeadlineExtension.contest_problem_id, contest_problem.id, user)
 
 
 def submission_decision(db: Session, user: User, contest: Contest, contest_problem: ContestProblem, now: datetime,

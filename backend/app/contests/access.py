@@ -19,12 +19,19 @@ Admins may do everything; for students:
 * a problem does not exist before its available_from (inclusive); a submission inside the window is on time while
   now <= the effective due moment (the latest of due_at and the extensions), after it after_due_submit decides;
 * a hidden contest problem (removed from contest.yaml while it has submissions) is invisible and closed.
+
+The deadline rules themselves (available_from, the effective due moment, the after-due policies) and Decision live
+in app/deadline_rules.py, shared with the class feed (D-059); they are re-exported here under their old names.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
+
+from .. import deadline_rules as rules
+# re-exported: callers keep using access.Decision, access.effective_due, access.past_due
+from ..deadline_rules import Decision, effective_due, past_due  # noqa: F401
 
 ADMIN, STUDENT = "admin", "student"
 CODE_MODES = ("code", "code_or_groups")
@@ -49,19 +56,6 @@ class Window:
 
     def over(self, now: datetime) -> bool:
         return self.end is not None and now >= self.end
-
-
-@dataclass(frozen=True)
-class Decision:
-    allowed: bool
-    reason: str = "ok"  # a stable code for the API and the UI
-    counted: bool = False  # can_submit: the submission counts in the contest (not upsolving)
-    retry_after_s: Optional[int] = None  # cooldown
-    late: bool = False  # can_submit: counted, but after the effective due moment (after_due_submit = late)
-    joined_via: Optional[str] = None  # can_enter: how the participation comes in (code / group / open)
-
-    def __bool__(self) -> bool:
-        return self.allowed
 
 
 def _personal(contest) -> bool:
@@ -173,21 +167,7 @@ def problem_listed(user, contest_problem, now: datetime) -> bool:
     on (inclusive)."""
     if is_admin(user):
         return True
-    return not contest_problem.hidden and (contest_problem.available_from is None
-                                           or now >= contest_problem.available_from)
-
-
-def effective_due(contest_problem, extensions: Iterable[datetime] = ()) -> Optional[datetime]:
-    """The latest of due_at and the extensions; None without due_at (an extension of nothing extends nothing)."""
-    if contest_problem.due_at is None:
-        return None
-    return max([contest_problem.due_at, *extensions])
-
-
-def past_due(contest_problem, now: datetime, extensions: Iterable[datetime] = ()) -> bool:
-    """Late from the first microsecond after the effective due moment: now == due is still on time."""
-    due = effective_due(contest_problem, extensions)
-    return due is not None and now > due
+    return not contest_problem.hidden and rules.available(contest_problem, now)
 
 
 def can_view_problem(user, contest, contest_problem, participation, now: datetime, in_group: bool = False,
@@ -207,7 +187,7 @@ def can_view_problem(user, contest, contest_problem, participation, now: datetim
         started = contest_over(contest, now) and contest.allow_upsolving  # personal, never started
     if not started:
         return False
-    return not (past_due(contest_problem, now, extensions) and _v(contest_problem.after_due_statement) == "hidden")
+    return not rules.statement_hidden_after_due(contest_problem, now, extensions)
 
 
 def can_submit(user, contest, contest_problem, participation, now: datetime, *, language: Optional[str] = None,
@@ -248,11 +228,11 @@ def can_submit(user, contest, contest_problem, participation, now: datetime, *, 
         return Decision(False, "not_available_yet")
 
     late = False
-    if counted and past_due(contest_problem, now, extensions):  # upsolving is not touched by deadlines
-        policy = _v(contest_problem.after_due_submit)
-        if policy == "no":
-            return Decision(False, "deadline_passed")
-        late = policy == "late"
+    if counted:  # upsolving is not touched by deadlines
+        deadline = rules.after_due_submit(contest_problem, now, extensions)
+        if not deadline:
+            return deadline
+        late = deadline.late
 
     if counted and contest.max_submissions_per_problem is not None \
             and counted_submissions >= contest.max_submissions_per_problem:
