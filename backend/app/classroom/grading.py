@@ -5,12 +5,14 @@ the order they were added) and `now`; the date rules (the effective due moment f
 app/deadline_rules.py, through classroom/access.py.
 
 * next_status: the table of transitions of a work; every (status, event) pair not in it is refused with a code;
+* parse_points: a score or max_points as given by a person (a string or a JSON number) -> Decimal, or None;
 * check_grade: a grade fits the scale of the assignment (points / pass_fail / none);
 * release_target: which graded row a release publishes (grades_release = manual);
 * student_view: the status, the grade and the flags a student sees.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -70,6 +72,22 @@ def next_status(status: Optional[str], event: str) -> Transition:
     if key in REFUSALS:
         return Transition(False, REFUSALS[key])
     raise ValueError(f"unknown status or event: {key}")
+
+
+# plain decimal notation, at most two decimals (the columns are Numeric(8, 2)): no exponent, NaN or Infinity
+POINTS_RE = re.compile(r"-?[0-9]{1,9}(?:\.[0-9]{1,2})?")
+
+
+def parse_points(value) -> Optional[Decimal]:
+    """A number of points as a person gave it - a string ("4.5"), a JSON number (4.5) or a Decimal - or None when it
+    is not one: more than two decimals, an exponent ("1e1"), NaN, Infinity, a bool. A float goes through str(), never
+    through binary arithmetic. The range (0..max_points, > 0) is checked by the caller."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+        return None
+    text = value.strip() if isinstance(value, str) else str(value)
+    if not POINTS_RE.fullmatch(text):
+        return None
+    return Decimal(text)
 
 
 def check_grade(item, score: Optional[Decimal], passed: Optional[bool]) -> Decision:

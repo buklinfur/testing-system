@@ -149,6 +149,28 @@ def emit_json(ctx: Context, data) -> None:
     ctx.print(json.dumps(jsonable(data), ensure_ascii=False, indent=2))
 
 
+# Text written by students or by people without special rights (answers, comments, titles, names) must not steer
+# the operator's terminal: C0 controls (ESC of ANSI sequences, CR that overwrites a line, BEL, ...), DEL, C1, and the
+# Unicode controls of text direction (RLO U+202E and the like) and line separators are shown escaped.
+_DIRECTION = frozenset([0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x2028, 0x2029])
+
+
+def terminal_text(text: str, multiline: bool = False) -> str:
+    """`text` safe to print: every control character as \\xNN / \\uNNNN; `multiline` keeps newlines and tabs."""
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if multiline and ch in "\n\t":
+            out.append(ch)
+        elif code < 0x20 or 0x7F <= code <= 0x9F:
+            out.append(f"\\x{code:02x}")
+        elif code in _DIRECTION:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def cell(value, tz=timezone.utc) -> str:
     if value is None:
         return "-"
@@ -158,7 +180,7 @@ def cell(value, tz=timezone.utc) -> str:
         return display(value, tz)
     if isinstance(value, Enum):
         return str(value.value)
-    return str(value)
+    return terminal_text(str(value))
 
 
 def table(ctx: Context, rows: list[dict], columns: list[tuple[str, str]]) -> None:

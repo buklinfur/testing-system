@@ -117,9 +117,15 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 
 | Шкала | Оценка | Отказ |
 |---|---|---|
-| `points` | `score` в 0…`max_points`, `passed` пусто | `score_required`, `score_out_of_range`, `grade_kind_mismatch` |
+| `points` | `score` в 0…`max_points`, `passed` пусто | `score_invalid`, `score_required`, `score_out_of_range`, `grade_kind_mismatch` |
 | `pass_fail` | `passed` задан, `score` пусто | `passed_required`, `grade_kind_mismatch` |
 | `none` | `graded` значит «принято», `score` и `passed` пусты | `grade_not_expected` |
+
+**Запись баллов** — `grading.parse_points` (D-061): `score` и `max_points` приходят строкой или числом JSON
+(`"4.5"`, `4.5`) и становятся `Decimal` через `str`, не через двоичную арифметику. Допустима только обычная запись с
+точкой и не больше двух знаков после неё (столбцы `Numeric(8, 2)`). Больше знаков (`4.555`), экспонента (`1e1`),
+`NaN`, `Infinity`, `true` — отказ: `score_invalid` у оценки, `max_points_invalid` у задания. Отрицательный балл
+записан верно, его отвергает диапазон (`score_out_of_range`, у `max_points` — `max_points_invalid`).
 
 **Публикация** — `grading.release_target` публикует текущую оценку (последнюю `graded`), один раз. Отказы:
 * `release_not_needed` — задание с `immediate`;
@@ -250,11 +256,13 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 | Функция | Что делает | Отказы |
 |---|---|---|
 | `submit_work(db, user, item, now, text=…)` | сдача ученика сессии | коды `access.can_submit_work` |
-| `grade_work(…, student, …, score / passed, comment, release)` | оценка; с `release` — сразу и публикация | шкала (§4), `not_published`, `not_addressed` (не адресат и работы нет), `not_a_student`, `comment_too_long` |
+| `grade_work(…, student, …, score / passed, comment, release)` | оценка; с `release` — сразу и публикация | шкала (§4, в том числе `score_invalid`), `not_published`, `not_addressed` (не адресат и работы нет), `not_a_student`, `comment_too_long` |
 | `return_work(…, student, now, comment)` | возврат на доработку | `comment_required`, `nothing_to_return`, `already_returned` |
 | `release_grades(…, item, now, students=None)` | массовая публикация | `release_not_needed` (для всего вызова) |
 | `student_work(db, user, item, now)` | что видит ученик сессии | — |
 | `work_detail(db, blobs, item, student, now)` | вид преподавателя: все сдачи с текстом, все записи проверки, кэш статуса, что видит ученик | — |
+| `work_card(db, blobs, item, student, now)` | карточка пары для judgectl и API: `work_detail` + `missing`; адресат без работы — `status: assigned`, событий нет, `missing` и `student_sees` вычислены; не адресат без работы (и работа на **другом** элементе) — `None` (API: 404 `work_not_found`) | — |
+| `review_queue(db, now, item=…, group=…, status=…, late=…, missing=…, cursor, limit)` | очередь проверки (D-060), ниже | `missing_needs_item` |
 
 **Ответ.** Лимит `JUDGE_ASSIGNMENT_TEXT_MAX_KB` (по умолчанию 64, в КБ UTF-8) проверяется до записи блоба. Текст
 сохраняется файлом `answer.md` через хранилище блобов, одинаковый текст — один блоб. `now` вызывающий берёт один раз,
@@ -291,14 +299,30 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
   `nothing_to_release` (работы нет или она не оценена), `already_released`.
 * Аудит — одна запись `work.release`.
 
+**Очередь проверки** (`review_queue`, D-060) — страница `{items, next_cursor}`, новые сверху. Строка: элемент,
+ученик, `work_id`, статус, число сдач, последняя сдача, `late` (последней сдачи), `missing`, текущая оценка
+преподавателя (`score`, `passed`, `released` — видит ли её ученик).
+* **С `item`** — все текущие адресаты (лично или через неархивную группу, в которой ученик сейчас) и все, у кого есть
+  работа; без работы — `assigned`. Курсор — id ученика. `missing` считается для каждого с его продлениями
+  (`access.missing`).
+* **Без `item`** — только существующие работы по всем заданиям («что ждёт проверки»), курсор — id работы.
+  `missing` без `item` — отказ `missing_needs_item`: у ученика без работы здесь нет строки.
+* `group` — **текущие** члены группы (как у посылок, D-043); `status` — `assigned`, `submitted`, `graded`,
+  `returned`; `late` — последней сдачи.
+
+**Чтение для интерфейсов** (`items.py`): `items_query(group, kind, states)` — выборка для списков (API листает её
+курсором по id, judgectl сортирует в порядке ленты); `item_detail(item)` — `item_summary` со всеми настройками,
+контестом, адресатами по именам (`groups: [{id, name, archived}]`, `users: [{id, login, display_name}]`), числом
+продлений и предупреждением. judgectl — [`JUDGECTL.md`](JUDGECTL.md) (`item`, `work`).
+
 **Личность.** Ученик приходит только объектом `User`: из сессии в 4б.2, из командной строки в judgectl. Работа
 находится по паре (элемент, ученик); `work_id`, `user_id` и `submission_id` извне функции не принимают. Тест
 проверяет, что ученик A не сдаёт, не читает и не получает статус по работе B.
 
 **Связь с 4а.**
 * `groups.why_kept_after_rollback` — группа в аудитории элемента считается использованной.
-* `groups.archive` — пишет в аудит и элементы ленты группы (`groups.feed_items_of`). Ответ API и judgectl с ними —
-  в 4в.1b.
+* `groups.archive` — пишет в аудит и элементы ленты группы (`groups.feed_items_of`); `judgectl group archive`
+  перечисляет их в stderr, ответ API — поле `feed_items` (4в.1b).
 * `users.traces` — следами считаются: созданные элементы, добавленные адресаты, личная адресация, работы
   и оценки.
 * `dev_seed --item <id> [--text-file F]` (только `JUDGE_DEV=1`) сдаёт работу как ученик `dev-student-N` через

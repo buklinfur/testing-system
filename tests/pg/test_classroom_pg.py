@@ -576,6 +576,129 @@ class ClassroomServiceTests(PgCase):
         self.assertEqual([e["text"] for e in works.work_detail(self.s, self.blobs, item, self.b, T0)["events"]
                           if e["kind"] == "submission"], ["ответ B"])
 
+    # ---------------------------------------------------------------- reading for judgectl and the admin API (4v.1b)
+    def test_items_query_and_item_detail(self):
+        other = g.create(self.s, self.actor, "8В", T0)
+        first = self.assignment(users=[self.c])
+        second = self.assignment(groups=[other], publish=False, grading="pass_fail", max_points=None)
+        contest = self.s.get(Contest, self.seed["cp"].contest_id)
+        link = items.create_item(self.s, self.actor, T0, kind="contest", title="Олимпиада", contest=contest)
+        self.s.commit()
+
+        def ids(**kw):
+            return [i.id for i in self.s.execute(items.items_query(**kw).order_by(FeedItem.id)).scalars()]
+
+        self.assertEqual(ids(), [first.id, second.id, link.id])
+        self.assertEqual(ids(group=self.group), [first.id])
+        self.assertEqual(ids(group=other), [second.id])
+        self.assertEqual(ids(kind="contest"), [link.id])
+        self.assertEqual(ids(states=["draft"]), [second.id, link.id])
+        items.add_extension(self.s, self.actor, first, DUE + timedelta(days=1), T0, user=self.a)
+        self.s.commit()
+        d = items.item_detail(self.s, first)
+        self.assertEqual((d["id"], d["grading"].value, d["max_points"], d["answer_kind"].value, d["extensions"]),
+                         (first.id, "points", Decimal(10), "text", 1))
+        self.assertEqual(d["audience"], {"groups": [{"id": self.group.id, "name": "7Б", "archived": False}],
+                                         "users": [{"id": self.c.id, "login": "student3",
+                                                    "display_name": self.c.display_name}]})
+        self.assertIsNone(d["contest"])
+        self.assertEqual(items.item_detail(self.s, link)["contest"]["slug"], contest.slug)
+
+    def test_score_and_max_points_take_plain_decimals_only(self):
+        item = self.assignment()
+        for bad in ("4.555", "1e1", "NaN", "Infinity", 4.555, float("nan"), True, "4,5"):
+            with self.subTest(score=bad):
+                self.refused("score_invalid", works.grade_work, self.s, self.actor, item, self.a, T0, score=bad)
+        self.refused("score_out_of_range", works.grade_work, self.s, self.actor, item, self.a, T0, score="-1")
+        works.grade_work(self.s, self.actor, item, self.a, T0, score=4.5)
+        works.grade_work(self.s, self.actor, item, self.b, T0, score="7.25")
+        self.s.commit()
+        self.assertEqual([r.score for r in self.s.execute(select(AssignmentReview).order_by(AssignmentReview.id))
+                          .scalars()], [Decimal("4.5"), Decimal("7.25")])
+        for bad in ("1e1", "4.555", "NaN", "-5", "0"):
+            with self.subTest(max_points=bad):
+                self.refused("max_points_invalid", items.create_item, self.s, self.actor, T0, kind="assignment",
+                             title="З", grading="points", max_points=bad)
+        made = items.create_item(self.s, self.actor, T0, kind="assignment", title="З", grading="points",
+                                 max_points="5.5")
+        self.assertEqual(made.max_points, Decimal("5.5"))
+
+    def test_work_card_addressee_without_work_and_strangers(self):
+        item = self.assignment(due_at=T0 - US)  # past due: an addressee without hand-ins is «не сдано»
+        other = self.assignment()
+        # an addressee without work: status assigned, no events, missing computed
+        card = works.work_card(self.s, self.blobs, item, self.a, T0)
+        self.assertEqual((card["work_id"], card["status"], card["events"], card["missing"]),
+                         (None, "assigned", [], True))
+        self.assertEqual(card["student_sees"]["status"], None)
+        self.assertEqual(self.s.execute(select(func.count()).select_from(AssignmentWork)).scalar(), 0)
+        # not addressed and no work: None (the API answers 404 work_not_found)
+        self.assertIsNone(works.work_card(self.s, self.blobs, item, self.c, T0))
+        # a work on another item does not make a card on this one
+        items.add_audience(self.s, self.actor, other, T0, users=[self.c])
+        self.submit(self.c, other, text="ответ C")
+        self.s.commit()
+        self.assertIsNone(works.work_card(self.s, self.blobs, item, self.c, T0))
+        # grading the addressee without work from the card works the usual way
+        works.grade_work(self.s, self.actor, item, self.a, T0, score=0, comment="не сдано")
+        self.s.commit()
+        card = works.work_card(self.s, self.blobs, item, self.a, T0)
+        self.assertEqual((card["status"], [e["action"] for e in card["events"]], card["missing"]),
+                         ("graded", ["graded"], True))
+        # a student removed from the group keeps the card of their work
+        g.remove_members(self.s, self.actor, self.group, [self.a], T0)
+        self.s.commit()
+        self.assertEqual(works.work_card(self.s, self.blobs, item, self.a, T0)["status"], "graded")
+
+    def test_review_queue_by_item_and_across_items(self):
+        item = self.assignment(users=[self.c], due_at=DUE)
+        other = self.assignment()
+        self.submit(self.a, item, now=DUE + US)  # late
+        self.submit(self.b, other)
+        works.grade_work(self.s, self.actor, other, self.b, T0, score=5)
+        self.s.commit()
+        after = DUE + timedelta(hours=1)
+
+        def page(**kw):
+            return works.review_queue(self.s, after, **kw)
+
+        rows = page(item=item)["items"]
+        self.assertEqual([(r["login"], r["status"], r["late"], r["missing"]) for r in rows],
+                         [("student3", "assigned", False, True), ("student2", "assigned", False, True),
+                          ("student1", "submitted", True, False)])
+        self.assertEqual([r["login"] for r in page(item=item, missing=True)["items"]], ["student3", "student2"])
+        self.assertEqual([r["login"] for r in page(item=item, late=True)["items"]], ["student1"])
+        self.assertEqual([r["login"] for r in page(item=item, group=self.group)["items"]], ["student2", "student1"])
+        self.assertEqual([r["login"] for r in page(item=item, status="assigned")["items"]], ["student3", "student2"])
+        # an extension takes the student out of «не сдано»
+        items.add_extension(self.s, self.actor, item, after + timedelta(days=1), T0, user=self.b)
+        self.s.commit()
+        self.assertEqual([r["login"] for r in page(item=item, missing=True)["items"]], ["student3"])
+        # cursor by user id
+        first = page(item=item, limit=2)
+        self.assertEqual(([r["user_id"] for r in first["items"]], first["next_cursor"]),
+                         ([self.c.id, self.b.id], self.b.id))
+        rest = page(item=item, limit=2, cursor=first["next_cursor"])
+        self.assertEqual(([r["user_id"] for r in rest["items"]], rest["next_cursor"]), ([self.a.id], None))
+        # across items: only works, newest first, cursor by work id
+        rows = page()["items"]
+        self.assertEqual([(r["item"], r["login"], r["status"]) for r in rows],
+                         [(other.id, "student2", "graded"), (item.id, "student1", "submitted")])
+        self.assertEqual(rows[0]["grade"], {"score": Decimal(5), "passed": None, "released": False})
+        self.assertEqual([r["login"] for r in page(status="submitted")["items"]], ["student1"])
+        self.assertEqual([r["login"] for r in page(late=True)["items"]], ["student1"])
+        self.assertEqual([r["login"] for r in page(late=False)["items"]], ["student2"])  # its hand-in was on time
+        self.assertEqual(page(status="assigned")["items"], [])
+        first = page(limit=1)
+        self.assertEqual(page(limit=1, cursor=first["next_cursor"])["items"][0]["login"], "student1")
+        with self.assertRaises(FeedError) as caught:
+            page(missing=True)
+        self.assertEqual(caught.exception.code, "missing_needs_item")
+        works.release_grades(self.s, self.actor, other, T0)
+        self.s.commit()
+        rows = {r["login"]: r for r in page(item=other)["items"]}
+        self.assertEqual((rows["student2"]["grade"]["released"], rows["student1"]["grade"]), (True, None))
+
     # ---------------------------------------------------------------- groups and users
     def test_groups_rollback_archive_and_user_traces_know_the_feed(self):
         lone = g.create(self.s, self.actor, "9Г", T0)

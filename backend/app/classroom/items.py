@@ -8,7 +8,7 @@ and collect what it needs from the database.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Iterable, Optional
 
 from sqlalchemy import exists, func, select
@@ -23,6 +23,7 @@ from ..models import (AfterDueStatement, AfterDueSubmit, AnswerKind, AssignmentR
                       GradesRelease, GradingScale, Group, GroupMember, ReviewAction, Role, User)
 from ..timeutil import iso_utc
 from . import access
+from . import grading as grading_rules
 
 TITLE_MAX = 200
 EDITABLE = ("title", "body_md", "available_from", "due_at", "after_due_statement", "after_due_submit", "grading",
@@ -53,6 +54,20 @@ def get_item(db: Session, item_id: int, lock: bool = False) -> FeedItem:
     return item
 
 
+def items_query(*, group: Optional[Group] = None, kind: Optional[str] = None, states: Optional[Iterable[str]] = None):
+    """A select of feed items for lists (the admin API pages it by id, judgectl orders it): addressed to `group`, of
+    one kind, in these states."""
+    query = select(FeedItem)
+    if group is not None:
+        query = query.where(FeedItem.id.in_(select(FeedItemAudience.item_id)
+                                            .where(FeedItemAudience.group_id == group.id)))
+    if kind is not None:
+        query = query.where(FeedItem.kind == FeedItemKind(kind))
+    if states is not None:
+        query = query.where(FeedItem.state.in_([FeedItemState(s) for s in states]))
+    return query
+
+
 def audience_rows(db: Session, item: FeedItem) -> list[FeedItemAudience]:
     return list(db.execute(select(FeedItemAudience).where(FeedItemAudience.item_id == item.id)
                            .order_by(FeedItemAudience.id)).scalars())
@@ -74,7 +89,8 @@ def due_moments(db: Session, item: FeedItem, user: User) -> list[datetime]:
     return ext.due_moments(db, DeadlineExtension.feed_item_id, item.id, user)
 
 
-def _feed_order():
+def feed_order():
+    """Newest first: available_from, else published_at, else created_at."""
     return (func.coalesce(FeedItem.available_from, FeedItem.published_at, FeedItem.created_at).desc(),
             FeedItem.id.desc())
 
@@ -85,7 +101,7 @@ def group_feed(db: Session, group: Group, include_drafts: bool = True) -> list[F
              .where(FeedItemAudience.group_id == group.id))
     if not include_drafts:
         query = query.where(FeedItem.state != FeedItemState.draft)
-    return list(db.execute(query.order_by(*_feed_order())).scalars())
+    return list(db.execute(query.order_by(*feed_order())).scalars())
 
 
 def student_feed(db: Session, user: User, now: datetime) -> list[FeedItem]:
@@ -95,7 +111,7 @@ def student_feed(db: Session, user: User, now: datetime) -> list[FeedItem]:
     addressed = select(FeedItemAudience.item_id).where(
         (FeedItemAudience.user_id == user.id) | FeedItemAudience.group_id.in_(groups or [-1]))
     items = list(db.execute(select(FeedItem).where(FeedItem.id.in_(addressed), FeedItem.state ==
-                                                   FeedItemState.published).order_by(*_feed_order())).scalars())
+                                                   FeedItemState.published).order_by(*feed_order())).scalars())
     out = []
     for item in items:
         kw = {}
@@ -170,12 +186,10 @@ def _validate(kind: str, f: dict) -> None:
         if grading not in {m.value for m in GradingScale}:
             problems.append(("grading_invalid", "grading is points, pass_fail or none"))
         elif grading == "points":
-            try:
-                points = Decimal(str(f["max_points"])) if f["max_points"] is not None else None
-            except InvalidOperation:
-                points = None
+            points = grading_rules.parse_points(f["max_points"]) if f["max_points"] is not None else None
             if points is None or not points > 0 or points >= Decimal("1000000"):
-                problems.append(("max_points_invalid", "grading points needs max_points > 0"))
+                problems.append(("max_points_invalid", "grading points needs max_points > 0 (like 10 or 4.5: at "
+                                                       "most two decimals, no exponent)"))
             else:
                 f["max_points"] = points
         elif f["max_points"] is not None:
@@ -465,3 +479,28 @@ def item_summary(db: Session, item: FeedItem) -> dict:
             "audience": {"groups": [r.group_id for r in rows if r.group_id is not None],
                          "users": [r.user_id for r in rows if r.user_id is not None]},
             "works": {status.value: n for status, n in works}, "warning": contest_warning(db, item)}
+
+
+def item_detail(db: Session, item: FeedItem) -> dict:
+    """item_summary with every setting, the contest, the audience by name and the number of extensions: what the
+    admin API and `judgectl item show` show of one item."""
+    out = item_summary(db, item)
+    rows = audience_rows(db, item)
+    groups = [db.get(Group, r.group_id) for r in rows if r.group_id is not None]
+    users = [db.get(User, r.user_id) for r in rows if r.user_id is not None]
+    contest = db.get(Contest, item.contest_id) if item.contest_id is not None else None
+    extensions = db.execute(select(func.count()).select_from(DeadlineExtension)
+                            .where(DeadlineExtension.feed_item_id == item.id)).scalar_one()
+    out.update({
+        "body_md": item.body_md, "after_due_statement": item.after_due_statement,
+        "after_due_submit": item.after_due_submit, "grading": item.grading, "max_points": item.max_points,
+        "answer_kind": item.answer_kind, "grades_release": item.grades_release, "updated_at": item.updated_at,
+        "created_by": item.created_by,
+        "contest": None if contest is None else {"slug": contest.slug, "title": contest.title,
+                                                 "state": contest.state},
+        "audience": {"groups": [{"id": gr.id, "name": gr.name, "archived": gr.archived_at is not None}
+                                for gr in groups],
+                     "users": [{"id": u.id, "login": u.login, "display_name": u.display_name} for u in users]},
+        "extensions": extensions,
+    })
+    return out

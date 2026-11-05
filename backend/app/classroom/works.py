@@ -22,14 +22,15 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Iterable, Optional
 
-from sqlalchemy import literal, select, union_all
+from sqlalchemy import false, func, literal, select, union_all
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ..auth import audit
 from ..blobstore import BlobStore
 from ..models import (AssignmentReview, AssignmentSubmission, AssignmentSubmissionFile, AssignmentWork, FeedItem,
-                      FeedItemKind, FeedItemState, ReviewAction, Role, User, WorkStatus)
+                      FeedItemAudience, FeedItemKind, FeedItemState, Group, GroupMember, ReviewAction, Role, User,
+                      WorkStatus)
 from ..problems.importer import store_blob
 from . import access, grading
 from . import items as feed
@@ -139,7 +140,8 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
 def grade_work(db: Session, actor: audit.Actor, item: FeedItem, student: User, now: datetime, *,
                score: Optional[Decimal] = None, passed: Optional[bool] = None, comment: Optional[str] = None,
                release: bool = False) -> dict:
-    """A grade on the scale of the assignment (grading.check_grade), with or without a hand-in. With `release` and
+    """A grade on the scale of the assignment (grading.check_grade), with or without a hand-in. `score`: a string, a
+    JSON number or a Decimal (grading.parse_points; anything else is score_invalid). With `release` and
     grades_release = manual the grade is released in the same transaction (both rows get the same `at`; the order
     of events keeps the release after it). With grading = none or immediate nothing is held back."""
     _assignment(item)
@@ -147,7 +149,12 @@ def grade_work(db: Session, actor: audit.Actor, item: FeedItem, student: User, n
     if item.state == FeedItemState.draft:
         raise FeedError("the item is a draft", "not_published")
     comment = _comment(comment)
-    score = None if score is None else Decimal(str(score))
+    if score is not None:
+        parsed = grading.parse_points(score)
+        if parsed is None:
+            raise FeedError(f"score {score!r}: a number like 8 or 4.5 (at most two decimals, no exponent)",
+                            "score_invalid")
+        score = parsed
     check = grading.check_grade(item, score, passed)
     if not check:
         raise FeedError(check.reason, check.reason)
@@ -303,3 +310,124 @@ def work_detail(db: Session, blobs: BlobStore, item: FeedItem, student: User, no
     return {"work_id": work.id, "item": item.id, "user_id": student.id, "login": student.login,
             "status": work.status.value, "status_at": work.status_at, "events": out_events,
             "student_sees": grading.student_view(item, now, found, feed.due_moments(db, item, student))}
+
+
+def work_card(db: Session, blobs: BlobStore, item: FeedItem, student: User, now: datetime) -> Optional[dict]:
+    """The teacher's card of a pair (item, student): work_detail when the work exists; for a student addressed now
+    (a group they are in, or personally) without work - status assigned, no events, what they would see; None when
+    the student has no work and is not addressed (a work of the same student on another item included). `missing`
+    is computed in both cases."""
+    out = work_detail(db, blobs, item, student, now)
+    if out is None:
+        if item.kind != FeedItemKind.assignment or not feed.in_audience(db, item, student):
+            return None
+        out = {"work_id": None, "item": item.id, "user_id": student.id, "login": student.login,
+               "status": ASSIGNED, "status_at": None, "events": [],
+               "student_sees": grading.student_view(item, now, [], feed.due_moments(db, item, student))}
+    out["display_name"] = student.display_name
+    out["missing"] = out["student_sees"]["missing"]
+    return out
+
+
+# ----------------------------------------------------------------------------- the review queue
+ASSIGNED = "assigned"  # no work yet (not stored): a status of the queue only
+QUEUE_STATUSES = (ASSIGNED,) + tuple(s.value for s in WorkStatus)
+
+
+def _member_ids(db: Session, group: Group) -> set:
+    """Current members of the group (D-043), archived or not: the filter `group` of the queue."""
+    return set(db.execute(select(GroupMember.user_id).where(GroupMember.group_id == group.id,
+                                                            GroupMember.removed_at.is_(None))).scalars())
+
+
+def addressee_ids(db: Session, item: FeedItem) -> set:
+    """The students addressed by the item now: personally, or through a group not archived they are in now."""
+    personal = select(FeedItemAudience.user_id).where(FeedItemAudience.item_id == item.id,
+                                                      FeedItemAudience.user_id.is_not(None))
+    through_groups = (select(GroupMember.user_id)
+                      .join(FeedItemAudience, FeedItemAudience.group_id == GroupMember.group_id)
+                      .join(Group, Group.id == GroupMember.group_id)
+                      .where(FeedItemAudience.item_id == item.id, GroupMember.removed_at.is_(None),
+                             Group.archived_at.is_(None)))
+    return set(db.execute(personal).scalars()) | set(db.execute(through_groups).scalars())
+
+
+def _last_late():
+    """The `late` of the latest hand-in of a work (null: no hand-in), as a correlated subquery."""
+    return (select(AssignmentSubmission.late).where(AssignmentSubmission.work_id == AssignmentWork.id)
+            .order_by(AssignmentSubmission.created_at.desc(), AssignmentSubmission.id.desc()).limit(1)
+            .scalar_subquery())
+
+
+def queue_row(db: Session, item: FeedItem, user: User, work: Optional[AssignmentWork], now: datetime) -> dict:
+    """One line of the review queue: the status (assigned without work), the flags late and missing, the number of
+    hand-ins and the current grade for the teacher (the last graded row; `released`: the student sees it)."""
+    found = events(db, work) if work is not None else []
+    submissions = [row for kind, row in found if kind == "submission"]
+    reviews = [row for kind, row in found if kind == "review"]
+    current = next((r for r in reversed(reviews) if r.action == ReviewAction.graded), None)
+    seen = grading.visible_grade(item, reviews)
+    return {"item": item.id, "item_title": item.title, "user_id": user.id, "login": user.login,
+            "display_name": user.display_name, "work_id": None if work is None else work.id,
+            "status": ASSIGNED if work is None else work.status.value,
+            "status_at": None if work is None else work.status_at,
+            "submissions": len(submissions), "last_submitted_at": submissions[-1].created_at if submissions else None,
+            "late": bool(submissions) and bool(submissions[-1].late),
+            "missing": access.missing(item, now, bool(submissions), feed.due_moments(db, item, user)),
+            "grade": None if current is None else {"score": current.score, "passed": current.passed,
+                                                   "released": seen is not None and seen.id == current.id}}
+
+
+def review_queue(db: Session, now: datetime, *, item: Optional[FeedItem] = None, group: Optional[Group] = None,
+                 status: Optional[str] = None, late: Optional[bool] = None, missing: Optional[bool] = None,
+                 cursor: Optional[int] = None, limit: int = 50) -> dict:
+    """The review queue, newest first, a page of `limit` rows: {"items": [queue_row], "next_cursor"}.
+
+    * With `item`: every student addressed now and everyone with work on it, a row each (status assigned without
+      work), the cursor is the user id. `missing` («не сдано») is computed per student with their extensions.
+    * Without `item`: only works that exist, on every assignment, the cursor is the work id; `missing` needs an
+      item (missing_needs_item: a student without work has no row here).
+    `group`: current members of the group (D-043); `status`: one of QUEUE_STATUSES; `late`: of the latest hand-in."""
+    if status is not None and status not in QUEUE_STATUSES:
+        raise FeedError(f"status is one of {', '.join(QUEUE_STATUSES)}", "item_invalid")
+    members = _member_ids(db, group) if group is not None else None
+    if item is not None:
+        _assignment(item)
+        have = {w.user_id: w for w in db.execute(select(AssignmentWork).where(AssignmentWork.item_id == item.id))
+                .scalars()}
+        ids = addressee_ids(db, item) | set(have)
+        if members is not None:
+            ids &= members
+        if cursor is not None:
+            ids = {i for i in ids if i < cursor}
+        users = {u.id: u for u in db.execute(select(User).where(User.id.in_(list(ids) or [-1]))).scalars()}
+        rows = []
+        for uid in sorted(ids, reverse=True):
+            row = queue_row(db, item, users[uid], have.get(uid), now)
+            if (status is None or row["status"] == status) and (late is None or row["late"] == late) \
+                    and (missing is None or row["missing"] == missing):
+                rows.append(row)
+                if len(rows) > limit:
+                    break
+        more = len(rows) > limit
+        rows = rows[:limit]
+        return {"items": rows, "next_cursor": rows[-1]["user_id"] if more else None}
+    if missing is not None:
+        raise FeedError("missing («не сдано») is computed for one item: give the item", "missing_needs_item")
+    query = (select(AssignmentWork, User, FeedItem).join(User, User.id == AssignmentWork.user_id)
+             .join(FeedItem, FeedItem.id == AssignmentWork.item_id))
+    if status == ASSIGNED:
+        query = query.where(false())  # a work that exists is never «assigned»
+    elif status is not None:
+        query = query.where(AssignmentWork.status == WorkStatus(status))
+    if late is not None:
+        query = query.where(func.coalesce(_last_late(), false()).is_(late))
+    if members is not None:
+        query = query.where(AssignmentWork.user_id.in_(list(members) or [-1]))
+    if cursor is not None:
+        query = query.where(AssignmentWork.id < cursor)
+    found = db.execute(query.order_by(AssignmentWork.id.desc()).limit(limit + 1)).all()
+    more = len(found) > limit
+    found = found[:limit]
+    return {"items": [queue_row(db, it, user, work, now) for work, user, it in found],
+            "next_cursor": found[-1][0].id if more and found else None}

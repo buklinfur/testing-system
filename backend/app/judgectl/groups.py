@@ -4,7 +4,7 @@ from __future__ import annotations
 from .. import groups as g
 from ..auth.users import get_by_login
 from ..models import Group
-from .core import Context, emit_json, show
+from .core import Context, emit_json, show, terminal_text
 
 
 def _users(db, logins):
@@ -35,10 +35,15 @@ def group_archive(ctx: Context, args) -> int:
         was_archived = group.archived_at is not None
         attached = g.archive(db, ctx.actor, group, ctx.clock())
         name = group.name
+        feed_items = [f"#{i.id} {i.kind.value} {i.state.value} {terminal_text(i.title)}"
+                      for i in g.feed_items_of(db, group)]
     ctx.print(f"group {name}: archived" + (" already" if was_archived else ""))
     if attached:
         ctx.note(f"it is attached to these contests and gives no access to them any more: {', '.join(attached)} "
                  "(drop it from access.groups of their contest.yaml if it should go)")
+    if feed_items:
+        ctx.note("these feed items are addressed to it and give its students nothing any more (judgectl item "
+                 "audience remove / add):\n  " + "\n  ".join(feed_items))
     return 0
 
 

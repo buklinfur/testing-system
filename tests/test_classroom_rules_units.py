@@ -56,7 +56,7 @@ def submit(item=None, **kw):
 
 # --------------------------------------------------------------------------- purity
 class PurityTests(unittest.TestCase):
-    STDLIB = {"__future__", "dataclasses", "datetime", "decimal", "typing"}
+    STDLIB = {"__future__", "dataclasses", "datetime", "decimal", "re", "typing"}
     # of the backend: deadline_rules and contests.access only (grading uses access of its own package)
     BACKEND = {("..", "deadline_rules"), ("..deadline_rules", "Decision"), ("..contests", "access"), (".", "access")}
 
@@ -345,6 +345,22 @@ class GradeCheckTests(unittest.TestCase):
             with self.subTest(grading=item.grading, score=score, passed=passed):
                 d = grading.check_grade(item, score, passed)
                 self.assertEqual((bool(d), d.reason), (code == "ok", code))
+
+
+    def test_parse_points_plain_decimals_only(self):
+        """A score or max_points as a person gives it: a string or a JSON number, through str() never float
+        arithmetic; at most two decimals, no exponent, NaN, Infinity or bool (score_invalid / max_points_invalid)."""
+        good = {"4.5": Decimal("4.5"), 4.5: Decimal("4.5"), "8": Decimal(8), 8: Decimal(8), " 7.25 ": Decimal("7.25"),
+                "-1": Decimal(-1), 10.0: Decimal(10), Decimal("4.50"): Decimal("4.5"), 0.1: Decimal("0.1")}
+        for value, want in good.items():
+            with self.subTest(value=value):
+                self.assertEqual(grading.parse_points(value), want)
+        for value in ("4.555", 4.555, "1e1", "1E1", 1e20, "NaN", float("nan"), "Infinity", float("inf"), "-inf",
+                      "", " ", "4,5", "+4", ".5", "5.", "0x10", True, False, None, [], "١٢"):
+            with self.subTest(value=value):
+                self.assertIsNone(grading.parse_points(value))
+        self.assertEqual(grading.check_grade(assignment(), grading.parse_points("-1"), None).reason,
+                         "score_out_of_range")  # negative parses, the range refuses it
 
 
 # --------------------------------------------------------------------------- what a student sees
