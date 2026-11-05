@@ -29,7 +29,10 @@ class ProblemCheckQueueTests(PgCase):
     def worker(self, name):
         return self.token_and_worker(name, caps=CAPS, token_caps=TOKEN_CAPS)[1]
 
-    def version(self, slug="extra", status=VersionStatus.pending_check):
+    def version(self, slug="extra", status=None):
+        # the default is resolved here: VersionStatus is imported only with a database, and a default in the
+        # signature is evaluated when the class is defined, so `tests` without one would fail to import this file
+        status = VersionStatus.pending_check if status is None else status
         problem = Problem(slug=slug, owner_id=self.seed["admin"].id)
         self.s.add(problem)
         self.s.flush()
@@ -39,7 +42,8 @@ class ProblemCheckQueueTests(PgCase):
         self.s.flush()
         return v
 
-    def check(self, version=None, reason=CheckReason.import_):
+    def check(self, version=None, reason=None):
+        reason = CheckReason.import_ if reason is None else reason  # imported only with a database, as above
         c = checks.enqueue_check(self.s, version or self.version(), reason)
         self.s.commit()
         return c
