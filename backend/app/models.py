@@ -157,6 +157,55 @@ class AfterDueSubmit(str, enum.Enum):
     yes = "yes"  # accepted as usual
 
 
+class FeedItemKind(str, enum.Enum):
+    """What a class feed item is (D-059, docs/CLASSROOM.md)."""
+
+    contest = "contest"  # a link to an existing contest; access is the contest's own
+    assignment = "assignment"  # a manual assignment: submitted by students, graded by a teacher
+    material = "material"  # a material of the library: refused by a CHECK until session 4v.4
+
+
+class FeedItemState(str, enum.Enum):
+    draft = "draft"  # admins only
+    published = "published"  # students of the audience, from available_from on
+    archived = "archived"  # gone from the feed; students keep their own work
+
+
+class GradingScale(str, enum.Enum):
+    points = "points"  # 0..max_points
+    pass_fail = "pass_fail"  # зачёт / незачёт
+    none = "none"  # no mark, only the status
+
+
+class AnswerKind(str, enum.Enum):
+    """What a student hands in. Until session 4v.3 (files) a CHECK allows only mark and text."""
+
+    mark = "mark"  # just "done" (work in a notebook)
+    text = "text"  # a text answer, stored as the file answer.md
+    files = "files"
+    text_or_files = "text_or_files"
+
+
+class GradesRelease(str, enum.Enum):
+    immediate = "immediate"  # a student sees a grade at once
+    manual = "manual"  # a student sees a grade once a teacher releases it (default)
+
+
+class WorkStatus(str, enum.Enum):
+    """The current status of a student's work, a cache of its history (submissions and reviews). "assigned" is not
+    stored: a student without a work row has not handed anything in."""
+
+    submitted = "submitted"
+    graded = "graded"
+    returned = "returned"  # back for rework, the student may hand in again
+
+
+class ReviewAction(str, enum.Enum):
+    graded = "graded"  # a grade (score / passed / none); the current grade is the last one
+    returned = "returned"  # back for rework, seen by the student at once
+    released = "released"  # a graded row (release_of) is now visible to the student (grades_release = manual)
+
+
 class ScoringMode(str, enum.Enum):
     points = "points"  # IOI style: sum of points, ties by time of last improvement
     icpc = "icpc"  # number of solved problems and penalty time
@@ -217,6 +266,8 @@ def pg_enum(cls: type[enum.Enum], name: str) -> Enum:
 VERDICT_T = pg_enum(Verdict, "verdict")
 VISIBILITY_T = pg_enum(Visibility, "visibility")
 FEEDBACK_T = pg_enum(Feedback, "feedback")
+AFTER_DUE_STATEMENT_T = pg_enum(AfterDueStatement, "after_due_statement")  # contest problems and feed items
+AFTER_DUE_SUBMIT_T = pg_enum(AfterDueSubmit, "after_due_submit")
 
 
 def utcnow_column() -> Mapped[datetime]:
@@ -536,10 +587,10 @@ class ContestProblem(Base):
     available_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     after_due_statement: Mapped[AfterDueStatement] = mapped_column(
-        pg_enum(AfterDueStatement, "after_due_statement"), nullable=False, default=AfterDueStatement.visible,
+        AFTER_DUE_STATEMENT_T, nullable=False, default=AfterDueStatement.visible,
         server_default=AfterDueStatement.visible.value)
     after_due_submit: Mapped[AfterDueSubmit] = mapped_column(
-        pg_enum(AfterDueSubmit, "after_due_submit"), nullable=False, default=AfterDueSubmit.late,
+        AFTER_DUE_SUBMIT_T, nullable=False, default=AfterDueSubmit.late,
         server_default=AfterDueSubmit.late.value)
     note_md: Mapped[Optional[str]] = mapped_column(Text)  # the teacher's note, shown to students with access
 
@@ -557,15 +608,15 @@ class ContestProblem(Base):
 
 
 class DeadlineExtension(Base):
-    """A later due moment of one contest problem for one student or for one group (D-023). Only later than due_at;
-    a student's effective due moment is the latest of due_at, their own extension and those of the groups they are
-    in now."""
+    """A later due moment of one contest problem or one class feed item (exactly one target, D-059) for one student
+    or for one group (D-023). Only later than due_at; a student's effective due moment is the latest of due_at,
+    their own extension and those of the groups they are in now (app/extensions.py)."""
 
     __tablename__ = "deadline_extensions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    contest_problem_id: Mapped[int] = mapped_column(ForeignKey("contest_problems.id", ondelete="CASCADE"),
-                                                    nullable=False)
+    contest_problem_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contest_problems.id", ondelete="CASCADE"))
+    feed_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("feed_items.id", ondelete="RESTRICT"))
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id"))
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -575,10 +626,15 @@ class DeadlineExtension(Base):
 
     __table_args__ = (
         CheckConstraint("(user_id IS NULL) <> (group_id IS NULL)", name="one_subject"),
+        CheckConstraint("(contest_problem_id IS NULL) <> (feed_item_id IS NULL)", name="one_target"),
         Index("uq_deadline_extensions_user", "contest_problem_id", "user_id", unique=True,
               postgresql_where=text("user_id IS NOT NULL")),
         Index("uq_deadline_extensions_group", "contest_problem_id", "group_id", unique=True,
               postgresql_where=text("group_id IS NOT NULL")),
+        Index("uq_deadline_extensions_item_user", "feed_item_id", "user_id", unique=True,
+              postgresql_where=text("feed_item_id IS NOT NULL AND user_id IS NOT NULL")),
+        Index("uq_deadline_extensions_item_group", "feed_item_id", "group_id", unique=True,
+              postgresql_where=text("feed_item_id IS NOT NULL AND group_id IS NOT NULL")),
     )
 
 
@@ -644,6 +700,172 @@ class ContestGroup(Base):
     added_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
 
     __table_args__ = (Index("ix_contest_groups_group", "group_id"),)
+
+
+# --------------------------------------------------------------------------- class feed (module 4v, D-059)
+class FeedItem(Base):
+    """An item of the class feed: a link to a contest, a manual assignment or (from 4v.4) a material.
+
+    Its audience (feed_item_audience) is groups and/or single students; the feed of a group is the items addressed
+    to it. available_from is the delayed publication: before it the item does not exist for students. Deadline
+    columns mean the same as on contest_problems and use the same rules (app/deadline_rules.py). Contests, groups
+    and users are archived, never deleted, so their foreign keys restrict. docs/CLASSROOM.md.
+    """
+
+    __tablename__ = "feed_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[FeedItemKind] = mapped_column(pg_enum(FeedItemKind, "feed_item_kind"), nullable=False)
+    state: Mapped[FeedItemState] = mapped_column(pg_enum(FeedItemState, "feed_item_state"), nullable=False,
+                                                 default=FeedItemState.draft)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body_md: Mapped[str] = mapped_column(Text, nullable=False, default="")  # the assignment; a note on a contest
+    contest_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contests.id", ondelete="RESTRICT"))
+    available_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # assignments only
+    after_due_statement: Mapped[AfterDueStatement] = mapped_column(
+        AFTER_DUE_STATEMENT_T, nullable=False, default=AfterDueStatement.visible,
+        server_default=AfterDueStatement.visible.value)
+    after_due_submit: Mapped[AfterDueSubmit] = mapped_column(
+        AFTER_DUE_SUBMIT_T, nullable=False, default=AfterDueSubmit.late, server_default=AfterDueSubmit.late.value)
+    # assignments only (null for the other kinds)
+    grading: Mapped[Optional[GradingScale]] = mapped_column(pg_enum(GradingScale, "grading_scale"))
+    max_points: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))  # grading = points only
+    answer_kind: Mapped[Optional[AnswerKind]] = mapped_column(pg_enum(AnswerKind, "answer_kind"))
+    grades_release: Mapped[Optional[GradesRelease]] = mapped_column(pg_enum(GradesRelease, "grades_release"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    created_at: Mapped[datetime] = utcnow_column()
+    updated_at: Mapped[datetime] = utcnow_column()
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # the first publication
+
+    __table_args__ = (
+        CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
+        CheckConstraint("(kind = 'contest') = (contest_id IS NOT NULL)", name="contest_link"),
+        CheckConstraint("kind <> 'material'", name="material_after_4v4"),  # dropped by the migration of 4v.4
+        CheckConstraint("(kind = 'assignment') = (grading IS NOT NULL) AND (grading IS NULL) = (answer_kind IS NULL) "
+                        "AND (grading IS NULL) = (grades_release IS NULL)", name="assignment_settings"),
+        CheckConstraint("kind = 'assignment' OR due_at IS NULL", name="due_only_assignment"),
+        CheckConstraint("COALESCE(grading = 'points', false) = (max_points IS NOT NULL)", name="max_points"),
+        CheckConstraint("max_points IS NULL OR max_points > 0", name="max_points_positive"),
+        CheckConstraint("answer_kind IS NULL OR answer_kind IN ('mark', 'text')",
+                        name="answer_kind_before_4v3"),  # files come with session 4v.3
+        CheckConstraint("available_from IS NULL OR due_at IS NULL OR available_from < due_at", name="deadline"),
+        CheckConstraint("state = 'draft' OR published_at IS NOT NULL", name="published_at"),
+        Index("ix_feed_items_state_available", "state", "available_from"),
+        Index("ix_feed_items_contest", "contest_id", postgresql_where=text("contest_id IS NOT NULL")),
+    )
+
+
+class FeedItemAudience(Base):
+    """Who a feed item is addressed to: one group or one student per row. A group gives the item to the students
+    who are in it now (as contest groups do); an archived group gives nothing."""
+
+    __tablename__ = "feed_item_audience"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"), nullable=False)
+    group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id", ondelete="RESTRICT"))
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    added_at: Mapped[datetime] = utcnow_column()
+    added_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+
+    __table_args__ = (
+        CheckConstraint("(group_id IS NULL) <> (user_id IS NULL)", name="one_subject"),
+        Index("uq_feed_item_audience_group", "item_id", "group_id", unique=True,
+              postgresql_where=text("group_id IS NOT NULL")),
+        Index("uq_feed_item_audience_user", "item_id", "user_id", unique=True,
+              postgresql_where=text("user_id IS NOT NULL")),
+        Index("ix_feed_item_audience_group", "group_id", postgresql_where=text("group_id IS NOT NULL")),
+        Index("ix_feed_item_audience_user", "user_id", postgresql_where=text("user_id IS NOT NULL")),
+    )
+
+
+class AssignmentWork(Base):
+    """A student's work on an assignment: created by the first submission or the first grade. Its row is locked
+    (SELECT ... FOR UPDATE) by every change - a submission, a grade, a return, a release - so they go one after
+    another. `status` is a cache of the history (assignment_submissions and assignment_reviews), written in the same
+    transaction; the history is the truth."""
+
+    __tablename__ = "assignment_works"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="RESTRICT"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[WorkStatus] = mapped_column(pg_enum(WorkStatus, "work_status"), nullable=False)
+    status_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        UniqueConstraint("item_id", "user_id", name="uq_assignment_works_item_user"),
+        Index("ix_assignment_works_item_status", "item_id", "status"),
+        Index("ix_assignment_works_user", "user_id"),
+    )
+
+
+class AssignmentSubmission(Base):
+    """One hand-in of a work, never changed; the latest one counts, the others are its history. `late` is fixed at
+    receipt (as for contest submissions). Never a judgement: manual work does not reach the workers' queue."""
+
+    __tablename__ = "assignment_submissions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("assignment_works.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()  # the moment the request was received
+    late: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    ip: Mapped[Optional[str]] = mapped_column(String(45))
+
+    __table_args__ = (Index("ix_assignment_submissions_work_created", "work_id", "created_at"),)
+
+
+class AssignmentSubmissionFile(Base):
+    """A file of a hand-in, by content (blobs). Until 4v.3 only answer.md (the text answer); 4v.3 adds uploads."""
+
+    __tablename__ = "assignment_submission_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # named by hand: the conventional name is longer than the 63 characters PostgreSQL keeps
+    submission_id: Mapped[int] = mapped_column(ForeignKey("assignment_submissions.id", ondelete="CASCADE",
+                                                          name="fk_assignment_submission_files_submission"),
+                                               nullable=False)
+    path: Mapped[str] = mapped_column(String(255), nullable=False)
+    blob_sha256: Mapped[str] = mapped_column(ForeignKey("blobs.sha256", ondelete="RESTRICT"), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("submission_id", "path", name="uq_assignment_submission_files_submission_path"),
+        CheckConstraint("btrim(path) <> ''", name="path_not_blank"),
+        CheckConstraint("size >= 0 AND position >= 0", name="non_negative"),
+    )
+
+
+class AssignmentReview(Base):
+    """What a teacher did with a work, rows only added: the history of grades. The current grade is the last
+    `graded` row; with grades_release = manual a student sees the last graded row that has a `released` row
+    (release_of), a `returned` row at once (docs/CLASSROOM.md)."""
+
+    __tablename__ = "assignment_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("assignment_works.id", ondelete="RESTRICT"), nullable=False)
+    action: Mapped[ReviewAction] = mapped_column(pg_enum(ReviewAction, "review_action"), nullable=False)
+    score: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))  # grading = points
+    passed: Mapped[Optional[bool]] = mapped_column(Boolean)  # grading = pass_fail
+    comment: Mapped[Optional[str]] = mapped_column(Text)  # plain text, untrusted (ADMIN_API.md 4.1)
+    reviewer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    at: Mapped[datetime] = utcnow_column()
+    release_of: Mapped[Optional[int]] = mapped_column(ForeignKey("assignment_reviews.id", ondelete="RESTRICT"))
+
+    __table_args__ = (
+        CheckConstraint("(action = 'released') = (release_of IS NOT NULL)", name="release_of"),
+        CheckConstraint("action = 'graded' OR (score IS NULL AND passed IS NULL)", name="mark_only_graded"),
+        CheckConstraint("score IS NULL OR passed IS NULL", name="one_mark"),
+        CheckConstraint("score IS NULL OR score >= 0", name="score_non_negative"),
+        CheckConstraint("comment IS NULL OR char_length(comment) <= 2000", name="comment_length"),
+        Index("ix_assignment_reviews_work", "work_id", "id"),
+        Index("uq_assignment_reviews_release_of", "release_of", unique=True,
+              postgresql_where=text("release_of IS NOT NULL")),
+    )
 
 
 # --------------------------------------------------------------------------- submissions

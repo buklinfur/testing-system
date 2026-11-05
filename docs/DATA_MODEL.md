@@ -10,11 +10,17 @@ users ──< problems ──< problem_versions ──< test_groups ──< test
                               │  └──< version_checks ──> workers   (проверки версии воркером, 4а.4)
                               │
 contests ──< contest_problems ┘            (контест привязан к конкретной версии)
-   │               │  └──< deadline_extensions ──> users | groups   (продления срока)
+   │               │  └──< deadline_extensions ──> users | groups   (продления срока задачи или элемента ленты)
    │               └──< submissions ──< judgements ──< test_results ──> test_cases
    ├──< participations                      │
    └──< contest_groups ──> groups           └──> workers
 groups ──< group_members ──> users   (классы; состав с историей)
+feed_items ──> contests?                     (лента класса, 4в: контест / ручное задание / материал)
+   ├──< feed_item_audience ──> groups | users  (адресаты)
+   ├──< deadline_extensions                    (продления ручного задания)
+   └──< assignment_works ──> users             (работа ученика по заданию)
+          ├──< assignment_submissions ──< assignment_submission_files ──> blobs
+          └──< assignment_reviews              (оценки, возвраты, публикации — история)
 blobs (sha256)   — файлы: тесты, исходники, архивы, пакеты
 languages        — профили языков (конфиг, не код)
 audit_log        — кто, что и откуда делал (веб: actor_user_id, консоль: actor_cli)
@@ -169,3 +175,61 @@ auth_failures, auth_lockouts — неудачные попытки входа и
 * `worker_tokens.capabilities`: миграция добавляет `problem_check` всем неотозванным токенам с `cpu`; новые токены
   по умолчанию `["cpu", "problem_check"]`. Статусы существующих версий не меняются (остаются `ready`).
 * Откат отказывает, пока в `version_checks` есть строки; иначе снимает `problem_check` с токенов и воркеров.
+
+## Изменения 4в.1 (миграция `b32303b5df22`)
+
+Решение — D-059 в [`DECISIONS.md`](DECISIONS.md), правила и статусы — [`CLASSROOM.md`](CLASSROOM.md). Миграцию
+проверяет `tests/pg/test_migrations_pg.py`, ограничения — `tests/pg/test_feed_schema_pg.py` (каждая `CHECK` и каждый
+частичный уникальный индекс: отказ и успешный вариант).
+
+* `feed_items` — элемент ленты класса.
+  * `kind`: `contest` (ссылка `contest_id`), `assignment` (ручное задание), `material` (до 4в.4 запрещён `CHECK`);
+    `state`: `draft` / `published` / `archived`; `title`, `body_md`.
+  * `available_from` — отложенная публикация: до этого момента элемента у ученика нет. `due_at`, `after_due_statement`,
+    `after_due_submit` — те же типы и смысл, что у `contest_problems` (правила — `deadline_rules.py`).
+  * Только у задания: `grading` (`points` / `pass_fail` / `none`), `max_points` (ровно при `points`, > 0),
+    `answer_kind` (`mark` / `text`; `files` и `text_or_files` — с 4в.3, до тех пор запрещены `CHECK`),
+    `grades_release` (`immediate` / `manual`).
+  * `created_by`, `created_at`, `updated_at`, `published_at` (первая публикация).
+  * `CHECK`:
+    - `contest_link` — `contest_id` ровно у `contest`;
+    - `assignment_settings` — настройки оценки и ответа ровно у `assignment`;
+    - `due_only_assignment` — срок только у задания;
+    - `max_points`, `max_points_positive`, `answer_kind_before_4v3`, `material_after_4v4`, `title_not_blank`;
+    - `deadline` — `available_from < due_at`, только когда заданы оба;
+    - `published_at` — не черновик ⇒ `published_at` задан.
+* `feed_item_audience` — адресаты: одна строка — одна группа **или** один ученик (`CHECK one_subject`); частичная
+  уникальность `(item_id, group_id)` и `(item_id, user_id)`. Группа даёт элемент тем, кто в ней сейчас.
+* `assignment_works` — работа ученика по заданию, одна на пару (`uq_assignment_works_item_user`). Создаётся первой
+  сдачей или первой оценкой. Её строку блокирует (`FOR UPDATE`) каждое изменение: сдача, оценка, возврат, публикация.
+  `status` (`submitted` / `graded` / `returned`) и `status_at` — кэш истории, пишется в той же транзакции; «назначено»
+  не хранится (строки работы нет).
+* `assignment_submissions` — сдачи, только добавление: `created_at` (время приёма), `late` (фиксируется при приёме),
+  `ip`. Засчитывается последняя. В `judgements` не попадают никогда.
+* `assignment_submission_files` — файлы сдачи по хешу (`blob_sha256`, `size`, `position`, `path`; уникален в сдаче).
+  До 4в.3 — только `answer.md` с текстом ответа.
+* `assignment_reviews` — история проверки, только добавление:
+  - `action`: `graded` (`score` или `passed` или ничего — шкала `none`), `returned` (на доработку),
+    `released` (публикация оценки `release_of`);
+  - `comment` — до 2000 символов, `reviewer_id` (пусто — консоль), `at`;
+  - `CHECK`: `release_of` ровно у `released`, отметка только у `graded`, не больше одной отметки, `score ≥ 0`;
+  - одна публикация на оценку — частичный уникальный индекс по `release_of`.
+* `deadline_extensions` — вторая цель: `contest_problem_id` стал nullable, добавлен `feed_item_id`, `CHECK one_target`
+  (ровно одно из двух). Существующие продления задач контеста проходят его без изменений. Частичная уникальность
+  `(feed_item_id, user_id)` и `(feed_item_id, group_id)`.
+* **`ondelete` у внешних ключей новых таблиц:**
+  - `CASCADE` — только `feed_item_audience.item_id` и `assignment_submission_files.submission_id`: адресаты и файлы
+    внутри своего родителя;
+  - `RESTRICT` — всё остальное:
+    - `feed_items.contest_id`, `.created_by`;
+    - `feed_item_audience.group_id`, `.user_id`, `.added_by`;
+    - `assignment_works.item_id`, `.user_id`;
+    - `assignment_submissions.work_id`;
+    - `assignment_submission_files.blob_sha256`;
+    - `assignment_reviews.work_id`, `.reviewer_id`, `.release_of`;
+    - `deadline_extensions.feed_item_id`.
+
+    Контесты, группы и пользователи архивируются, а не удаляются; элемент с работами или продлениями удалить нельзя.
+* Откат отказывает, ничего не меняя, пока есть хоть один элемент ленты или продление элемента; иначе удаляет таблицы
+  и их типы, `deadline_extensions.contest_problem_id` снова `NOT NULL`.
+

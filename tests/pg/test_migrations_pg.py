@@ -587,3 +587,96 @@ class MigrationTests(PgCase):
             self.assertEqual(conn.execute(text("SELECT to_regclass('version_checks')")).scalar_one(), None)
             self.assertEqual(conn.execute(text("SELECT to_regtype('check_status')")).scalar_one(), None)
             self.alembic(conn, "upgrade", "head")
+
+    # ---------------------------------------------------------------- b32303b5df22: class feed (4v.1, D-059)
+    BEFORE_FEED = BEFORE_CHECKS + """;
+        INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
+          (2, 'pupil', '!', 'P', 'student', true);
+        INSERT INTO groups (id, name) VALUES (1, '7Б');
+        INSERT INTO contests (id, slug, title, starts_at, access_mode, state, timing_mode, scoring_mode,
+                              icpc_penalty_minutes, leaderboard, allow_upsolving, submit_cooldown_sec, tests_after_end,
+                              plagiarism_enabled, description_md)
+          VALUES (1, 'lesson', 'L', '2026-11-01 09:00+00', 'open', 'published', 'fixed', 'points', 20, 'hidden', true,
+                  15, false, false, '');
+        INSERT INTO contest_problems (id, contest_id, problem_id, problem_version_id, label, position, due_at)
+          VALUES (1, 1, 1, 1, 'A', 0, '2026-11-10 10:00+00');
+        INSERT INTO deadline_extensions (id, contest_problem_id, user_id, due_at, reason) VALUES
+          (1, 1, 2, '2026-11-11 10:00+00', 'болел');
+        INSERT INTO deadline_extensions (id, contest_problem_id, group_id, due_at) VALUES
+          (2, 1, 1, '2026-11-12 10:00+00')
+    """
+    FEED_TYPES = ("feed_item_kind", "feed_item_state", "grading_scale", "answer_kind", "grades_release", "work_status",
+                  "review_action")
+
+    def extensions(self, conn):
+        return [tuple(r) for r in conn.execute(text(
+            "SELECT id, contest_problem_id, user_id, group_id, due_at, reason FROM deadline_extensions ORDER BY id"))]
+
+    def test_feed_migration_keeps_extensions_of_4a_up_down_up(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "b7e3d91a4c62")
+            self.run_sql(conn, self.BEFORE_FEED)
+            before = self.extensions(conn)
+            self.assertEqual(len(before), 2)
+            self.alembic(conn, "upgrade", "b32303b5df22")
+            self.assertEqual(self.extensions(conn), before)
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM deadline_extensions WHERE feed_item_id IS NULL")
+                                          ).scalar_one(), 2, "existing extensions pass one_target as they are")
+            diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+            self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
+            # the old shape still holds: an extension of a contest problem without a feed item
+            conn.execute(text("INSERT INTO deadline_extensions (id, contest_problem_id, user_id, due_at) "
+                              "VALUES (3, 1, 1, '2026-11-13 10:00+00')"))
+            conn.execute(text("DELETE FROM deadline_extensions WHERE id = 3"))
+
+            self.alembic(conn, "downgrade", "b7e3d91a4c62")
+            self.assertEqual(self.extensions(conn), before)
+            self.assertEqual(conn.execute(text("SELECT to_regclass('feed_items')")).scalar_one(), None)
+            for name in self.FEED_TYPES:
+                self.assertEqual(conn.execute(text("SELECT to_regtype(:n)"), {"n": name}).scalar_one(), None, name)
+            self.assertIsNotNone(conn.execute(text("SELECT to_regtype('after_due_submit')")).scalar_one(),
+                                 "the types of contest_problems stay")
+            nullable = conn.execute(text("SELECT is_nullable FROM information_schema.columns WHERE table_schema = "
+                                         "current_schema() AND table_name = 'deadline_extensions' AND column_name = "
+                                         "'contest_problem_id'")).scalar_one()
+            self.assertEqual(nullable, "NO")
+
+            self.alembic(conn, "upgrade", "b32303b5df22")
+            self.assertEqual(self.extensions(conn), before)
+
+    def test_feed_downgrade_refuses_while_items_exist(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "b7e3d91a4c62")
+            self.run_sql(conn, self.BEFORE_FEED)
+            self.alembic(conn, "upgrade", "b32303b5df22")
+        cases = {
+            "feed items: 1, extensions of feed items: 0":
+                ["INSERT INTO feed_items (id, kind, state, title, body_md, contest_id) "
+                 "VALUES (1, 'contest', 'draft', 'L', '', 1)"],
+            "feed items: 1, extensions of feed items: 1":
+                ["INSERT INTO feed_items (id, kind, state, title, body_md, grading, answer_kind, grades_release, due_at) "
+                 "VALUES (1, 'assignment', 'draft', 'H', '', 'none', 'mark', 'manual', '2026-11-10 10:00+00')",
+                 "INSERT INTO deadline_extensions (id, feed_item_id, user_id, due_at) "
+                 "VALUES (10, 1, 2, '2026-11-11 10:00+00')"],
+        }
+        for expected, changes in cases.items():
+            with self.subTest(expected):
+                with engine.begin() as conn:
+                    for change in changes:
+                        conn.execute(text(change))
+                with self.assertRaises(RuntimeError) as caught:
+                    with engine.begin() as conn:
+                        self.alembic(conn, "downgrade", "b7e3d91a4c62")
+                self.assertIn(expected, str(caught.exception))
+                self.assertIn("nothing was changed", str(caught.exception))
+                with engine.begin() as conn:
+                    self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(),
+                                     "b32303b5df22")
+                    self.assertEqual(conn.execute(text("SELECT count(*) FROM feed_items")).scalar_one(), 1)
+                    conn.execute(text("DELETE FROM deadline_extensions WHERE feed_item_id IS NOT NULL"))
+                    conn.execute(text("DELETE FROM feed_items"))
+        with engine.begin() as conn:
+            self.alembic(conn, "downgrade", "b7e3d91a4c62")
+            self.assertEqual(len(self.extensions(conn)), 2)
