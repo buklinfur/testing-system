@@ -665,4 +665,4 @@ judgectl status   # БД, живые воркеры, глубина очеред
   `check-wrong-expect` → `solution_mismatch`; `check-broken-checker` / `-interactor` → `*_compile_failed`); smoke
   `tools/smoke-admin-api.sh` на judge_test с `SEED_CMD` — `failures: 0, skipped: 0` дважды подряд; `sandbox-check` и
   `redteam` на isolate. Проверка на установке — по списку команд сессии.
-- **После приёмки** `module-4a` сливается в `main` (`git merge --no-ff`), push делает владелец.
+- **После приёмки** `module-4a` сливается в основную ветку `master` (`git merge --no-ff`), push делает владелец.
