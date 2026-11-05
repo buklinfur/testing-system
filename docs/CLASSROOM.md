@@ -12,6 +12,8 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 | [`backend/app/models.py`](../backend/app/models.py) | `FeedItem`, `FeedItemAudience`, `AssignmentWork`, `AssignmentSubmission`, `AssignmentSubmissionFile`, `AssignmentReview` |
 | [`backend/app/deadline_rules.py`](../backend/app/deadline_rules.py) | правила сроков, общие с задачами контестов |
 | [`backend/app/extensions.py`](../backend/app/extensions.py) | продления сроков, общие с задачами контестов |
+| [`backend/app/classroom/access.py`](../backend/app/classroom/access.py) | правила ленты, условия, сдачи — чистые функции (§6) |
+| [`backend/app/classroom/grading.py`](../backend/app/classroom/grading.py) | переходы статусов, проверка оценки, публикация, вид для ученика — чистые функции (§4, §5) |
 
 ## 1. Элемент ленты
 
@@ -98,6 +100,31 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 
 Пересдать оценённую работу нельзя (`already_graded`), пока преподаватель её не вернёт.
 
+Таблица переходов — `grading.next_status(статус, событие)`; события `submit`, `grade`, `return`, `release`.
+Публикация (`release`) статуса не меняет. Остальные пары — отказ с кодом:
+
+| Статус | Событие | Отказ |
+|---|---|---|
+| назначено | `return` | `nothing_to_return` |
+| назначено, `submitted`, `returned` | `release` | `nothing_to_release` |
+| `graded` | `submit` | `already_graded` |
+| `returned` | `return` | `already_returned` |
+
+Тест перебирает все 16 пар.
+
+**Оценка по шкале** — `grading.check_grade`:
+
+| Шкала | Оценка | Отказ |
+|---|---|---|
+| `points` | `score` в 0…`max_points`, `passed` пусто | `score_required`, `score_out_of_range`, `grade_kind_mismatch` |
+| `pass_fail` | `passed` задан, `score` пусто | `passed_required`, `grade_kind_mismatch` |
+| `none` | `graded` значит «принято», `score` и `passed` пусты | `grade_not_expected` |
+
+**Публикация** — `grading.release_target` публикует текущую оценку (последнюю `graded`), один раз. Отказы:
+* `release_not_needed` — задание с `immediate`;
+* `nothing_to_release` — оценок нет;
+* `already_released` — текущая оценка уже опубликована.
+
 **Метки, а не статусы:**
 * «сдано с опозданием» — `late` последней сдачи;
 * «не сдано» — сдач нет и эффективный срок прошёл.
@@ -121,12 +148,69 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 3. **Возврат на доработку виден сразу** вместе с его комментарием. Прежние оценки остаются в истории.
 4. **`grades_release = immediate`.** Видна последняя `graded`.
 
+**Статус, который видит ученик** (`grading.student_view`), — статус последнего события, которое ученику можно видеть:
+* сдача — `submitted`;
+* возврат — `returned`, с комментарием;
+* оценка, которую можно видеть, — `graded`.
+
+Неопубликованная оценка и сама публикация пропускаются. Поэтому:
+* до публикации ученик видит «сдано»;
+* после возврата и скрытой переоценки он видит возврат;
+* после скрытой переоценки опубликованной оценки он видит прежнюю оценку.
+
+Сервис передаёт события работы (сдачи и строки `assignment_reviews`) в том порядке, в каком они произошли. Даты
+модуль не сравнивает.
+
 Комментарий оценки и возврата — простой текст до 2000 символов. Как и текст ответа, он недоверенный: фронтенд
 выводит его только как текст или через санитайзер (`ADMIN_API.md` §4.1).
 
 ## 6. Доступ
 
-Чистые функции и таблица случаев — этап 4 сессии 4в.1.
+Чистые функции — [`classroom/access.py`](../backend/app/classroom/access.py) и
+[`classroom/grading.py`](../backend/app/classroom/grading.py). Таблица случаев —
+`tests/test_classroom_rules_units.py`.
+
+**Чистота.** Модули:
+* не обращаются к базе и сами не читают часы: `now` (серверное, UTC, момент получения запроса) передаёт сервис;
+* импортируют только `deadline_rules` и `contests/access.py`;
+* не сравнивают даты сами: вся арифметика сроков — в `deadline_rules`.
+
+Тесты проверяют это разбором кода и импортом без SQLAlchemy.
+
+**Что передаёт сервис:**
+* аудиторию элемента и группы ученика — неархивные, в которых он состоит сейчас;
+* продления (`extensions.due_moments`);
+* статус работы;
+* для контест-элемента — контест, участие и признак «в группе контеста».
+
+Админ может всё, кроме сдачи работ. Для ученика:
+
+| Функция | Правило |
+|---|---|
+| `in_audience` | адресован лично или через группу, в которой ученик **сейчас** состоит; архивная группа ничего не даёт |
+| `item_listed` | элемент в ленте: `published`, `in_audience`, наступил `available_from` (включительно). У контест-элемента ещё `can_view_contest` **или** `can_see_own_results` из `contests/access.py`: своих правил контеста нет, доступ элемент не выдаёт. Черновика нет; архивного в ленте нет |
+| `can_view_assignment` | условие задания: `item_listed` и не скрыто после эффективного срока при `after_due_statement = hidden`. Скрыто **и у ученика, у которого уже есть работа**, как у задач контеста; у архивного элемента тоже скрыто |
+| `can_see_own_work` | своя работа (сдачи, статус, опубликованная оценка): всегда, если работа есть и элемент не черновик — без аудитории, после срока, при скрытом условии, в архиве |
+| `can_submit_work` | см. ниже |
+| `missing` | «не сдано»: сдач нет и эффективный срок прошёл |
+
+`can_submit_work` проверяет по порядку — первая неудача даёт код:
+
+| # | Код | Когда |
+|---|---|---|
+| 1 | `not_a_student` | сдаёт админ |
+| 2 | `not_an_assignment` | элемент не задание |
+| 3 | `not_published` | черновик |
+| 4 | `item_archived` | элемент в архиве |
+| 5 | `no_access` | ученик не в аудитории |
+| 6 | `not_available_yet` | раньше `available_from` |
+| 7 | `deadline_passed` | после эффективного срока при `after_due_submit = no`; при `late` сдача принимается с `late`, при `yes` — как обычная |
+| 8 | `already_graded` | работа оценена и не возвращена |
+| 9 | `answer_required` | `answer_kind = text`, а текст пуст |
+| 10 | `text_not_expected` | `answer_kind = mark`, а текст прислан |
+| 11 | `text_too_long` | текст больше лимита (`JUDGE_ASSIGNMENT_TEXT_MAX_KB`, по умолчанию 64 КБ в UTF-8) |
+
+Принятая сдача — код `ok` или `late` (флаг `late`).
 
 ## 7. Что крепится к этим сущностям позже
 
