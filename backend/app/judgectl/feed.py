@@ -48,8 +48,6 @@ def _fields(ctx: Context, args, editing: bool = False) -> dict:
                       ("release", "grades_release")):
         if getattr(args, arg) is not None:
             out[name] = getattr(args, arg)
-    if editing and out.get("grading") not in (None, "points") and "max_points" not in out:
-        out["max_points"] = None  # another scale drops max_points
     return out
 
 

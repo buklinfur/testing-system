@@ -265,12 +265,16 @@ def has_grades(db: Session, item: FeedItem) -> bool:
 
 
 def update_item(db: Session, actor: audit.Actor, item: FeedItem, now: datetime, **values) -> list:
-    """Change editable fields (EDITABLE). The scale (grading, max_points) is fixed once a grade exists
+    """Change editable fields (EDITABLE): only the ones given. A new scale pass_fail or none without max_points
+    clears max_points; with a max_points not null it is max_points_invalid, and so is points without max_points
+    (the same rule for the admin API and judgectl). The scale (grading, max_points) is fixed once a grade exists
     (grading_locked); a new due_at or policy never recomputes the `late` of hand-ins already received. Returns the
     changed names (empty: nothing changed, nothing audited)."""
     unknown = sorted(set(values) - set(EDITABLE))
     if unknown:
         raise FeedError(f"these fields cannot be changed: {', '.join(unknown)}", "item_invalid")
+    if _v(values.get("grading")) in ("pass_fail", "none") and "max_points" not in values:
+        values = {**values, "max_points": None}  # another scale drops max_points; one sent with it is refused
     f = _fields(item, item.kind.value, values)
     _validate(item.kind.value, f)
     scale_changes = [n for n in GRADING_FIELDS if _v(getattr(item, n)) != f[n]
@@ -483,7 +487,10 @@ def item_summary(db: Session, item: FeedItem) -> dict:
 
 def item_detail(db: Session, item: FeedItem) -> dict:
     """item_summary with every setting, the contest, the audience by name and the number of extensions: what the
-    admin API and `judgectl item show` show of one item."""
+    admin API and `judgectl item show` show of one item. The row is read back first: values as stored (max_points
+    with its two decimals), whether the item was just created, changed or read."""
+    db.flush()
+    db.refresh(item)
     out = item_summary(db, item)
     rows = audience_rows(db, item)
     groups = [db.get(Group, r.group_id) for r in rows if r.group_id is not None]

@@ -99,7 +99,7 @@ class JudgectlFeedTests(PgCase):
                     "--max-points", "5.5", "--answer", "mark", "--release", "immediate")
         self.assertEqual((d["title"], d["state"], d["body_md"], d["max_points"], d["answer_kind"],
                           d["grades_release"], d["after_due_submit"]),
-                         ("Блок-схема", "draft", "Нарисуй **блок-схему**", "5.5", "mark", "immediate", "no"))
+                         ("Блок-схема", "draft", "Нарисуй **блок-схему**", "5.50", "mark", "immediate", "no"))
         self.assertEqual((d["available_from"], d["due_at"]), ("2026-11-11T01:00:00Z", "2026-11-12T16:59:00Z"))
         self.assertEqual(([x["name"] for x in d["audience"]["groups"]], [x["login"] for x in d["audience"]["users"]]),
                          (["7Б"], ["student3"]))
@@ -148,6 +148,12 @@ class JudgectlFeedTests(PgCase):
         out = self.js("item", "edit", item_id, "--no-due", "--grading", "pass_fail")  # drops max_points itself
         self.assertEqual((sorted(out["changed"]), out["item"]["max_points"]), (["due_at", "grading", "max_points"],
                                                                               None))
+        # the rule of a new scale is the service's (the admin API has the same): another scale with max_points and
+        # points without it are refused
+        self.refused("max_points_invalid", "item", "edit", item_id, "--grading", "none", "--max-points", "5")
+        self.refused("max_points_invalid", "item", "edit", item_id, "--grading", "points")
+        out = self.js("item", "edit", item_id, "--grading", "points", "--max-points", "4.5")
+        self.assertEqual(out["item"]["max_points"], "4.50")
         self.assertIn("nothing changed", self.ok("item", "edit", item_id, "--title", "Новое")[0])
         status, _o, err = self.run_cli("item", "edit", item_id)
         self.assertEqual(status, 1)
@@ -167,7 +173,7 @@ class JudgectlFeedTests(PgCase):
         self.assertIn(f"item #{draft} deleted", self.ok("item", "delete", draft, "--yes")[0])
         self.refused("item_not_found", "item", "show", draft)
         # the scale is fixed once graded
-        works.grade_work(self.s, self.actor, self.s.get(FeedItem, item_id), self.a, T0, passed=True)
+        works.grade_work(self.s, self.actor, self.s.get(FeedItem, item_id), self.a, T0, score=1)
         self.s.commit()
         self.refused("grading_locked", "item", "edit", item_id, "--grading", "none")
 

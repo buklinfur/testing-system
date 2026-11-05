@@ -10,13 +10,14 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from fastapi import Depends, Query, Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..api_errors import ApiError
 from ..auth import audit
 from ..auth_api import Current, _session, client_ip, get_db
 from ..jsonable import plain
-from ..models import Role
+from ..models import Role, User
 
 DEFAULT_LIMIT, MAX_LIMIT = 50, 200
 
@@ -62,3 +63,14 @@ def _row_id(row, id_column):
 def like(text: str) -> str:
     """An ILIKE pattern that matches `text` literally anywhere (% and _ escaped)."""
     return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def users_by_id(db: Session, ids: list[int]) -> list[User]:
+    """The users of these ids in this order (repeats dropped); any missing -> 404 user_not_found naming every one,
+    before anything changes."""
+    ids = list(dict.fromkeys(ids))
+    found = {u.id: u for u in db.execute(select(User).where(User.id.in_(ids))).scalars()}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise ApiError(404, "user_not_found", problems=[f"no user {i}" for i in missing])
+    return [found[i] for i in ids]

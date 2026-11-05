@@ -235,7 +235,9 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 **Элементы** (`items.py`):
 * `create_item`, `update_item` — те же ограничения, что `CHECK` таблицы, но с кодами: `title_invalid`,
   `kind_not_available` (материал — с 4в.4), `contest_required`, `grading_invalid`, `max_points_invalid`,
-  `answer_kind_invalid`, `deadline_invalid`, `item_invalid`. После первой оценки шкала (`grading`, `max_points`) не
+  `answer_kind_invalid`, `deadline_invalid`, `item_invalid`. Смена шкалы — одно правило для API и judgectl
+  (`update_item`): `pass_fail` / `none` без `max_points` очищает его, с `max_points` не `null` — `max_points_invalid`;
+  `points` без `max_points` — `max_points_invalid`. После первой оценки шкала (`grading`, `max_points`) не
   меняется — `grading_locked`. Новый срок или политика уже принятые `late` не пересчитывают.
 * `publish` — нужен хотя бы один адресат (`no_audience`). `archive` — только опубликованный (`item_not_published`).
   `delete_item` — только черновик без работ и продлений (`item_not_draft`, `item_has_works`,

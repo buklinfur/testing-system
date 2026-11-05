@@ -4,7 +4,10 @@
 # student, deadlines with the policies late and no, an extension for one student, submissions and a rejudge in two
 # steps, the rollback of the import (K3), the profile time zone, system, audit, languages; and of session 4a.4:
 # uploaded problems are checked by a worker (it waits for ready, up to 120 s), a package whose checker does not
-# compile (tests/problems/check-broken-checker) ends failed and cannot be pinned, a recheck runs once and ends ready.
+# compile (tests/problems/check-broken-checker) ends failed and cannot be pinned, a recheck runs once and ends ready;
+# and of session 4v.1b (the class feed, docs/ADMIN_API.md §5.8): an assignment for a group, hand-ins through SEED_CMD
+# (dev_seed --item), an extension, grades, a return, a hand-in again, a regrade, a release per student, the filters of
+# the review queue, archiving the group answers its feed items.
 # A worker with the capability problem_check must be running (judgectl worker list: CAPS).
 #   tools/smoke-admin-api.sh [BASE_URL] [ORIGIN]       defaults: http://127.0.0.1:8000 and $JUDGE_PUBLIC_ORIGIN
 # It asks for an admin (login, password, a TOTP code from the phone); ADMIN_LOGIN, ADMIN_PASSWORD and TOTP_CODE
@@ -98,6 +101,21 @@ seed() {  # seed <label> <want exit 0|1> <grep in output or -> dev_seed args...;
     fail "$label: exit $code, want $want $needle: $(tail -c 200 "$D/seed.err" | tr '\n' ' ')"
   fi
   cp "$D/seed.out" "$D/body" 2>/dev/null
+}
+
+seed_item() {  # seed_item <label> <want exit> <grep or -> dev_seed args...: a hand-in on the assignment $ITEM
+  local label=$1 want=$2 needle=$3; shift 3
+  if [ -z "${SEED_CMD:-}" ]; then
+    echo "SKIP $label   ->  dev_seed --item $ITEM $*   (expect exit $want${needle:+, \"$needle\"})"
+    SKIPS=$((SKIPS + 1)); return 1
+  fi
+  local code
+  $SEED_CMD --item "$ITEM" "$@" > "$D/seed.out" 2> "$D/seed.err"; code=$?
+  if [ "$code" = "$want" ] && { [ "$needle" = - ] || grep -q -- "$needle" "$D/seed.out" "$D/seed.err"; }; then
+    echo "OK   $label (exit $code)"
+  else
+    fail "$label: exit $code, want $want $needle: $(tail -c 200 "$D/seed.err" | tr '\n' ' ')"
+  fi
 }
 
 [ "$(curl -s --noproxy '*' --max-time 5 -o /dev/null -w '%{http_code}' "$BASE/api/auth/me")" = 401 ] || {
@@ -241,6 +259,75 @@ check "nothing new: the same check"                   "d['result'] in ('already_
 poll "the recheck ends ready"                         "/api/admin/problems/sum-of-two/versions/$V_sum_of_two" \
      "d['status'] == 'ready' and any(c['id'] == $RC and c['outcome'] == 'ready' for c in d['checks'])"
 send "archive $BROKEN (test data)"                    200 POST "/api/admin/problems/$BROKEN/archive"
+
+echo "--- the class feed (4v.1b): an assignment for a group, hand-ins, grades, a return, a release, the queue"
+G3="smoke $STAMP feed"
+send "a group for the feed"                           201 POST /api/admin/groups "{'name': '$G3'}"
+G3ID=$(val 'd["id"]' 2>/dev/null || echo 0)
+# the answer is read by dev_seed as judge (SEED_CMD): a file in /tmp anyone may read, not in the private $D
+TXT=$(mktemp); chmod 644 "$TXT"; trap 'rm -rf "$D" "$TXT"' EXIT
+printf '%s\n' "<script>alert(\"smoke\")</script> ответ $STAMP" > "$TXT"
+TITLE="<script>alert(1)</script> Блок-схема $STAMP"
+ITEM_BODY="{'kind': 'assignment', 'title': '$TITLE', 'body_md': '**Нарисуй** <img src=x onerror=alert(1)>',
+            'grading': 'points', 'max_points': 10, 'due_at': '2026-01-02 00:00', 'after_due_submit': 'late',
+            'group_ids': [$G3ID]}"
+send "create an assignment for $G3 (a draft)"         201 POST /api/admin/items "$ITEM_BODY"
+ITEM=$(val 'd["id"]' 2>/dev/null || echo 0)
+check "untrusted title back byte for byte, due in UTC with Z" \
+      "d['title'] == '$TITLE' and d['due_at'].endswith('Z') and d['state'] == 'draft' and d['max_points'] == '10.00'"
+send "publish it"                                     200 POST "/api/admin/items/$ITEM/publish"
+check "published"                                     "d['item']['state'] == 'published' and d['changed']"
+get "the feed of $G3"                                 200 "/api/admin/groups/$G3ID/feed"
+check "the assignment is in it"                       "[i['id'] for i in d['items']] == [$ITEM]"
+get "an unknown student in the path"                  404 "/api/admin/items/$ITEM/works/999999999"
+if [ "$U1" != 0 ] && [ "$U2" != 0 ]; then
+  send "dev-student-1 and -2 into $G3"                200 POST "/api/admin/groups/$G3ID/members" "{'user_ids': [$U1, $U2]}"
+  get "the card of an addressee without work"         200 "/api/admin/items/$ITEM/works/$U1"
+  check "assigned, no events, missing (past due)"     "d['status'] == 'assigned' and d['events'] == [] and d['missing']"
+  seed_item "dev-student-1 hands in after due: late"  0 '"late": true' --user 1 --text-file "$TXT"
+  send "extension for dev-student-2"                  201 POST "/api/admin/items/$ITEM/extensions" \
+                                                          "{'user_id': $U2, 'due_at': '2098-12-31 23:59:59', 'reason': '<b>smoke</b>'}"
+  seed_item "dev-student-2 with the extension: on time" 0 '"late": false' --user 2 --text-file "$TXT"
+  get "the review queue of the item"                  200 "/api/admin/works?item_id=$ITEM"
+  [ -z "${SEED_CMD:-}" ] || check "2 hand-ins; dev-student-1 late, dev-student-2 not" \
+      "sorted((r['login'], r['status'], r['late']) for r in d['items']) == [('dev-student-1', 'submitted', True), ('dev-student-2', 'submitted', False)]"
+  get "late ones of $G3 across items"                 200 "/api/admin/works?late=true&group_id=$G3ID"
+  [ -z "${SEED_CMD:-}" ] || check "of this item: dev-student-1 only (earlier runs have works too)" \
+      "[r['login'] for r in d['items'] if r['item'] == $ITEM] == ['dev-student-1']"
+  get "missing without an item"                       422 "/api/admin/works?missing=true"
+  if [ -n "${SEED_CMD:-}" ]; then
+    get "the card of dev-student-1"                   200 "/api/admin/items/$ITEM/works/$U1"
+    check "the answer byte for byte"                  "d['events'][0]['text'].startswith('<script>alert(\"smoke\")</script>')"
+  fi
+  send "a score with three decimals"                  422 POST "/api/admin/items/$ITEM/works/$U1/grade" "{'score': '8.555'}"
+  check "score_invalid"                               "d['detail'] == 'score_invalid'"
+  send "grade dev-student-1: 8.5"                     200 POST "/api/admin/items/$ITEM/works/$U1/grade" "{'score': '8.5', 'comment': 'хорошо'}"
+  check "graded, not released"                        "d['result']['status'] == 'graded' and not d['result']['released'] and d['work']['student_sees']['grade'] is None"
+  if [ -n "${SEED_CMD:-}" ]; then
+    send "return dev-student-2"                       200 POST "/api/admin/items/$ITEM/works/$U2/return" "{'comment': 'доделай <i>схему</i>'}"
+    check "returned, seen at once"                    "d['work']['student_sees']['status'] == 'returned'"
+    seed_item "dev-student-2 hands in again"          0 '"status": "submitted"' --user 2 --text-file "$TXT"
+  else
+    echo "SKIP return and hand in again   ->  needs a hand-in of dev-student-2 (SEED_CMD)"; SKIPS=$((SKIPS + 1))
+  fi
+  send "regrade dev-student-1: 9"                     200 POST "/api/admin/items/$ITEM/works/$U1/grade" "{'score': 9}"
+  send "release unknown students: nothing changes"    404 POST "/api/admin/items/$ITEM/release" "{'user_ids': [$U1, 999999999]}"
+  send "release the grades"                           200 POST "/api/admin/items/$ITEM/release" "{}"
+  check "per student: dev-student-1 released, dev-student-2 nothing_to_release" \
+      "{r['login']: r['result'] for r in d['results']} == {'dev-student-1': 'released', 'dev-student-2': 'nothing_to_release'} or not '${SEED_CMD:-}'"
+  get "dev-student-1 now sees 9"                      200 "/api/admin/items/$ITEM/works/$U1"
+  check "the released grade is the regrade"           "d['student_sees']['grade']['score'] == '9.00'"
+  get "submitted ones of $G3"                         200 "/api/admin/works?group_id=$G3ID&status=submitted"
+  [ -z "${SEED_CMD:-}" ] || check "of this item: dev-student-2 (handed in again)" \
+      "[r['login'] for r in d['items'] if r['item'] == $ITEM] == ['dev-student-2']"
+else
+  echo "SKIP the hand-ins and grades of the feed (dev-student-1/-2 do not exist yet: run with SEED_CMD twice)"
+  SKIPS=$((SKIPS + 1))
+fi
+send "archive the assignment"                         200 POST "/api/admin/items/$ITEM/archive"
+send "archive $G3: answers its feed items"            200 POST "/api/admin/groups/$G3ID/archive"
+check "feed_items = [the assignment], no contests; the old fields stay" \
+      "set(d) == {'group', 'contests', 'feed_items'} and d['contests'] == [] and [i['id'] for i in d['feed_items']] == [$ITEM]"
 
 echo "--- the rest: archive, profile, system, audit, languages"
 send "archive the contest"                            200 POST "/api/admin/contests/$SLUG/archive"

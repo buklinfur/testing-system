@@ -24,6 +24,11 @@ class AdminRoutesTests(ApiCase):
         out = [(method, path) for path, ops in self.app.openapi()["paths"].items() if path.startswith("/api/admin/")
                for method in ops]
         self.assertGreater(len(out), 40)  # the sweep really sees the API
+        paths = {path for _m, path in out}
+        for path in ("/api/admin/items", "/api/admin/items/{item_id}", "/api/admin/works",
+                     "/api/admin/items/{item_id}/works/{user_id}/grade", "/api/admin/items/{item_id}/release",
+                     "/api/admin/groups/{group_id}/feed"):  # the class feed of 4v.1b is in the sweep
+            self.assertIn(path, paths)
         return out
 
     def test_only_a_fully_logged_in_admin_with_csrf_gets_in(self):

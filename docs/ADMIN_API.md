@@ -9,7 +9,7 @@ OpenAPI не отдаёт (`openapi_url=None`); файл пишет `python tool
 падает, если файл разошёлся с приложением. Этот документ — описание для людей: смысл, правила и коды ошибок.
 
 Разделы: пользователи (§5.1), задачи (§5.2), контесты (§5.3), группы (§5.4), продления (§5.5), посылки (§5.6),
-система, аудит и языки (§5.7).
+система, аудит и языки (§5.7), лента класса и ручные задания (§5.8).
 
 ## 1. Доступ
 
@@ -84,10 +84,12 @@ OpenAPI не отдаёт (`openapi_url=None`); файл пишет `python tool
   - `compile_log`, `error` проверки, `checker_message`, `stderr_excerpt`, `output_excerpt` тестов;
   - ответы посылок без кода (`answers`);
   - `display_name`, логины, названия групп, `reason` продлений, имена файлов задач и тестов;
+  - лента (§5.8): `title` элементов (и `item_title` в очереди), **текст ответа** ученика (`events[].text`),
+    `comment` оценок и возвратов (`returned_comment`), `warning` контест-элемента;
   - сообщения ошибок (`message`, `problems`) и предупреждения `apply` (в них встречаются названия из файлов);
 * **Markdown — только через санитайзер** (разрешённый список тегов и атрибутов, без `script`, `style`, `iframe`,
   обработчиков `on*`, ссылок `javascript:` / `data:`): `note_md` задачи контеста, `description` контеста, условия
-  задач;
+  задач, `body_md` элемента ленты;
 * картинки — только с разрешённых путей этого же API (§4), никогда по URL из текста.
 
 В тестах API такие значения нарочно содержат `<script>` и теги: сервер возвращает их байт в байт. Обязательство
@@ -179,7 +181,7 @@ two_factor (только у админов)}`; хешей и секретов н
 | `POST /groups` | `{name}` | 201: группа (как `GET /groups/{id}`) | 409 `group_name_taken` (без учёта регистра среди неархивных), 422 `group_name_invalid` |
 | `GET /groups/{id}` | `?history=true` | `{id, name, archived_at, created_at, members, contests: [{slug, title, state}], students: [{user_id, login, display_name, added_at, removed_at}]}`; с `history` — и убранные | 404 `group_not_found` |
 | `PUT /groups/{id}` | `{name}` | группа | 404, 409 `group_name_taken`, 422 `group_name_invalid` |
-| `POST /groups/{id}/archive` | — | `{group, contests: [slug]}` — контесты, к которым группа подключена (К6): она больше не даёт к ним доступа | 404 |
+| `POST /groups/{id}/archive` | — | `{group, contests: [slug], feed_items: [{id, kind, state, title}]}` — контесты, к которым группа подключена, и элементы ленты, где она в адресатах (К6): она больше не даёт к ним доступа. `feed_items` — с 4в.1b, прежние поля не изменились | 404 |
 | `POST /groups/{id}/unarchive` | — | группа | 404, 409 `group_name_taken` |
 | `POST /groups/{id}/members` | `{user_ids: [...]}` (1–200) | `{added: [логины], already: [логины]}` | 404 `user_not_found` + `problems` (все отсутствующие), 409 `group_archived`, 422 `not_a_student` + `logins` |
 | `POST /groups/{id}/members/remove` | `{user_ids: [...]}` | `{removed: [...], not_members: [...]}` — строки состава остаются с `removed_at` | 404 |
@@ -229,13 +231,76 @@ two_factor (только у админов)}`; хешей и секретов н
 импорт класса, QR-токены, вход с кодом) и ищет их в ответе `/audit`. `details` — недоверенный текст (§4.1): в нём
 бывают названия и логины.
 
+### 5.8. Лента класса и ручные задания
+
+Тот же сервис, что `judgectl item` и `judgectl work` (`app/classroom/items.py`, `works.py`; [`CLASSROOM.md`](CLASSROOM.md),
+D-059…D-063). Элемент — по `id`, группа и ученик — по `id`. Время на входе — как в `contest.yaml` (без смещения —
+`JUDGE_TIMEZONE`, или с `Z` / `+07:00`), на выходе — UTC с `Z`. Баллы (`max_points`, `score`) — строка или число JSON,
+обычная запись с точкой, не больше двух знаков после неё (D-061); в ответах — строка из базы с двумя знаками
+(`"8.50"`). Работа — пара «элемент — ученик» из пути: `work_id` и `submission_id` API не принимает, работа ученика на
+другом элементе через этот путь не видна (404). Эндпоинтов сдачи здесь нет: сдаёт только ученик (4б.2; до него —
+`dev_seed --item`).
+
+**Элементы**
+
+| Метод и путь | Тело / параметры | Ответ |
+|---|---|---|
+| `GET /items` | `group_id` (адресован группе), `kind=assignment\|contest`, `state=draft\|published\|archived`, курсор | `{items: [{id, kind, state, title, contest_id, available_from, due_at, published_at, created_at, audience: {groups: [id], users: [id]}, works: {статус: число}, warning}], next_cursor}` |
+| `POST /items` | `{kind, title, body_md?, contest?: slug, available_from?, due_at?, after_due_statement?, after_due_submit?, grading?, max_points?, answer_kind?, grades_release?, group_ids?, user_ids?}` | 201: элемент (как `GET /items/{id}`), черновик; адресаты — в той же транзакции (отказ адресата — нет и элемента) |
+| `GET /items/{id}` | — | то же, что в списке, + `body_md`, `after_due_statement`, `after_due_submit`, `grading`, `max_points`, `answer_kind`, `grades_release`, `updated_at`, `created_by`, `contest: {slug, title, state} \| null`, `audience: {groups: [{id, name, archived}], users: [{id, login, display_name}]}`, `extensions` (число) |
+| `PUT /items/{id}` | только меняемые поля; меняются **присланные ключи**, `null` очищает (`due_at: null`); неизвестный ключ — 422 | `{item, changed: [поля]}`. Новая шкала `pass_fail` / `none` без `max_points` очищает его; с `max_points` не `null` — 422 `max_points_invalid`; `points` без `max_points` — тоже. После первой оценки шкала не меняется (`grading_locked`) |
+| `POST /items/{id}/publish` · `archive` · `unarchive` | — | `{item, changed}` |
+| `POST /items/{id}/delete` | `{confirm_id}` = id | 204; только черновик без работ и продлений |
+| `PUT /items/{id}/audience` | `{group_ids, user_ids}` | `{item, added, removed}` — адресаты становятся ровно такими |
+| `GET /groups/{id}/feed` | `drafts=true\|false` (по умолчанию `true`) | `{items}` в порядке ленты (`available_from`, иначе `published_at`; новые сверху), без курсора |
+| `GET /items/{id}/extensions` | — | `{items: [{id, item, user, group, due_at, base_due_at, reason, created_at}]}` |
+| `POST /items/{id}/extensions` | `{user_id \| group_id, due_at, reason?}` | 201 `{extension, replaced: null}`; для того же ученика или группы — 200 `{…, replaced: <прежний срок>}` |
+| `POST /items/{id}/extensions/{eid}/delete` | — | 204; продление другого элемента или задачи контеста — 404 |
+
+У контест-элемента `warning` — текст, если адресаты контеста не увидят (группы не подключены, вход по коду, личные
+адресаты в режиме `groups`). Элемент доступа к контесту не выдаёт.
+
+**Работы**
+
+| Метод и путь | Тело / параметры | Ответ |
+|---|---|---|
+| `GET /works` | `item_id`, `group_id` (**текущие** члены), `status=assigned\|submitted\|graded\|returned`, `late`, `missing`, курсор | `{items: [{item, item_title, user_id, login, display_name, work_id, status, status_at, submissions, last_submitted_at, late, missing, grade: {score, passed, released} \| null}], next_cursor}`. С `item_id` — все текущие адресаты и все, у кого есть работа (без работы — `assigned`), курсор — id ученика; без `item_id` — только существующие работы, курсор — id работы (D-060) |
+| `GET /items/{id}/works/{user_id}` | — | `{work_id, item, user_id, login, display_name, status, status_at, missing, events: [{kind: submission, id, at, late, text} \| {kind: review, id, at, action, score, passed, comment, reviewer_id, release_of}], student_sees: {status, grade, returned_comment, submissions, late, missing}}`; текст ответа (`answer.md`) — строкой `text`. Адресат без работы — 200, `status: assigned`, событий нет |
+| `POST /items/{id}/works/{user_id}/grade` | `{score? \| passed?, comment?, release?}` — `score` для `points`, `passed` для `pass_fail`, ничего для `none`; можно без сдачи | `{result: {work_id, review_id, status, released, seen_at_once}, work}` |
+| `POST /items/{id}/works/{user_id}/return` | `{comment}` | `{result: {work_id, review_id, status}, work}` — ученик видит возврат сразу |
+| `POST /items/{id}/release` | `{user_ids?}` (1–200) | `{results: [{user_id, login, result}]}` — по ученику: `released`, `nothing_to_release` (работы нет или она не оценена), `already_released`. Неизвестные `user_ids` — 404 `user_not_found` (все отсутствующие), ничего не опубликовано |
+
+**Коды отказов.** Одна таблица `STATUS` в `admin_api/feed.py`; `tests/test_admin_feed_units.py` сверяет её со всеми
+кодами сервисов и правил (новый код без статуса или код, которого никто не выдаёт, — падение теста), а
+`tests/pg/test_admin_feed_pg.py` получает каждый код со статусом хотя бы одним запросом. Правило: 404 — нет объекта;
+422 — ввод недопустим при любом состоянии; 409 — мешает текущее состояние.
+
+| Статус | Коды |
+|---|---|
+| 404 | `item_not_found`, `user_not_found`, `group_not_found`, `contest_not_found`, `extension_not_found`, `work_not_found` (ученик не адресат и работы на этом элементе нет) |
+| 422 | `invalid_request` (тело или параметр), `title_invalid`, `kind_not_available` (материал — с 4в.4), `contest_required`, `item_invalid`, `grading_invalid`, `max_points_invalid`, `answer_kind_invalid`, `deadline_invalid`, `due_at_invalid`, `available_from_invalid`, `score_invalid`, `score_required`, `score_out_of_range`, `grade_kind_mismatch`, `passed_required`, `grade_not_expected`, `comment_too_long`, `comment_required`, `not_a_student`, `extension_subject`, `extension_not_later`, `extension_before_available`, `missing_needs_item`, `confirmation_mismatch` |
+| 409 | `grading_locked`, `no_audience`, `item_archived`, `item_not_published`, `item_not_draft`, `item_has_works`, `item_has_extensions`, `group_archived`, `not_published`, `not_addressed`, `not_an_assignment`, `no_deadline`, `nothing_to_return`, `already_returned`, `release_not_needed` |
+| в ответе 200 | `nothing_to_release`, `already_released` — результаты массовой публикации по ученику |
+
+Не достигаются админским запросом (D-063): коды сдачи ученика — `already_graded`, `deadline_passed`,
+`not_available_yet`, `no_access` (403), `answer_required`, `text_not_expected`, `text_too_long` (422; в таблице
+`STATUS` для 4б.2); защитные — `extension_before_available` (срок элемента и так позже `available_from`, это
+`CHECK`) и `item_has_works` (у черновика не бывает работ).
+
+Аудит: `item.*` и `work.*` ([`CLASSROOM.md`](CLASSROOM.md) §7) от имени админа сессии. Сдачи учеников в аудит не
+пишутся.
+
 ## 6. Проверка на работающем приложении
 
 `tools/smoke-admin-api.sh [BASE_URL] ORIGIN` — curl-сценарий проверки 4а.3 и 4а.4 через этот API (для 4а.4: загруженные задачи ждут `ready` до 120 с, пакет `tests/problems/check-broken-checker` получает `failed` с логом компиляции, закрепить его нельзя, `recheck` создаёт одну проверку и заканчивается `ready`; нужен работающий воркер с `problem_check`): класс из CSV со столбцом
 «Класс» (две группы), загрузка задач, контест только для группы (сроки с политиками `late` и `no`), добавление
 учеников, продление одному ученику, удаление из группы, посылки (список, фильтры `late` и `group_id`, вид
 преподавателя, исходник вложением), перепроверка в два шага, откат импорта (К3: группа контеста остаётся, другая
-удаляется), архивация с контестами (К6), часовой пояс, `/system`, `/audit`, `/languages`. Спрашивает админа и код
+удаляется), архивация с контестами (К6), часовой пояс, `/system`, `/audit`, `/languages`; лента 4в.1b (отдельный
+блок): задание группе с `<script>` в названии, карточка адресата без работы (`assigned`, «не сдано»), сдачи через
+`SEED_CMD` (`dev_seed --item`: с опозданием и с продлением вовремя), очередь проверки с фильтрами, `score_invalid`,
+оценка, возврат и пересдача, переоценка, публикация по ученикам (неизвестный `user_id` — 404 без изменений),
+архивация группы с `feed_items`. Спрашивает админа и код
 TOTP (или `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `TOTP_CODE` из окружения); секреты передаются curl только через файлы во
 временном каталоге 700 и не печатаются. Всё создаётся с именами `smoke-<время>`, повторный запуск не мешает
 прежнему. Код выхода — число провалов.
