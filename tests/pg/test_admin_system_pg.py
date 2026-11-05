@@ -50,7 +50,9 @@ class AdminSystemTests(ApiCase):
         self.s.commit()
         data = self.ok(self.get("/system"))
         self.assertEqual(set(data), {"migration", "load", "metrics", "workers", "workers_known", "config_problems",
-                                     "timezone"})
+                                     "timezone", "checks"})
+        self.assertEqual(data["checks"], {"queued": 0, "running": 0, "pending_versions": 0, "recent_failed": [],
+                                          "pinned_failed": []})
         self.assertNotIn("blobs", json.dumps(data))  # the blob store is the console's
         self.assertEqual(data["migration"], {"current": None, "head": migration_head(), "ok": False})  # create_all
         self.assertEqual((data["load"]["queue_length"], data["load"]["workers_online"]), (1, 1))

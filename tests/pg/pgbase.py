@@ -123,6 +123,34 @@ class PgCase(unittest.TestCase):
         self.s.commit()
         return token, worker
 
+    def finish_checks(self, outcome="ready", reason=None, report=None):
+        """Bring every queued check of a problem version to an end through the real code path (claim_check, then
+        finish, as the worker API does), the way a worker would: the versions become ready (or failed). Commits in a
+        session of its own. Returns the number of checks ended."""
+        from app import problem_checks as checks
+        from app.models import Worker
+        n, qs = 0, PgCase.settings  # not self.settings: API test classes use that name for the app's Settings
+        with self.Session() as s:
+            worker = s.execute(text("SELECT id FROM workers WHERE name = 'test-checker'")).scalar()
+            if worker is None:
+                token = q.authenticate(s, q.create_worker_token(s, "tok-test-checker", ["cpu", "problem_check"]))
+                worker = q.register_worker(s, token, "test-checker", ["cpu", "problem_check"], {}, qs).id
+                s.commit()
+            worker = s.get(Worker, worker)
+            while True:
+                check = checks.claim_check(s, worker, qs)  # alone here: no claim lock needed
+                if check is None:
+                    break
+                body = report or {"outcome": outcome,
+                                  "reason": reason or (None if outcome == "ready" else "solution_mismatch"),
+                                  "worker": "test-checker", "programs": [], "solutions": []}
+                checks.finish(s, worker, check.id, {"attempt": check.attempt, "outcome": body["outcome"],
+                                                    "report": body}, qs)
+                s.commit()
+                n += 1
+        self.s.expire_all()
+        return n
+
     def ok_payload(self, j, tests=None):
         tests = tests if tests is not None else [{"test_case_id": t.id, "verdict": "OK", "time_ms": 5, "memory_kb": 100,
                                                   "visible_to_student": i == 0} for i, t in enumerate(self.seed["tests"])]

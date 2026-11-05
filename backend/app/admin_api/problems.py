@@ -23,6 +23,7 @@ from ..blobstore import BlobStore
 from ..content_files import file_response
 from ..http_body import require_type, save_body
 from ..jsonable import plain
+from .. import problem_checks as checks
 from ..models import Problem
 from ..problems import catalog
 from ..problems.importer import import_package
@@ -30,6 +31,7 @@ from .deps import Page, admin_actor, page, paginate
 
 router = APIRouter()
 STATUS = {"problem_not_found": 404, "version_not_found": 404, "problem_archived": 409}
+RECHECK_CODES = {"created": 202, "already_queued": 200, "already_running": 200}
 
 
 def _problem(db: Session, slug: str) -> Problem:
@@ -71,7 +73,8 @@ async def upload(request: Request, dry_run: bool = False, db: Session = Depends(
 
         result = await run_in_threadpool(work)
     body = plain({"slug": result.slug, "result": result.kind, "version": result.number,
-                  "content_sha256": result.content_sha256, "warnings": result.warnings, "dry_run": dry_run})
+                  "content_sha256": result.content_sha256, "warnings": result.warnings, "dry_run": dry_run,
+                  "status": result.status, "check_id": result.check.id if result.check is not None else None})
     return JSONResponse(body, status_code=201 if result.kind == "created" else 200)
 
 
@@ -93,6 +96,24 @@ def get_problem(slug: str, db: Session = Depends(get_db)):
 def get_version(slug: str, number: int, db: Session = Depends(get_db)):
     problem = _problem(db, slug)
     return plain(catalog.version_detail(db, problem, _version(db, problem, number)))
+
+
+@router.post("/problems/{slug}/versions/{number}/recheck")
+def recheck(slug: str, number: int, request: Request, db: Session = Depends(get_db),
+            actor: audit.Actor = Depends(admin_actor)):
+    """Check the version again with a worker (D-054). 202: queued; 200: a check is already queued or running
+    (nothing new). The status of the version changes only when the check ends."""
+    problem = _problem(db, slug)
+    version = _version(db, problem, number)
+    try:
+        out = checks.recheck(db, actor, version, now(request))
+    except checks.CheckError as exc:
+        db.rollback()
+        raise ApiError(STATUS.get(exc.code, 409), exc.code, str(exc)) from exc
+    db.commit()
+    body = plain({"slug": slug, "version": number, "result": out.kind, "status": version.status,
+                  "check": checks.check_row(out.check)})
+    return JSONResponse(body, status_code=RECHECK_CODES[out.kind])
 
 
 @router.get("/problems/{slug}/versions/{number}/files/{path:path}")

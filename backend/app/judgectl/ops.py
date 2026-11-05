@@ -214,6 +214,7 @@ def status(ctx: Context, args) -> int:
             out["migration"] = snap["migration"]["current"]
             out["queue"] = {k: snap["load"][k] for k in ("level", "queue_length", "workers_online", "workers_busy")}
             out["workers_known"] = snap["workers_known"]
+            out["checks"] = snap["checks"]
             config = snap["config_problems"]
             rows = set(db.execute(select(Blob.sha256)).scalars())
             out["blob_rows_unreferenced"] = db.execute(text(UNREFERENCED_BLOBS)).scalar_one()
@@ -245,6 +246,14 @@ def status(ctx: Context, args) -> int:
         ctx.print(f"workers       {out['queue']['workers_online']} online, {out['queue']['workers_busy']} busy "
                   f"({out['workers_known']} known)")
         ctx.print(f"queue         {out['queue']['queue_length']} waiting, load {out['queue']['level']}")
+        c = out["checks"]
+        ctx.print(f"checks        {c['queued']} queued, {c['running']} running; {c['pending_versions']} versions "
+                  "pending_check (judgectl problem checks)")
+        for row in c["recent_failed"]:
+            ctx.print(f"  failed      {row['problem']}@{row['version']} check #{row['id']} ({row['report_reason']}), "
+                      f"{ctx.time(row['finished_at'])}")
+        for row in c["pinned_failed"]:
+            ctx.print(f"  warning     contest {row['contest']} {row['label']}: {row['warning']}")
     ctx.print("config        " + ("ok" if not out["config_problems"] else "; ".join(out["config_problems"])))
     ctx.print(f"timezone      {out['timezone']} (judgectl tables; the API is UTC)")
     if "blobs" in out:

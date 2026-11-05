@@ -8,7 +8,9 @@
   existing version -> nothing is written, the result says "exists as vN" (R29). Other content -> version N+1.
 * Nothing reaches the blob store before the package has passed every check and is known to be new.
 * An archived problem refuses imports (judgectl problem unarchive).
-* Until the worker check of session 4a.4 exists, a new version is `ready` at once (R30).
+* A new version with a custom checker, an interactor or reference solutions is `pending_check` and gets a check
+  of a worker (app/problem_checks.py, D-051): it becomes `ready` or `failed` when the check ends. A version with
+  nothing to check is `ready` at once, with check_report {"reason": "nothing_to_check"}.
 Callers own the transaction (judgectl: one per command; dev_seed: its session).
 """
 from __future__ import annotations
@@ -26,11 +28,12 @@ from sqlalchemy.orm import Session
 from protocol import problem_package
 from protocol.problem_package import PackageError, content_digest, sha256_file
 
+from .. import problem_checks as checks
 from ..auth import audit
 from ..blobstore import BlobStore
 from ..manifest_db import build_manifest
-from ..models import (Blob, Feedback, Problem, ProblemType, ProblemVersion, Program, ProgramRole, Scoring, TestCase,
-                      TestGroup, Verdict, VersionStatus, Visibility)
+from ..models import (Blob, CheckReason, Feedback, Problem, ProblemType, ProblemVersion, Program, ProgramRole, Scoring,
+                      TestCase, TestGroup, Verdict, VersionCheck, VersionStatus, Visibility)
 from ..settings import ImportSettings
 from .unpack import check_directory, unpack_zip
 
@@ -48,10 +51,22 @@ class ImportResult:
     problem: Optional[Problem] = None
     version: Optional[ProblemVersion] = None  # None in a dry run of new content
     warnings: list = field(default_factory=list)
+    check: Optional[VersionCheck] = None  # the check queued for a created version
+
+    @property
+    def status(self) -> Optional[str]:
+        return self.version.status.value if self.version is not None else None
 
     def describe(self) -> str:
         what = {"created": "imported as", "exists": "already exists as", "new": "would be imported as"}[self.kind]
-        return f"{self.slug}: {what} v{self.number}"
+        text = f"{self.slug}: {what} v{self.number}"
+        if self.version is None:
+            return text
+        text += f" ({self.status})"
+        if self.check is not None:
+            text += (f"; check #{self.check.id} queued: a worker runs the checker and the reference solutions "
+                     f"(judgectl problem show {self.slug}@{self.number})")
+        return text
 
 
 def store_blob(db: Session, blobs: BlobStore, data: bytes) -> str:
@@ -130,7 +145,7 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
         package_sha = store_file(db, blobs, archive) if archive is not None else None
         number = (db.execute(select(func.max(ProblemVersion.version))
                              .where(ProblemVersion.problem_id == problem.id)).scalar() or 0) + 1
-        version = ProblemVersion(problem_id=problem.id, version=number, status=VersionStatus.ready,
+        version = ProblemVersion(problem_id=problem.id, version=number, status=VersionStatus.pending_check,
                                  type=ProblemType(pkg.data["type"]), titles=dict(pkg.data["title"]),
                                  statements=statements, config=pkg.config, files=hashes, content_sha256=digest,
                                  package_sha256=package_sha, imported_by=actor.user_id)
@@ -153,9 +168,16 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
         db.flush()
         db.expire(version, ["groups", "programs"])  # rows were added by id: let the manifest query load them
         _manifest, version.manifest_sha256 = build_manifest(db, version.id)
+        check = None
+        if checks.needs_check(db, version.id):
+            check = checks.enqueue_check(db, version, CheckReason.import_, requested_by=actor.user_id)
+        else:
+            version.status = VersionStatus.ready
+            version.check_report = checks.nothing_to_check_report()
         audit.record(db, actor, "problem.import", now, object_type="problem_version", object_id=version.id,
                      details={"slug": problem.slug, "version": number, "content_sha256": digest, "files": len(files),
                               "source": source_name or ("zip" if archive is not None else "directory"),
-                              "package_sha256": package_sha})
+                              "package_sha256": package_sha, "status": version.status.value,
+                              "check_id": check.id if check is not None else None})
         db.flush()
-        return ImportResult("created", pkg.slug, number, digest, problem, version, pkg.warnings)
+        return ImportResult("created", pkg.slug, number, digest, problem, version, pkg.warnings, check)

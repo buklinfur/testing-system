@@ -54,9 +54,13 @@ class ContestServiceTests(PgCase):
         self.pupil = self.student(9)
         self.s.commit()
 
-    def imported(self, root):
+    def imported(self, root, check="ready"):
+        """Import, then let a worker's check end (the version is pending_check until then, D-051)."""
         v = import_package(self.s, self.blobs, ImportSettings(), self.actor, T0, directory=root).version
         self.s.commit()
+        if check:
+            self.finish_checks(check)
+            self.s.refresh(v)
         return v
 
     def apply(self, text):

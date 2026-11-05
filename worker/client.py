@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from typing import Callable, Optional
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
 log = logging.getLogger("judge.client")
 API = "/internal/worker/v1"
+SAFE_RELEASE_PATH = re.compile(r"/[A-Za-z0-9_-]+(/[A-Za-z0-9_.-]+)*")  # no scheme, host, query, %-escapes
 
 
 class ApiError(Exception):
@@ -129,9 +132,17 @@ class ApiClient:
         self._json("POST", f"/problem-checks/{check_id}/release", json={"attempt": attempt, "reason": reason})
 
     def release_path(self, path: str, attempt: int, reason: str) -> dict:
-        """Give back a job of a kind this worker does not know, by the `release` path the job carries."""
-        if not path.startswith("/") or ".." in path:
-            raise ApiError(f"bad release path {path!r}")
+        """Give back a job of a kind this worker does not know, by the `release` path the job carries.
+
+        The path is taken only as a relative path under the API prefix (/internal/worker/v1): the request carries the
+        token, so a full URL, a host-relative `//host/...`, `..`, a query or anything outside the prefix is refused
+        (ApiError) and nothing is sent."""
+        if not isinstance(path, str) or not SAFE_RELEASE_PATH.fullmatch(path) or "//" in path \
+                or any(part in (".", "..") for part in path.split("/")):
+            raise ApiError(f"refused release path {path!r}: only a relative path under {API}/ is followed")
+        base, target = urlsplit(self.base), urlsplit(urljoin(self.base + "/", path.lstrip("/")))
+        if (target.scheme, target.netloc) != (base.scheme, base.netloc) or not target.path.startswith(base.path + "/"):
+            raise ApiError(f"refused release path {path!r}: it leaves {API}/")  # a second net under the regex
         return self._json("POST", path, json={"attempt": attempt, "reason": reason})
 
     def submit_result(self, judgement_id: int, payload: dict, retry_for_s: float = 600.0,

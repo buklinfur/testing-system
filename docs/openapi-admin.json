@@ -2169,6 +2169,53 @@
         "summary": "Get File"
       }
     },
+    "/api/admin/problems/{slug}/versions/{number}/recheck": {
+      "post": {
+        "description": "Check the version again with a worker (D-054). 202: queued; 200: a check is already queued or running\n(nothing new). The status of the version changes only when the check ends.",
+        "operationId": "recheck_api_admin_problems__slug__versions__number__recheck_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recheck"
+      }
+    },
     "/api/admin/submissions": {
       "get": {
         "description": "Newest first. verdict and status: of the current judgement; group_id: its current members.",

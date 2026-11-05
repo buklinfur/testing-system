@@ -14,6 +14,7 @@ from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from .. import groups as g
+from .. import problem_checks as checks
 from .. import queue as q
 from ..auth import audit
 from ..models import (AccessMode, AfterDueStatement, AfterDueSubmit, Contest, ContestGroup, ContestProblem,
@@ -72,6 +73,20 @@ def latest_ready(db: Session, problem_id: int) -> Optional[ProblemVersion]:
                       .order_by(ProblemVersion.version.desc()).limit(1)).scalar_one_or_none()
 
 
+def newer_not_ready(db: Session, problem_id: int, than: int) -> list[ProblemVersion]:
+    """Versions newer than `than` that are not ready (pending_check / failed), newest first."""
+    return list(db.execute(select(ProblemVersion).where(ProblemVersion.problem_id == problem_id,
+                                                        ProblemVersion.version > than,
+                                                        ProblemVersion.status != VersionStatus.ready)
+                           .order_by(ProblemVersion.version.desc())).scalars())
+
+
+def _statuses(db: Session, problem_id: int) -> str:
+    rows = db.execute(select(ProblemVersion.version, ProblemVersion.status).where(
+        ProblemVersion.problem_id == problem_id).order_by(ProblemVersion.version)).all()
+    return ", ".join(f"v{n} {st.value}" for n, st in rows) or "no versions"
+
+
 def _version_no(db: Session, version_id: int) -> int:
     return db.get(ProblemVersion, version_id).version
 
@@ -123,11 +138,11 @@ def _resolve(db: Session, spec: ContestSpec) -> tuple:
                 problems.append(f"{entry.label}: {entry.slug} has no version {entry.version}")
                 continue
             if version.status != VersionStatus.ready:
-                problems.append(f"{entry.label}: {entry.slug} v{entry.version} is {version.status.value}; "
-                                "only ready versions can be pinned")
+                problems.append(f"{entry.label}: {checks.not_ready_reason(entry.slug, version)}")
                 continue
         elif latest_ready(db, problem.id) is None:
-            problems.append(f"{entry.label}: {entry.slug} has no ready version")
+            problems.append(f"{entry.label}: {entry.slug} has no ready version ({_statuses(db, problem.id)}; "
+                            f"reports: judgectl problem versions {entry.slug})")
             continue
         out[entry.slug] = (problem, version)
     if problems:
@@ -288,6 +303,11 @@ def apply(db: Session, actor: audit.Actor, spec: ContestSpec, now: datetime) -> 
                                      label=entry.label, position=position, points=entry.points)
                 db.add(row)
                 changes.append(f"{entry.label} ({entry.slug}): added, v{target.version}")
+                if version is None:
+                    for newer in newer_not_ready(db, problem.id, target.version):
+                        warnings.append(f"{entry.label}: {entry.slug} v{newer.version} is {newer.status.value} "
+                                        f"(report: {checks.where_report(entry.slug, newer.version)}); pinned "
+                                        f"v{target.version}, the newest ready version")
             db.flush()
         if old_labels.get(row.id, entry.label) != entry.label:
             changes.append(f"{entry.slug}: label {old_labels[row.id]} -> {entry.label}")
@@ -329,7 +349,7 @@ def pin(db: Session, actor: audit.Actor, contest: Contest, label: str, version_n
     if version is None:
         raise ContestError(f"{label}: the problem has no version {version_no}", "version_not_found")
     if version.status != VersionStatus.ready:
-        raise ContestError(f"{label}: v{version_no} is {version.status.value}; only ready versions can be pinned",
+        raise ContestError(f"{label}: {checks.not_ready_reason(db.get(Problem, row.problem_id).slug, version)}",
                            "version_not_ready")
     old = _version_no(db, row.problem_version_id)
     result = {"label": label, "from": old, "to": version_no, "rejudge": None}
@@ -512,7 +532,8 @@ def _problem_spec(cp: ContestProblem, slug: str, version: int) -> dict:
 def contest_detail(db: Session, c: Contest) -> dict:
     """The contest in the shape of contest.yaml (so it can be sent back to apply unchanged: `spec`), plus what the
     file does not hold: state, invite code, every contest problem row (hidden ones too) and the participant count."""
-    rows = db.execute(select(ContestProblem, Problem.slug, ProblemVersion.version, ProblemVersion.status)
+    rows = db.execute(select(ContestProblem, Problem.slug, ProblemVersion.version, ProblemVersion.status,
+                             ProblemVersion.check_report)
                       .join(Problem, Problem.id == ContestProblem.problem_id)
                       .join(ProblemVersion, ProblemVersion.id == ContestProblem.problem_version_id)
                       .where(ContestProblem.contest_id == c.id)
@@ -526,7 +547,7 @@ def contest_detail(db: Session, c: Contest) -> dict:
             "allow_upsolving": c.allow_upsolving, "submit_cooldown_sec": c.submit_cooldown_sec,
             "max_submissions_per_problem": c.max_submissions_per_problem, "tests_after_end": c.tests_after_end,
             "plagiarism_enabled": c.plagiarism_enabled,
-            "problems": [_problem_spec(cp, slug, version) for cp, slug, version, _status in rows if not cp.hidden]}
+            "problems": [_problem_spec(cp, slug, version) for cp, slug, version, _status, _r in rows if not cp.hidden]}
     if c.personal_duration is not None:
         spec["personal_duration"] = format_duration(c.personal_duration)
     if c.freeze_at is not None:
@@ -538,4 +559,7 @@ def contest_detail(db: Session, c: Contest) -> dict:
             "participants": db.execute(select(func.count()).select_from(Participation)
                                        .where(Participation.contest_id == c.id)).scalar_one(),
             "rows": [{"id": cp.id, "label": cp.label, "problem": slug, "version": version, "status": status,
-                      "points": cp.points, "hidden": cp.hidden} for cp, slug, version, status in rows]}
+                      "points": cp.points, "hidden": cp.hidden,
+                      "warning": checks.failed_pin_warning(slug, version, (report or {}).get("reason"))
+                      if status == VersionStatus.failed else None}
+                     for cp, slug, version, status, report in rows]}

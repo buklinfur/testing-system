@@ -131,8 +131,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = command(problem, "list", problems.problem_list, "problems with their latest version", json=True)
     p.add_argument("--all", action="store_true", help="include archived problems")
     command(problem, "versions", problems.problem_versions, "versions of a problem", json=True).add_argument("slug")
-    command(problem, "show", problems.problem_show, "one version: groups, programs (<slug> or <slug>@<version>)",
+    command(problem, "show", problems.problem_show,
+            "one version: groups, programs, check report (<slug> or <slug>@<version>)", json=True).add_argument("ref")
+    command(problem, "recheck", problems.problem_recheck,
+            "check a version again with a worker (<slug>@<version>; the status changes only when it ends)",
             json=True).add_argument("ref")
+    p = command(problem, "checks", problems.problem_checks, "the newest checks of problem versions", json=True)
+    p.add_argument("--last", type=int, default=20)
     command(problem, "archive", problems.problem_archive, "archive: no more imports or pins").add_argument("slug")
     command(problem, "unarchive", problems.problem_unarchive, "undo archive").add_argument("slug")
 

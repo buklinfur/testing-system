@@ -79,7 +79,8 @@ class JudgectlContestTests(PgCase):
 
     # ---------------------------------------------------------------- problem
     def test_problem_import_list_versions_show_archive(self):
-        self.assertIn("sum-of-two: imported as v1", self.ok("problem", "import", str(EXAMPLES / "sum-of-two")))
+        self.assertIn("sum-of-two: imported as v1 (pending_check); check #",
+                      self.ok("problem", "import", str(EXAMPLES / "sum-of-two")))
         self.assertIn("already exists as v1", self.ok("problem", "import", str(EXAMPLES / "sum-of-two")))
         copy = self.tmp / "sum-of-two"
         shutil.copytree(EXAMPLES / "sum-of-two", copy)
@@ -89,7 +90,12 @@ class JudgectlContestTests(PgCase):
         self.assertIn("would be imported as v2 (dry run: nothing was written)", out)
         self.assertEqual(self.blob_files(), blobs)
         data = json.loads(self.ok("problem", "import", "-", "--json", stdin=pack(copy)))  # a zip on stdin
-        self.assertEqual((data["result"], data["version"]), ("created", 2))
+        self.assertEqual((data["result"], data["version"], data["status"]), ("created", 2, "pending_check"))
+        self.assertIsInstance(data["check_id"], int)
+        self.assertRegex(self.ok("problem", "versions", "sum-of-two"),
+                         r"\n1  pending_check .*\n2  pending_check .* yes\n")
+        self.assertIn("check #", self.ok("problem", "show", "sum-of-two@2"))
+        self.assertEqual(self.finish_checks(), 2)
         self.assertRegex(self.ok("problem", "versions", "sum-of-two"), r"\n1  ready .*\n2  ready .* yes\n")
         listing = json.loads(self.ok("problem", "list", "--json"))
         mine = {r["slug"]: r for r in listing}
@@ -120,6 +126,7 @@ class JudgectlContestTests(PgCase):
     # ---------------------------------------------------------------- contest
     def test_contest_apply_dry_run_show_publish_pin_code(self):
         self.ok("problem", "import", str(EXAMPLES / "sum-of-two"))
+        self.finish_checks()  # a worker's check makes v1 ready
         path = self.file("olymp.yaml", CONTEST)
         out, err = self.run_cli("contest", "apply", path)[1:]
         self.assertIn("contest created (draft)", out)
@@ -150,6 +157,7 @@ class JudgectlContestTests(PgCase):
     # ---------------------------------------------------------------- submission, aliases
     def test_submission_show_and_every_kind_of_rejudge(self):
         self.ok("problem", "import", str(EXAMPLES / "sum-of-two"))
+        self.finish_checks()  # a worker's check makes v1 ready
         self.ok("contest", "apply", "-", stdin=CONTEST.replace("timing_mode: personal\npersonal_duration: 1h\n", "")
                 .encode())
         c = self.s.execute(select(Contest).where(Contest.slug == "olymp")).scalar_one()
@@ -196,6 +204,7 @@ class JudgectlContestTests(PgCase):
     # ---------------------------------------------------------------- status
     def test_status_reports_migrations_config_and_blobs(self):
         self.ok("problem", "import", str(EXAMPLES / "sum-of-two"))
+        self.finish_checks()  # a worker's check makes v1 ready
         code, out, _ = self.run_cli("status", "--json")
         data = json.loads(out)
         self.assertEqual((code, data["database"], data["migration"]), (1, "ok", None))  # create_all: no alembic
@@ -241,9 +250,88 @@ class JudgectlContestTests(PgCase):
         self.assertEqual(code, 1)
         self.assertIn("run the migrations", out)
 
+    # ---------------------------------------------------------------- checks of problem versions (4a.4)
+    FAILED_REPORT = {
+        "outcome": "failed", "reason": "solution_mismatch", "worker": "judge-w0", "toolchain_id": "t", "duration_ms": 4200,
+        "programs": [],
+        "solutions": [{"name": "solutions/ok.py", "language": "python", "expected": "OK", "got": "OK", "ok": True,
+                       "score": 100.0, "first_fail": None, "message": "", "error": None},
+                      {"name": "solutions/wa_int_overflow.cpp", "language": "cpp", "expected": "WA", "got": "OK",
+                       "ok": False, "score": 100.0, "first_fail": None, "message": "", "error": None}]}
+
+    def test_checks_recheck_report_refusals_and_warnings(self):
+        self.ok("problem", "import", str(EXAMPLES / "sum-of-two"))
+        self.finish_checks()  # v1 ready
+        copy = self.tmp / "sum-of-two"
+        shutil.copytree(EXAMPLES / "sum-of-two", copy)
+        (copy / "statement" / "ru.md").write_text("Версия 2.\n", encoding="utf-8")
+        self.ok("problem", "import", str(copy))  # v2 pending_check
+
+        # apply without a version: the newest ready one, with a warning about v2
+        code, out, err = self.run_cli("contest", "apply", "-", stdin=CONTEST.encode())
+        self.assertEqual(code, 0, err)
+        self.assertIn("A (sum-of-two): added, v1", out)
+        self.assertIn("warning: A: sum-of-two v2 is pending_check (report: judgectl problem show sum-of-two@2", err)
+        # pin a version still being checked: refused, with the status and where the report is
+        code, _, err = self.run_cli("contest", "pin", "olymp", "A", "2", "--no-rejudge")
+        self.assertEqual(code, 1)
+        self.assertIn("sum-of-two v2 is pending_check: its check is not finished yet", err)
+        self.assertIn("judgectl problem show sum-of-two@2", err)
+        shown = self.ok("problem", "show", "sum-of-two@2")
+        self.assertRegex(shown, r"check #\d+ \(import\): queued")
+
+        # v2 fails its check: the report for people, a refusal to pin it
+        self.finish_checks(report=self.FAILED_REPORT)
+        shown = self.ok("problem", "show", "sum-of-two@2")
+        self.assertIn("sum-of-two v2  failed  batch", shown)
+        self.assertIn("check report: failed (solution_mismatch), by judge-w0, 4.2 s", shown)
+        self.assertRegex(shown, r"FAIL\s+solutions/wa_int_overflow.cpp\s+WA\s+OK")
+        code, _, err = self.run_cli("contest", "pin", "olymp", "A", "2", "--no-rejudge")
+        self.assertIn("sum-of-two v2 is failed: its check did not pass", err)
+
+        # a recheck of v1 (pinned): queued once, the status stays until it ends
+        data = json.loads(self.ok("problem", "recheck", "sum-of-two@1", "--json"))
+        self.assertEqual((data["result"], data["status"]), ("created", "ready"))
+        again = self.ok("problem", "recheck", "sum-of-two@1")
+        self.assertIn(f"check #{data['check_id']} already queued", again)
+        self.assertIn("sum-of-two v1  ready", self.ok("problem", "show", "sum-of-two@1"))
+        self.assertEqual(self.finish_checks("failed", "checker_compile_failed"), 1)
+
+        # v1 now failed while pinned: contest show and status warn; submissions are still accepted (D-054)
+        shown = self.ok("contest", "show", "olymp")
+        self.assertIn("warning: A: sum-of-two v1 is pinned but failed its check (checker_compile_failed)", shown)
+        detail = json.loads(self.ok("contest", "show", "olymp", "--json"))
+        self.assertIn("pinned but failed", detail["rows"][0]["warning"])
+        status = self.run_cli("status")[1]  # exit 1 here: create_all leaves no alembic_version
+        self.assertRegex(status, r"checks\s+0 queued, 0 running; 0 versions pending_check")
+        self.assertIn("failed      sum-of-two@1", status)
+        self.assertIn("warning     contest olymp A: sum-of-two v1 is pinned but failed", status)
+        snap = json.loads(self.run_cli("status", "--json")[1])["checks"]
+        self.assertEqual([(r["contest"], r["label"], r["problem"], r["version"]) for r in snap["pinned_failed"]],
+                         [("olymp", "A", "sum-of-two", 1)])
+
+        # no ready version at all: apply names every status
+        changed = CONTEST.replace("slug: olymp", "slug: second")
+        code, _, err = self.run_cli("contest", "apply", "-", stdin=changed.encode())
+        self.assertEqual(code, 1)
+        self.assertIn("sum-of-two has no ready version (v1 failed, v2 failed", err)
+
+        listing = self.ok("problem", "checks", "--last", "5")
+        self.assertRegex(listing, r"sum-of-two@1\s+recheck\s+failed\s+checker_compile_failed")
+        self.assertRegex(listing, r"sum-of-two@2\s+import\s+failed\s+solution_mismatch")
+        rows = json.loads(self.ok("problem", "checks", "--json"))
+        self.assertEqual(len(rows), 3)
+        self.ok("problem", "archive", "sum-of-two")
+        code, _, err = self.run_cli("problem", "recheck", "sum-of-two@2")
+        self.assertEqual(code, 1)
+        self.assertIn("unarchive it first", err)
+        actions = [a for a in self.s.execute(select(AuditLog.action)).scalars() if a == "problem.recheck"]
+        self.assertEqual(actions, ["problem.recheck"], "audited once: the second request created nothing")
+
     # ---------------------------------------------------------------- dev_seed --contest
     def test_dev_seed_submits_through_the_access_rules(self):
         self.ok("problem", "import", str(EXAMPLES / "sum-of-two"))
+        self.finish_checks()  # a worker's check makes v1 ready
         self.ok("contest", "apply", "-", stdin=CONTEST.replace("2026-11-10 18:00", "2099-01-01 00:00")  # dev_seed runs now
                 .replace("2026-11-10 09:00", "2026-01-01 00:00").encode())
 

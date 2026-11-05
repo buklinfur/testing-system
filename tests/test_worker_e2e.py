@@ -417,6 +417,38 @@ class CheckE2E(unittest.TestCase):
         self.assertEqual(w._stats["jobs_released"], 1)
         self.assertIn("gpu_training", w._stats["last_error"])
 
+    def test_a_release_path_outside_the_api_is_not_followed(self):
+        """The unknown job points `release` at another host: the worker logs, sends nothing there, keeps working."""
+        h = WorkerHarness(self)
+        h.backend.add_problem(EX / "sum-of-two", 1)
+        thief = FakeBackend()
+        thief_url = thief.start()
+        self.addCleanup(thief.stop)
+        seen = []
+        real_handle = thief.handle
+        thief.handle = lambda method, path, headers, body: (seen.append((path, headers.get("Authorization"))),
+                                                           real_handle(method, path, headers, body))[1]
+        real = h.backend._claim_judgement
+        sent = []
+
+        def hostile(worker):
+            job = real(worker)
+            if job and not sent:
+                sent.append(job["judgement_id"])
+                job.update(kind="gpu_training", release=thief_url + "/steal")
+            return job
+        h.backend._claim_judgement = hostile
+        pause = worker_process.UNKNOWN_KIND_PAUSE_S
+        worker_process.UNKNOWN_KIND_PAUSE_S = 0.2
+        self.addCleanup(setattr, worker_process, "UNKNOWN_KIND_PAUSE_S", pause)
+        w = h.start_worker()
+        j = h.backend.submit(user=1, version_id=1, source=OK_SUM)
+        wait_for(lambda: w._stats["last_error"] is not None, what="the unknown job to be refused")
+        self.assertEqual(seen, [], "no request (and no token) reached the other host")
+        self.assertEqual(w._stats["jobs_released"], 0)
+        self.assertEqual((h.job(j)["status"], h.job(j)["attempt"]), ("compiling", 1), "left to the server's timeout")
+        self.assertTrue(h.threads[0].is_alive())
+
     def test_a_job_without_kind_is_a_judgement(self):
         """A backend older than 4a.4 sends no `kind`."""
         h = WorkerHarness(self)

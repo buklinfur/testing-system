@@ -24,8 +24,8 @@ from typing import Optional
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from .models import (CheckOutcome, CheckReason, CheckStatus, Problem, ProblemVersion, Program, ProgramRole,
-                     QueueEvent, VersionCheck, VersionStatus, Worker)
+from .models import (CheckOutcome, CheckReason, CheckStatus, Contest, ContestProblem, ContestState, Problem,
+                     ProblemVersion, Program, ProgramRole, QueueEvent, VersionCheck, VersionStatus, Worker)
 from .settings import QueueSettings
 
 CAPABILITY = "problem_check"
@@ -99,6 +99,18 @@ def request_recheck(session: Session, version: ProblemVersion, requested_by: Opt
     if active is not None:
         return RecheckOutcome("already_queued" if active.status == CheckStatus.queued else "already_running", active)
     return RecheckOutcome("created", enqueue_check(session, version, CheckReason.recheck, requested_by))
+
+
+def recheck(session: Session, actor, version: ProblemVersion, now: datetime) -> RecheckOutcome:
+    """request_recheck for judgectl and the admin API, written to audit_log (problem.recheck) when a check is queued."""
+    from .auth import audit  # here: the queue imports this module, auth is not needed there
+
+    out = request_recheck(session, version, actor.user_id)
+    if out.kind == "created":
+        audit.record(session, actor, "problem.recheck", now, object_type="problem_version", object_id=version.id,
+                     details={"slug": session.get(Problem, version.problem_id).slug, "version": version.version,
+                              "check_id": out.check.id, "status": version.status.value})
+    return out
 
 
 def active_check(session: Session, version_id: int) -> Optional[VersionCheck]:
@@ -210,6 +222,12 @@ def _close(session: Session, check: VersionCheck, outcome: CheckOutcome, report:
     _event(session, "check_done", check, check.worker_id, outcome=outcome.value, reason=report.get("reason"))
 
 
+def nothing_to_check_report() -> dict:
+    """The report of a version that has no custom checker, no interactor and no reference solutions (D-051)."""
+    return {"outcome": CheckOutcome.ready.value, "reason": "nothing_to_check", "by": "server", "programs": [],
+            "solutions": []}
+
+
 def server_report(reason: str, error: str) -> dict:
     """The report of a check the server ended (the worker sent none): gave up or timed out."""
     return {"outcome": CheckOutcome.failed.value, "reason": reason, "error": error, "by": "server",
@@ -316,3 +334,80 @@ def overview(session: Session) -> dict:
     counts = dict(session.execute(select(VersionCheck.status, func.count()).where(
         VersionCheck.status != CheckStatus.done).group_by(VersionCheck.status)).all())
     return {"queued": counts.get(CheckStatus.queued, 0), "running": counts.get(CheckStatus.running, 0)}
+
+
+# ---------------------------------------------------------------------------------- what admins are told
+def where_report(slug: str, number: int) -> str:
+    """Where the check report of a version is (refusals and warnings name it)."""
+    return f"judgectl problem show {slug}@{number}, GET /api/admin/problems/{slug}/versions/{number}"
+
+
+def not_ready_reason(slug: str, version: ProblemVersion) -> str:
+    """Why a version cannot be pinned, and where to look (D-055)."""
+    state = {VersionStatus.pending_check: "is pending_check: its check is not finished yet",
+             VersionStatus.failed: "is failed: its check did not pass"}.get(version.status, f"is {version.status.value}")
+    return f"{slug} v{version.version} {state}; only ready versions can be pinned (report: " \
+           f"{where_report(slug, version.version)})"
+
+
+def failed_pin_warning(slug: str, number: int, reason: Optional[str]) -> str:
+    return (f"{slug} v{number} is pinned but failed its check ({reason or 'see the report'}): submissions are still "
+            f"judged; fix the problem and pin a ready version (report: {where_report(slug, number)})")
+
+
+def pinned_failed(session: Session, contest_id: Optional[int] = None) -> list:
+    """Visible contest problems pinned to a version whose (re)check failed (D-054). Archived contests are left out
+    unless one contest is asked for."""
+    query = (select(Contest.slug, ContestProblem.label, Problem.slug, ProblemVersion.version,
+                    ProblemVersion.check_report)
+             .join(ContestProblem, ContestProblem.contest_id == Contest.id)
+             .join(ProblemVersion, ProblemVersion.id == ContestProblem.problem_version_id)
+             .join(Problem, Problem.id == ProblemVersion.problem_id)
+             .where(ProblemVersion.status == VersionStatus.failed, ContestProblem.hidden.is_(False))
+             .order_by(Contest.slug, ContestProblem.position, ContestProblem.id))
+    query = query.where(Contest.id == contest_id) if contest_id is not None \
+        else query.where(Contest.state != ContestState.archived)
+    out = []
+    for contest, label, slug, number, report in session.execute(query).all():
+        reason = (report or {}).get("reason")
+        out.append({"contest": contest, "label": label, "problem": slug, "version": number, "reason": reason,
+                    "warning": failed_pin_warning(slug, number, reason)})
+    return out
+
+
+def check_row(check: VersionCheck, slug: Optional[str] = None, number: Optional[int] = None) -> dict:
+    """One check for lists and the version card (the full report stays in check_report / `report`)."""
+    report = check.report or {}
+    row = {"id": check.id, "reason": check.reason.value, "status": check.status.value,
+           "outcome": check.outcome.value if check.outcome else None, "report_reason": report.get("reason"),
+           "attempt": check.attempt, "failures": check.failures, "worker_id": check.worker_id,
+           "progress": None if check.progress_total is None else f"{check.progress_done or 0}/{check.progress_total}",
+           "requested_by": check.requested_by, "error": check.error, "created_at": check.created_at,
+           "started_at": check.started_at, "finished_at": check.finished_at}
+    if slug is not None:
+        row = {"problem": slug, "version": number, **row}
+    return row
+
+
+def recent(session: Session, limit: int = 20) -> list:
+    """The newest checks of every version, newest first: rows of check_row with the problem and the version."""
+    rows = session.execute(select(VersionCheck, Problem.slug, ProblemVersion.version)
+                           .join(ProblemVersion, ProblemVersion.id == VersionCheck.problem_version_id)
+                           .join(Problem, Problem.id == ProblemVersion.problem_id)
+                           .order_by(VersionCheck.id.desc()).limit(limit)).all()
+    return [check_row(c, slug, number) for c, slug, number in rows]
+
+
+def system_section(session: Session, recent_failed: int = 5) -> dict:
+    """The "checks" section of /system and judgectl status."""
+    failed = session.execute(select(VersionCheck, Problem.slug, ProblemVersion.version)
+                             .join(ProblemVersion, ProblemVersion.id == VersionCheck.problem_version_id)
+                             .join(Problem, Problem.id == ProblemVersion.problem_id)
+                             .where(VersionCheck.outcome == CheckOutcome.failed)
+                             .order_by(VersionCheck.finished_at.desc(), VersionCheck.id.desc())
+                             .limit(recent_failed)).all()
+    return {**overview(session),
+            "pending_versions": session.execute(select(func.count()).select_from(ProblemVersion).where(
+                ProblemVersion.status == VersionStatus.pending_check)).scalar_one(),
+            "recent_failed": [check_row(c, slug, number) for c, slug, number in failed],
+            "pinned_failed": pinned_failed(session)}

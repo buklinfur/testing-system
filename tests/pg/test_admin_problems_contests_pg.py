@@ -113,7 +113,13 @@ class AdminProblemsContestsTests(ApiCase):
 
     # ---------------------------------------------------------------- catalog
     def test_catalog(self):
-        self.ok(self.upload(zipped(EXAMPLES / "sum-of-two")), 201)
+        up = self.ok(self.upload(zipped(EXAMPLES / "sum-of-two")), 201)
+        self.assertEqual(up["status"], "pending_check", "solutions: a worker checks the version first (D-051)")
+        self.assertIsInstance(up["check_id"], int)
+        problem = self.ok(self.call("get", "/problems/sum-of-two"))
+        self.assertEqual([(v["version"], v["status"], v["check_report"]) for v in problem["versions"]],
+                         [(1, "pending_check", None)])
+        self.finish_checks()
         self.ok(self.upload(zipped(EXAMPLES / "pair-with-sum")), 201)
         self.ok(self.call("post", "/problems/pair-with-sum/archive"))
         slugs = lambda **p: [i["slug"] for i in self.ok(self.call("get", "/problems", params=p))["items"]]  # noqa: E731
@@ -122,7 +128,8 @@ class AdminProblemsContestsTests(ApiCase):
         self.assertIn("pair-with-sum", slugs(archived="all"))
         self.assertEqual(slugs(q="sum-of"), ["sum-of-two"])
         problem = self.ok(self.call("get", "/problems/sum-of-two"))
-        self.assertEqual([(v["version"], v["status"], v["check_report"]) for v in problem["versions"]], [(1, "ready", None)])
+        self.assertEqual([(v["version"], v["status"], v["check_report"]["outcome"]) for v in problem["versions"]],
+                         [(1, "ready", "ready")])
         self.assertTrue(problem["versions"][0]["imported_at"].endswith("Z"))
         version = self.ok(self.call("get", "/problems/sum-of-two/versions/1"))
         self.assertIn("ru", version["statements"])
@@ -181,10 +188,48 @@ class AdminProblemsContestsTests(ApiCase):
     def put(self, spec, slug="olymp", dry_run=False):
         return self.call("put", f"/contests/{slug}" + ("?dry_run=true" if dry_run else ""), json=spec)
 
+    def test_recheck_history_and_failed_pin_warnings(self):
+        self.ok(self.upload(zipped(EXAMPLES / "sum-of-two")), 201)
+        quiz = self.ok(self.upload(zipped(EXAMPLES / "quiz-python-basics")), 201)
+        self.assertEqual((quiz["status"], quiz["check_id"]), ("ready", None), "nothing to check: ready at once")
+        self.finish_checks()
+        self.ok(self.put(self.contest(problems=[{"label": "A", "problem": "sum-of-two"}])), 201)
+
+        r = self.call("post", "/problems/sum-of-two/versions/1/recheck")
+        body = self.ok(r, 202)
+        self.assertEqual((body["result"], body["status"], body["check"]["status"], body["check"]["reason"]),
+                         ("created", "ready", "queued", "recheck"))
+        again = self.ok(self.call("post", "/problems/sum-of-two/versions/1/recheck"), 200)
+        self.assertEqual((again["result"], again["check"]["id"]), ("already_queued", body["check"]["id"]))
+        self.assertEqual(self.call("post", "/problems/sum-of-two/versions/9/recheck").json()["detail"],
+                         "version_not_found")
+        self.assertEqual(self.call("post", "/problems/nope/versions/1/recheck").status_code, 404)
+        self.assertEqual(self.finish_checks("failed", "solution_mismatch"), 1)
+
+        card = self.ok(self.call("get", "/problems/sum-of-two/versions/1"))
+        self.assertEqual(card["status"], "failed")
+        self.assertEqual([(c["reason"], c["outcome"], c["report_reason"]) for c in card["checks"]],
+                         [("recheck", "failed", "solution_mismatch"), ("import", "ready", None)])
+        self.assertTrue(all(c["finished_at"].endswith("Z") for c in card["checks"]))
+        self.assertEqual(card["check_report"]["reason"], "solution_mismatch")
+
+        detail = self.ok(self.call("get", "/contests/olymp"))
+        self.assertEqual(detail["rows"][0]["status"], "failed")
+        self.assertIn("sum-of-two v1 is pinned but failed its check (solution_mismatch)", detail["rows"][0]["warning"])
+        self.assertIn("GET /api/admin/problems/sum-of-two/versions/1", detail["rows"][0]["warning"])
+        system = self.ok(self.call("get", "/system"))["checks"]
+        self.assertEqual([(x["contest"], x["label"], x["version"]) for x in system["pinned_failed"]], [("olymp", "A", 1)])
+        self.assertEqual([(x["problem"], x["version"]) for x in system["recent_failed"]], [("sum-of-two", 1)])
+
+        self.ok(self.call("post", "/problems/sum-of-two/archive"))
+        r = self.call("post", "/problems/sum-of-two/versions/1/recheck")
+        self.assertEqual((r.status_code, r.json()["detail"]), (409, "problem_archived"))
+
     def test_every_time_in_a_contest_answer_is_utc_with_z(self):
         import re
 
         self.ok(self.upload(zipped(EXAMPLES / "sum-of-two")), 201)
+        self.finish_checks()
         spec = self.contest(problems=[{"label": "A", "problem": "sum-of-two", "available_from": "2026-11-10 09:30",
                                        "due_at": "2026-11-10 12:00:00"}], freeze_at="2026-11-10 17:00",
                             leaderboard="visible")
@@ -211,6 +256,7 @@ class AdminProblemsContestsTests(ApiCase):
     def test_contests_through_json(self):
         for name in ("sum-of-two", "pair-with-sum"):
             self.ok(self.upload(zipped(EXAMPLES / name)), 201)
+        self.finish_checks()
         first = self.ok(self.put(self.contest()), 201)
         self.assertEqual(first["changes"][0], "contest created (draft)")
         self.assertEqual(self.ok(self.put(self.contest()))["changes"], [])  # idempotent
@@ -246,6 +292,16 @@ class AdminProblemsContestsTests(ApiCase):
                               source_sha256="c" * 64))
         self.s.commit()
         pinned = [{"label": "A", "problem": "sum-of-two", "version": 2}, {"label": "B", "problem": "pair-with-sum"}]
+        r = self.put(self.contest(problems=pinned))  # v2 is still pending_check (D-055)
+        self.assertEqual((r.status_code, r.json()["detail"]), (409, "contest_conflict"))
+        self.assertEqual(r.json()["problems"], [
+            "A: sum-of-two v2 is pending_check: its check is not finished yet; only ready versions can be pinned "
+            "(report: judgectl problem show sum-of-two@2, GET /api/admin/problems/sum-of-two/versions/2)"])
+        r = self.call("post", "/contests/olymp/pin", json={"label": "A", "version": 2, "rejudge": False})
+        self.assertEqual((r.status_code, r.json()["detail"]), (409, "version_not_ready"))
+        self.assertIn("v2 is pending_check", r.json()["problems"][0])
+        self.assertIn("GET /api/admin/problems/sum-of-two/versions/2", r.json()["problems"][0])
+        self.finish_checks()
         r = self.put(self.contest(problems=pinned))
         self.assertEqual((r.status_code, r.json()["detail"]), (409, "contest_conflict"))
         self.assertIn("judgectl contest pin olymp A 2", r.json()["problems"][0])

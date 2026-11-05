@@ -204,6 +204,9 @@ def main(argv=None) -> int:
         if version.type in (ProblemType.choice, ProblemType.text_answer):
             print(f"dev_seed: {version.type.value} problems take answers, not code: not supported", file=sys.stderr)
             return 1
+        if version.status.value != "ready":  # dev only: pinned anyway, a worker checks it in the meantime
+            print(f"dev_seed: v{version.version} is {version.status.value}: pinned in the dev contest without "
+                  "waiting for its check (judgectl problem show)", file=sys.stderr)
         cp = ensure_contest_problem(session, version, admin)
         student = _student(session, args.user)
         source_sha = store_blob(session, blobs, source)
@@ -214,7 +217,8 @@ def main(argv=None) -> int:
             session.flush()
             j = q.enqueue(session, sub)
             out.append({"submission_id": sub.id, "judgement_id": j.id, "problem_version_id": version.id,
-                        "contest_problem_id": cp.id, "import": result.kind, "counted": True})
+                        "contest_problem_id": cp.id, "import": result.kind, "counted": True,
+                        "version_status": version.status.value})
     print(json.dumps(out))
     return 0
 

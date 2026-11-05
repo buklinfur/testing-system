@@ -394,6 +394,41 @@ class StaleCancelTests(unittest.TestCase):
         self.assertFalse(w.lease_lost.is_set())
 
 
+class ReleasePathTests(unittest.TestCase):
+    """The `release` path of a job is followed only under /internal/worker/v1/: the request carries the token."""
+
+    def client(self):
+        from worker.client import ApiClient
+        sent = []
+
+        class Recorder:
+            headers: dict = {}
+
+            def request(self, method, url, **kw):
+                sent.append(url)
+                from types import SimpleNamespace
+                return SimpleNamespace(status_code=200, json=lambda: {"released": True})
+        api = ApiClient("http://127.0.0.1:8001", "jw_secret")
+        api.session = Recorder()
+        return api, sent
+
+    def test_a_relative_path_under_the_prefix_is_followed(self):
+        api, sent = self.client()
+        self.assertEqual(api.release_path("/problem-checks/5/release", 1, "x"), {"released": True})
+        self.assertEqual(sent, ["http://127.0.0.1:8001/internal/worker/v1/problem-checks/5/release"])
+
+    def test_anything_else_is_refused_and_nothing_is_sent(self):
+        from worker.client import ApiError
+        api, sent = self.client()
+        for bad in ("http://evil.example/steal", "https://127.0.0.1:8001/internal/worker/v1/judgements/1/release",
+                    "//evil.example/steal", "/judgements/../../../steal", "/judgements/%2e%2e/steal",
+                    "judgements/1/release", "/judgements/1/release?to=http://evil", "/judgements/1/release#x",
+                    "/a//b", "/judgements/./1", "/@evil.example/x", "\\evil\\x", "", None, 5):
+            with self.subTest(path=bad), self.assertRaises(ApiError):
+                api.release_path(bad, 1, "x")
+        self.assertEqual(sent, [], "the token went nowhere")
+
+
 class RunnerHookTests(unittest.TestCase):
     def test_cancel_and_progress(self):
         problem = Problem.load(EXAMPLES / "sum-of-two")

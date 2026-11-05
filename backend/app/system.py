@@ -1,5 +1,5 @@
 """One look at the installation for judgectl status and GET /api/admin/system: migrations, load, queue metrics,
-workers, configuration. The blob store is looked at only by judgectl (it reads the disk; MODULE_4A 5.7).
+workers, checks of problem versions, configuration. The blob store is looked at only by judgectl (it reads the disk; MODULE_4A 5.7).
 """
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Optional
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from . import problem_checks as checks
 from . import queue as q
 from .models import Worker
 
@@ -48,6 +49,7 @@ def snapshot(db: Session, settings) -> dict:
         "metrics": q.collect_metrics(db, settings.queue),
         "workers": q.worker_table(db, settings.queue),
         "workers_known": db.execute(select(func.count()).select_from(Worker)).scalar_one(),
+        "checks": checks.system_section(db),  # checks of problem versions; pinned_failed: contests to fix
         "config_problems": config_problems(settings),
         "timezone": settings.timezone,
     }

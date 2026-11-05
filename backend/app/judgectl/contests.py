@@ -75,6 +75,9 @@ def contest_show(ctx: Context, args) -> int:
               + f"; participants: {data['participants']}")
     show(ctx, data["rows"], [("label", "LABEL"), ("problem", "PROBLEM"), ("version", "V"), ("status", "STATUS"),
                              ("points", "POINTS"), ("hidden", "HIDDEN")])
+    for row in data["rows"]:
+        if row["warning"]:
+            ctx.print(f"warning: {row['label']}: {row['warning']}")
     return 0
 
 

@@ -7,12 +7,13 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from .. import problem_checks as checks
 from ..auth import audit
 from ..blobstore import BlobStore
 from ..models import Problem, ProblemVersion
 from ..problems import catalog
 from ..problems.importer import import_package
-from .core import CliError, Context, emit_json, show, spool
+from .core import CliError, Context, emit_json, show, spool, table
 
 
 def _problem(db: Session, slug: str) -> Problem:
@@ -52,10 +53,20 @@ def problem_import(ctx: Context, args) -> int:
     if ctx.json:
         emit_json(ctx, {"slug": result.slug, "result": result.kind, "version": result.number,
                         "content_sha256": result.content_sha256, "warnings": result.warnings,
-                        "dry_run": args.dry_run})
+                        "dry_run": args.dry_run, "status": result.status,
+                        "check_id": result.check.id if result.check is not None else None})
     else:
         ctx.print(result.describe() + (" (dry run: nothing was written)" if args.dry_run else ""))
     return 0
+
+
+def _ref(db: Session, ref: str) -> tuple:
+    """<slug> or <slug>@<version> (default: the latest version) -> (problem, version)."""
+    slug, _, number = ref.partition("@")
+    if number and not number.isdigit():
+        raise CliError(f"not a version: {ref!r} (write {slug}@3)")
+    problem = _problem(db, slug)
+    return problem, _version(db, problem, int(number) if number else None)
 
 
 def problem_list(ctx: Context, args) -> int:
@@ -82,12 +93,9 @@ def problem_versions(ctx: Context, args) -> int:
 
 def problem_show(ctx: Context, args) -> int:
     """<slug> or <slug>@<version> (default: the latest version)."""
-    slug, _, number = args.ref.partition("@")
-    if number and not number.isdigit():
-        raise CliError(f"not a version: {args.ref!r} (write {slug}@3)")
     with ctx.session() as db:
-        problem = _problem(db, slug)
-        data = catalog.version_detail(db, problem, _version(db, problem, int(number) if number else None))
+        problem, version = _ref(db, args.ref)
+        data = catalog.version_detail(db, problem, version)
         data["groups"] = [{**g, "points": str(g["points"]), "tests": len(g["tests"])} for g in data["groups"]]
         data["files"] = len(data["files"])
     if ctx.json:
@@ -103,6 +111,79 @@ def problem_show(ctx: Context, args) -> int:
                                ("visibility", "VISIBILITY"), ("tests", "TESTS")])
     ctx.print("programs:")
     show(ctx, data["programs"], [("role", "ROLE"), ("name", "NAME"), ("language", "LANG"), ("expect", "EXPECT")])
+    print_check(ctx, data)
+    return 0
+
+
+def print_check(ctx: Context, data: dict) -> None:
+    """The check report of a version for people: what failed and why (docs/WORKER_PROTOCOL.md, check report)."""
+    active = next((c for c in data["checks"] if c["status"] != "done"), None)
+    if active is not None:
+        ctx.print(f"check #{active['id']} ({active['reason']}): {active['status']}"
+                  + (f", {active['progress']} solutions" if active["progress"] else "")
+                  + (f", {active['failures']} failed attempts" if active["failures"] else ""))
+    report = data["check_report"]
+    if not report:
+        if active is None:
+            ctx.print("check: none (imported before checks existed)")
+        return
+    reason = report.get("reason")
+    ctx.print(f"check report: {report.get('outcome')}" + (f" ({reason})" if reason else "")
+              + (f", by {report['worker']}" if report.get("worker") else "")
+              + (f", {report['duration_ms'] / 1000:.1f} s" if report.get("duration_ms") is not None else "")
+              + ("  [ended by the server]" if report.get("by") == "server" and reason != "nothing_to_check" else ""))
+    if report.get("error"):
+        ctx.print(f"  error: {report['error']}")
+    for prog in report.get("programs") or []:
+        ctx.print(f"  {prog.get('role')} {prog.get('name')}: {'compiled' if prog.get('ok') else 'DOES NOT COMPILE'}")
+        if not prog.get("ok") and prog.get("log"):
+            for line in str(prog["log"]).splitlines()[:30]:
+                ctx.print(f"      {line}")
+    rows = []
+    for sol in report.get("solutions") or []:
+        first = sol.get("first_fail") or {}
+        rows.append({"mark": "ok" if sol.get("ok") else "FAIL", "name": sol.get("name"), "expected": sol.get("expected"),
+                     "got": sol.get("got"), "score": sol.get("score"),
+                     "first_fail": f"{first['group']}/{first['test']} {first['verdict']}" if first else None,
+                     "note": (sol.get("error") or sol.get("message") or "").splitlines()[0][:80]
+                     if (sol.get("error") or sol.get("message")) else None})
+    if rows:
+        table(ctx, rows, [("mark", ""), ("name", "SOLUTION"), ("expected", "EXPECTED"), ("got", "GOT"),
+                          ("score", "SCORE"), ("first_fail", "FIRST FAIL"), ("note", "NOTE")])
+    if len(data["checks"]) > 1 or (data["checks"] and active is None):
+        ctx.print("checks: " + "; ".join(f"#{c['id']} {c['reason']} {c['outcome'] or c['status']}"
+                                         + (f" ({c['report_reason']})" if c["report_reason"] else "")
+                                         for c in data["checks"][:5]))
+
+
+def problem_recheck(ctx: Context, args) -> int:
+    """Check a version again with a worker; its status stays until the check ends (D-054)."""
+    with ctx.session() as db:
+        problem, version = _ref(db, args.ref)
+        try:
+            out = checks.recheck(db, ctx.actor, version, ctx.clock())
+        except checks.CheckError as exc:
+            raise CliError(str(exc)) from exc
+        result = {"slug": problem.slug, "version": version.version, "result": out.kind, "check_id": out.check.id,
+                  "status": version.status.value}
+    if ctx.json:
+        emit_json(ctx, result)
+        return 0
+    what = {"created": "queued", "already_queued": "already queued", "already_running": "already running"}[out.kind]
+    ctx.print(f"{problem.slug}@{version.version}: check #{result['check_id']} {what}; the version stays "
+              f"{result['status']} until it ends (judgectl problem show {problem.slug}@{version.version})")
+    return 0
+
+
+def problem_checks(ctx: Context, args) -> int:
+    """The newest checks of every version."""
+    with ctx.session() as db:
+        rows = checks.recent(db, args.last)
+    if not ctx.json:
+        rows = [{**r, "ref": f"{r['problem']}@{r['version']}", "result": r["outcome"] or r["status"]} for r in rows]
+    show(ctx, rows, [("id", "ID"), ("ref", "VERSION"), ("reason", "WHY"), ("result", "RESULT"),
+                     ("report_reason", "REASON"), ("progress", "SOLUTIONS"), ("failures", "FAILS"),
+                     ("created_at", "QUEUED"), ("finished_at", "FINISHED")])
     return 0
 
 

@@ -69,7 +69,22 @@ class ImportTests(PgCase):
             with self.subTest(example=root.name):
                 r = self.run_import(directory=root)
                 v = r.version
-                self.assertEqual((r.kind, v.version, v.status), ("created", 1, VersionStatus.ready))
+                code = (EXAMPLES / root.name / "problem.yaml").read_text(encoding="utf-8")
+                checked = "solutions:" in code or "interactor:" in code or "type: custom" in code
+                if checked:  # D-051: a checker, an interactor or solutions -> a worker checks it first
+                    self.assertEqual((r.kind, v.version, v.status), ("created", 1, VersionStatus.pending_check))
+                    self.assertIsNotNone(r.check)
+                    self.assertEqual((r.check.status.value, r.check.reason.value, r.check.problem_version_id),
+                                     ("queued", "import", v.id))
+                    self.assertIsNone(v.check_report)
+                    self.assertIn("(pending_check); check #", r.describe())
+                    details = self.s.execute(select(AuditLog.details).where(
+                        AuditLog.action == "problem.import", AuditLog.object_id == str(v.id))).scalar_one()
+                    self.assertEqual((details["status"], details["check_id"]), ("pending_check", r.check.id))
+                else:  # quizzes: nothing to run
+                    self.assertEqual((r.kind, v.version, v.status), ("created", 1, VersionStatus.ready))
+                    self.assertIsNone(r.check)
+                    self.assertEqual(v.check_report["reason"], "nothing_to_check")
                 self.assertEqual(r.problem.slug, root.name)
                 self.assertIsNone(r.problem.owner_id)  # imported from the console
                 self.assertIsNone(v.imported_by)

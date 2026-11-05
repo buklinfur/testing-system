@@ -10,6 +10,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from .. import problem_checks as checks
 from ..models import ContestProblem, Problem, ProblemVersion, Program, TestGroup
 
 
@@ -96,4 +97,6 @@ def version_detail(db: Session, problem: Problem, version: ProblemVersion) -> di
                    for g in version.groups],
         "programs": [{"role": p.role, "name": p.name, "language": p.language_key, "expect": p.expected_verdict}
                      for p in programs],
+        # the worker checks of this version, newest first (the report of the last finished one is check_report)
+        "checks": [checks.check_row(c) for c in checks.history(session=db, version_id=version.id)],
     }
