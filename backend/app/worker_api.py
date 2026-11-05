@@ -12,13 +12,14 @@ from typing import Callable, Iterator, Literal, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from . import problem_checks as checks
 from . import queue as q
 from .blobstore import BlobStore, valid_sha256
 from .manifest_db import build_manifest, manifest_digest_for_claim
-from .models import Judgement, Worker, WorkerToken
+from .models import Judgement, Program, ProgramRole, VersionCheck, Worker, WorkerToken
 
 router = APIRouter(prefix="/internal/worker/v1")
 
@@ -79,6 +80,7 @@ class RegisterBody(BaseModel):
 class HeartbeatBody(BaseModel):
     state: str = "idle"
     judgement_id: Optional[int] = None
+    check_id: Optional[int] = None  # a check of a problem version (then tests_done/total count solutions)
     attempt: Optional[int] = None
     phase: Optional[str] = None
     tests_done: Optional[int] = None
@@ -119,6 +121,46 @@ class ResultBody(BaseModel):
     timing: Optional[dict] = None
 
 
+class CheckResultBody(BaseModel):
+    """The end of a check: an outcome with its report, or (the worker itself failed, not the problem) an error."""
+    model_config = ConfigDict(extra="ignore")
+    attempt: int
+    outcome: Optional[str] = None
+    report: Optional[dict] = None
+    error: Optional[str] = None
+
+
+# ----------------------------------------------------------------------------- jobs
+def judgement_job(session: Session, j: Judgement, settings) -> dict:
+    sub = j.submission
+    return {
+        "kind": "judgement", "release": f"/judgements/{j.id}/release",
+        "judgement_id": j.id, "attempt": j.attempt, "reason": j.reason.value, "submission_id": sub.id,
+        "problem_version_id": j.problem_version_id,
+        "manifest_sha256": manifest_digest_for_claim(session, j.problem_version_id),
+        "language": sub.language_key, "source_sha256": sub.source_sha256, "is_archive": sub.is_archive,
+        "entry_file": sub.entry_file, "answers": sub.answers, "deadline_s": settings.queue.max_judging_s,
+    }
+
+
+def check_job(session: Session, check: VersionCheck, settings) -> dict:
+    """A check of a problem version (docs/WORKER_PROTOCOL.md). The manifest has no solutions (its digest is the cache
+    key of every worker), so the reference solutions travel in the job and are downloaded as blobs."""
+    version = check.version
+    solutions = session.execute(select(Program).where(
+        Program.version_id == version.id, Program.role == ProgramRole.solution).order_by(Program.id)).scalars()
+    return {
+        "kind": "problem_check", "release": f"/problem-checks/{check.id}/release",
+        "check_id": check.id, "attempt": check.attempt, "reason": check.reason.value,
+        "problem": f"{version.problem.slug}@{version.version}",
+        "problem_version_id": version.id,
+        "manifest_sha256": manifest_digest_for_claim(session, version.id),
+        "solutions": [{"name": p.name, "language": p.language_key, "source_sha256": p.source_sha256,
+                       "expect": p.expected_verdict.value if p.expected_verdict else None} for p in solutions],
+        "deadline_s": settings.queue.check_timeout_s,
+    }
+
+
 # ----------------------------------------------------------------------------- endpoints
 @router.post("/register")
 def register(body: RegisterBody, token: WorkerToken = Depends(token_auth), session: Session = Depends(get_session),
@@ -142,19 +184,14 @@ def deregister(worker: Worker = Depends(current_worker), session: Session = Depe
 @router.post("/claim")
 def claim(worker: Worker = Depends(current_worker), session: Session = Depends(get_session),
           settings=Depends(get_settings)):
-    j = q.claim(session, worker, settings.queue)
-    if j is None:
+    """The next job: a judgement (always first) or, when this worker has no submission to take, a check of a
+    problem version (only with the capability problem_check, within the quota; docs/QUEUE.md)."""
+    got = q.claim_next(session, worker, settings.queue)
+    if got is None:
         worker.state = "idle"
         session.commit()
         return {"job": None}
-    sub = j.submission
-    job = {
-        "judgement_id": j.id, "attempt": j.attempt, "reason": j.reason.value, "submission_id": sub.id,
-        "problem_version_id": j.problem_version_id,
-        "manifest_sha256": manifest_digest_for_claim(session, j.problem_version_id),
-        "language": sub.language_key, "source_sha256": sub.source_sha256, "is_archive": sub.is_archive,
-        "entry_file": sub.entry_file, "answers": sub.answers, "deadline_s": settings.queue.max_judging_s,
-    }
+    job = judgement_job(session, got, settings) if isinstance(got, Judgement) else check_job(session, got, settings)
     session.commit()
     return {"job": job}
 
@@ -162,7 +199,8 @@ def claim(worker: Worker = Depends(current_worker), session: Session = Depends(g
 @router.post("/heartbeat")
 def heartbeat(body: HeartbeatBody, worker: Worker = Depends(current_worker), session: Session = Depends(get_session)):
     reply = q.heartbeat(session, worker, state=body.state, judgement_id=body.judgement_id, attempt=body.attempt,
-                        phase=body.phase, tests_done=body.tests_done, tests_total=body.tests_total, stats=body.stats)
+                        phase=body.phase, tests_done=body.tests_done, tests_total=body.tests_total, stats=body.stats,
+                        check_id=body.check_id)
     session.commit()
     return reply
 
@@ -207,6 +245,29 @@ def result(judgement_id: int, body: ResultBody, worker: Worker = Depends(current
         session.rollback()
         raise HTTPException(409, {"code": "lease_lost", "message": str(exc)})
     except q.BadResult as exc:
+        session.rollback()
+        raise HTTPException(422, str(exc))
+    session.commit()
+    return {"status": outcome}
+
+
+@router.post("/problem-checks/{check_id}/release")
+def release_check(check_id: int, body: ReleaseBody, worker: Worker = Depends(current_worker),
+                  session: Session = Depends(get_session)):
+    done = checks.release_by_worker(session, worker, check_id, body.attempt, body.reason)
+    session.commit()
+    return {"released": done}
+
+
+@router.post("/problem-checks/{check_id}/result")
+def check_result(check_id: int, body: CheckResultBody, worker: Worker = Depends(current_worker),
+                 session: Session = Depends(get_session), settings=Depends(get_settings)):
+    try:
+        outcome = checks.finish(session, worker, check_id, body.model_dump(), settings.queue)
+    except checks.CheckLeaseLost as exc:
+        session.rollback()
+        raise HTTPException(409, {"code": "lease_lost", "message": str(exc)})
+    except checks.BadCheckResult as exc:
         session.rollback()
         raise HTTPException(422, str(exc))
     session.commit()

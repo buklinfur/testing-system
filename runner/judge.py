@@ -25,8 +25,19 @@ class JudgeError(Exception):
     """Internal failure (jury program broken, sandbox problem). Becomes verdict IE."""
 
 
+class JuryCompileError(JudgeError):
+    """A checker or an interactor does not compile (or is not in a compiled language): a fault of the problem."""
+
+
 class JudgeCancelled(Exception):
-    """The caller asked to stop (lease lost, shutdown). Not a verdict: no report is produced."""
+    """The caller asked to stop (lease lost, shutdown, deadline). Not a verdict: no report is produced.
+
+    selfcheck sets `partial` to the rows of the solutions it finished before the stop."""
+
+    partial: list = []
+
+
+JURY_LOG_CAP = 16 * 1024  # compile log of a jury program kept in a check report
 
 
 def _decode(data: bytes, cap: int) -> str:
@@ -85,19 +96,68 @@ class Judge:
             groups=groups,
         )
 
-    def selfcheck(self, problem: Problem) -> list:
-        """Run the problem's reference solutions and compare with the expected verdicts."""
-        results = []
-        for item in problem.solutions:
-            path = problem.root / item["path"]
-            language = item.get("language") or guess_language(item["path"])
-            report = self.judge(problem, language, {get_profile(language).default_source: path.read_bytes()})
-            got = report.verdict if report.verdict in (Verdict.CE, Verdict.IE) else report.first_fail_verdict
-            results.append({
-                "path": item["path"], "expected": item["expect"], "got": got.value,
-                "ok": got.value == item["expect"], "score": float(report.score), "error": report.error,
-            })
+    def compile_jury(self, problem: Problem) -> list:
+        """Compile the custom checker and the interactor (those the problem has) through the jury cache.
+
+        Returns [{"role", "name", "ok", "log"}]. A compile error is a fact about the problem (ok=False with the log);
+        a broken sandbox raises (JudgeError / SandboxError), it is a fact about this machine."""
+        programs = []
+        if problem.checker_type == "custom" and problem.checker_path is not None:
+            programs.append(("checker", problem.checker_path, problem.checker_language))
+        if problem.interactor_path is not None:
+            programs.append(("interactor", problem.interactor_path, problem.interactor_language))
+        rows = []
+        for role, path, language in programs:
+            try:
+                self._jury_exe(path, language)
+                rows.append({"role": role, "name": path.name, "ok": True, "log": ""})
+            except JuryCompileError as exc:
+                rows.append({"role": role, "name": path.name, "ok": False, "log": str(exc)[:JURY_LOG_CAP]})
+        return rows
+
+    def selfcheck(self, problem: Problem, solutions: Optional[list] = None, cancel=None, progress=None) -> list:
+        """Run reference solutions and compare the verdict of the first failed test with the expected one.
+
+        solutions: [{"name", "language", "source": bytes, "expect"}] (a worker: the files come with the job);
+        None: the `solutions` of problem.yaml read from the package directory (runner.cli selfcheck).
+        cancel() is polled between tests; on a stop JudgeCancelled carries the finished rows in `partial`.
+        progress(done, total) is called after each solution."""
+        if solutions is None:
+            items = []
+            for item in problem.solutions:
+                language = item.get("language") or guess_language(item["path"])
+                items.append({"name": item["path"], "language": language, "expect": item.get("expect"),
+                              "source": (problem.root / item["path"]).read_bytes(), "path": item["path"]})
+        else:
+            items = solutions
+        results: list = []
+        try:
+            for item in items:
+                results.append(self._selfcheck_one(problem, item, cancel))
+                if progress is not None:
+                    progress(len(results), len(items))
+        except JudgeCancelled as exc:
+            exc.partial = results
+            raise
         return results
+
+    def _selfcheck_one(self, problem: Problem, item: dict, cancel) -> dict:
+        row = {"name": item["name"], "language": item["language"], "expected": item.get("expect")}
+        if "path" in item:
+            row["path"] = item["path"]
+        try:
+            report = self.judge(problem, item["language"], {get_profile(item["language"]).default_source: item["source"]},
+                                cancel=cancel)
+        except (ValueError, NotImplementedError) as exc:  # a language or a problem type the runner cannot run
+            return dict(row, got=None, ok=False, score=0.0, first_fail=None, message="", error=str(exc))
+        got = report.verdict if report.verdict in (Verdict.CE, Verdict.IE) else report.first_fail_verdict
+        first = next((t for g in report.groups for t in g.tests if t.verdict not in (Verdict.OK, Verdict.SKIPPED)), None)
+        return dict(row, got=got.value, ok=got.value == item.get("expect"), score=float(report.score),
+                    first_fail=None if first is None else {"group": first.group, "test": first.name,
+                                                           "index": first.index, "verdict": first.verdict.value},
+                    message=((report.compile_log or "") if report.verdict == Verdict.CE
+                             else (first.message if first is not None else ""))[:2000],
+                    error=report.error)
 
     # ------------------------------------------------------------------ limits
     def _limits(self, problem: Problem, profile) -> Limits:
@@ -179,7 +239,7 @@ class Judge:
         source = path.read_bytes()
         profile = get_profile(language)
         if profile.compile is None:
-            raise JudgeError("jury programs must be written in a compiled language (c or cpp)")
+            raise JuryCompileError("jury programs must be written in a compiled language (c or cpp)")
         key = jury_key(source, language, profile.compile, self.config.toolchain_id)
         exe = self._jury_local.get(key)
         if exe is not None:
@@ -187,8 +247,10 @@ class Judge:
         exe = self._jury_cache.get(key)
         if exe is None:
             outcome = compile_program(self.factory, profile, {profile.default_source: source}, None, self.config, slot=1)
+            if outcome.verdict == Verdict.IE:
+                raise JudgeError(f"cannot compile {path.name} (internal error): {outcome.log}")
             if not outcome.ok:
-                raise JudgeError(f"cannot compile {path.name}: {outcome.log}")
+                raise JuryCompileError(f"cannot compile {path.name}: {outcome.log}")
             exe = outcome.program.files[EXECUTABLE_NAME]
             self._jury_cache.put(key, exe)
         self._jury_local[key] = exe

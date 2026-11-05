@@ -2,7 +2,7 @@
 # Smoke test of the internal worker API (docs/WORKER_PROTOCOL.md) with curl, against a running server.
 # DEVELOPMENT DATABASE ONLY: it claims and finishes real judgements. Needs 3 queued submissions:
 #   JUDGE_DEV=1 python -m app.dev_seed --count 3
-#   python -m app.admin_cli create-worker-token smoke | tail -1 > /path/to/token && chmod 600 /path/to/token
+#   (umask 077; python -m app.judgectl worker token create smoke | tail -1 > /path/to/token)
 #   tools/smoke-internal-api.sh /path/to/token [http://127.0.0.1:8001]
 # The token is passed to curl through a header file, never on the command line. Exit code = number of failures.
 set -uo pipefail

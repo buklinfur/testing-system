@@ -33,6 +33,15 @@ except Exception as exc:
 EOF
 }
 systemctl is-active --quiet isolate.service || echo "warning: isolate.service (cg-keeper) is not active; judge-worker requires it"
+# if the venv lacks a pinned package, check the network now, before /opt/judge is touched: a failed download
+# must not leave new code next to old packages
+if [ -x /opt/judge/.venv/bin/pip ] && /opt/judge/.venv/bin/pip install -q --disable-pip-version-check --no-index \
+     --dry-run -r requirements.txt >/dev/null 2>&1; then
+  NEED_DOWNLOAD=0
+else
+  NEED_DOWNLOAD=1
+  check_pypi
+fi
 
 # 1. user and directories
 id judge >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/judge --shell /usr/sbin/nologin judge
@@ -47,10 +56,10 @@ rsync -a --delete --chown=root:root --chmod=Dgo-w,Fgo-w --exclude=__pycache__ --
 # 3. venv with pinned requirements; bytecode compiled now because judge cannot write __pycache__
 [ -d /opt/judge/.venv ] || python3 -m venv /opt/judge/.venv
 # offline first: succeeds without any network when every pinned package is already installed
-if /opt/judge/.venv/bin/pip install -q --disable-pip-version-check --no-index -r /opt/judge/requirements.txt 2>/dev/null; then
+if [ "$NEED_DOWNLOAD" = 0 ] && /opt/judge/.venv/bin/pip install -q --disable-pip-version-check --no-index \
+     -r /opt/judge/requirements.txt 2>/dev/null; then
   echo "requirements already installed: no download needed"
 else
-  check_pypi
   /opt/judge/.venv/bin/pip install -q --disable-pip-version-check -r /opt/judge/requirements.txt
 fi
 /opt/judge/.venv/bin/python -m compileall -q /opt/judge/runner /opt/judge/worker /opt/judge/protocol /opt/judge/backend
@@ -75,7 +84,7 @@ else
   as_judge /opt/judge/.venv/bin/alembic -c /opt/judge/alembic.ini upgrade head
   if grep -q '^JUDGE_WORKER_TOKEN=CHANGE_ME' /etc/judge/worker.env; then
     name="$(hostname -s)-$(date +%Y%m%d%H%M%S)"
-    token=$(as_judge /opt/judge/.venv/bin/python -m app.admin_cli create-worker-token "$name" | tail -1)
+    token=$(as_judge /opt/judge/.venv/bin/python -m app.judgectl worker token create "$name" | tail -1)
     [[ $token =~ ^jw_[A-Za-z0-9_-]{20,}$ ]] || { echo "unexpected token output"; exit 1; }
     TOKEN="$token" awk '/^JUDGE_WORKER_TOKEN=/{print "JUDGE_WORKER_TOKEN=" ENVIRON["TOKEN"]; next} {print}' \
       /etc/judge/worker.env > /etc/judge/worker.env.new
@@ -84,4 +93,10 @@ else
     echo "worker token '$name' created and written to /etc/judge/worker.env (not shown)"
   fi
 fi
+# variables set in the templates but missing in existing env files (templates are copied only once); names only
+for f in backend worker; do
+  missing=$(comm -23 <(grep -oE '^[A-Z][A-Z0-9_]*=' deploy/env/$f.env.example | tr -d = | sort -u) \
+                     <(grep -oE '^[A-Z][A-Z0-9_]*=' /etc/judge/$f.env | tr -d = | sort -u) | tr '\n' ' ')
+  [ -z "$missing" ] || echo "warning: /etc/judge/$f.env has no: ${missing% } (see deploy/env/$f.env.example and docs/DEPLOY_WSL2.md, section 2)"
+done
 echo "installed. Next: docs/DEPLOY_WSL2.md, section 'First start'."

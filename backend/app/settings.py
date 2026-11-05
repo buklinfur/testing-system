@@ -14,6 +14,42 @@ class QueueSettings:
     recent_window_s: float = 300.0  # the "recently started" window of the fair order
     event_retention_days: int = 14
     reaper_interval_s: float = 5.0
+    # checks of problem versions (4a.4): taken only when no submission waits, at most this many at once
+    max_concurrent_checks: int = 1  # JUDGE_MAX_CONCURRENT_CHECKS
+    check_timeout_s: float = 600.0  # JUDGE_CHECK_TIMEOUT_SEC: a longer check ends failed (reason "timeout")
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    """Accounts, sessions, 2FA and brute-force limits (docs/AUTH.md)."""
+
+    secret_key: Optional[str] = None  # JUDGE_SECRET_KEY: Fernet key that encrypts TOTP secrets; required for 2FA
+    totp_issuer: str = "judge"  # shown in the authenticator app
+    student_idle_s: int = 30 * 86400  # student session: sliding, 30 days without activity
+    admin_idle_s: int = 12 * 3600  # admin session: 12 h without activity ...
+    admin_absolute_s: int = 7 * 86400  # ... and never longer than 7 days
+    mfa_pending_s: int = 300  # password accepted, TOTP code not yet
+    login_fail_limit: int = 10  # failures of one login within login_window_s -> lockout
+    admin_login_fail_limit: int = 5
+    login_window_s: int = 900
+    login_lockout_s: int = 900
+    ip_fail_limit: int = 300  # generous: a whole class shares one IP
+    ip_window_s: int = 900
+    ip_lockout_s: int = 900
+    qr_token_ttl_s: int = 7 * 86400
+    retention_days: int = 30  # old failures, lockouts, sessions and QR tokens are pruned by the reaper
+
+
+@dataclass(frozen=True)
+class ImportSettings:
+    """Limits of a problem package (R27): checked while unpacking, never trusting the sizes in zip headers."""
+
+    max_archive_bytes: int = 100 * 1024 * 1024  # JUDGE_IMPORT_MAX_ARCHIVE_MB
+    max_unpacked_bytes: int = 512 * 1024 * 1024  # JUDGE_IMPORT_MAX_UNPACKED_MB
+    max_files: int = 5000  # JUDGE_IMPORT_MAX_FILES
+    # JUDGE_IMPORT_MAX_RATIO: unpacked / compressed, per file and in total; 0 = off (the default). Deflate tops out
+    # near 1030 and legitimate monotonous tests reach it, so the unpacked total above is the protection.
+    max_ratio: int = 0
 
 
 @dataclass(frozen=True)
@@ -21,16 +57,27 @@ class Settings:
     database_url: str = "postgresql+psycopg://judge:judge@127.0.0.1:5432/judge"
     blob_dir: str = "/var/lib/judge/blobs"
     queue: QueueSettings = QueueSettings()
+    auth: AuthSettings = AuthSettings()
+    imports: ImportSettings = ImportSettings()
     metrics_token: Optional[str] = None  # if set, /internal/metrics needs "Authorization: Bearer <it>"
+    public_origin: Optional[str] = None  # JUDGE_PUBLIC_ORIGIN, e.g. https://judge.example.ru: the only Origin accepted
+    public_port: int = 8000  # the public app (app.public_main), proxied by Caddy
+    internal_port: int = 8001  # the internal worker API; must match --port of judge-api-internal.service
+    timezone: str = "UTC"  # JUDGE_TIMEZONE: judgectl tables and contest.yaml times without an offset; the API is UTC
 
     @classmethod
     def from_env(cls, env: Optional[Mapping] = None) -> "Settings":
         env = os.environ if env is None else env
-        d, q = cls(), QueueSettings()
+        d, q, a, i = cls(), QueueSettings(), AuthSettings(), ImportSettings()
+        mib = 1024 * 1024
         return cls(
             database_url=env.get("DATABASE_URL", d.database_url),
             blob_dir=env.get("JUDGE_BLOB_DIR", d.blob_dir),
             metrics_token=env.get("JUDGE_METRICS_TOKEN") or None,
+            public_origin=env.get("JUDGE_PUBLIC_ORIGIN") or None,
+            public_port=int(env.get("JUDGE_PUBLIC_PORT", d.public_port)),
+            internal_port=int(env.get("JUDGE_INTERNAL_PORT", d.internal_port)),
+            timezone=env.get("JUDGE_TIMEZONE") or d.timezone,
             queue=QueueSettings(
                 heartbeat_timeout_s=float(env.get("JUDGE_HEARTBEAT_TIMEOUT_S", q.heartbeat_timeout_s)),
                 max_attempts=int(env.get("JUDGE_MAX_ATTEMPTS", q.max_attempts)),
@@ -38,5 +85,25 @@ class Settings:
                 recent_window_s=float(env.get("JUDGE_FAIR_WINDOW_S", q.recent_window_s)),
                 event_retention_days=int(env.get("JUDGE_EVENT_RETENTION_DAYS", q.event_retention_days)),
                 reaper_interval_s=float(env.get("JUDGE_REAPER_INTERVAL_S", q.reaper_interval_s)),
+                max_concurrent_checks=int(env.get("JUDGE_MAX_CONCURRENT_CHECKS", q.max_concurrent_checks)),
+                check_timeout_s=float(env.get("JUDGE_CHECK_TIMEOUT_SEC", q.check_timeout_s)),
+            ),
+            imports=ImportSettings(
+                max_archive_bytes=int(env.get("JUDGE_IMPORT_MAX_ARCHIVE_MB", i.max_archive_bytes // mib)) * mib,
+                max_unpacked_bytes=int(env.get("JUDGE_IMPORT_MAX_UNPACKED_MB", i.max_unpacked_bytes // mib)) * mib,
+                max_files=int(env.get("JUDGE_IMPORT_MAX_FILES", i.max_files)),
+                max_ratio=int(env.get("JUDGE_IMPORT_MAX_RATIO", i.max_ratio)),
+            ),
+            auth=AuthSettings(
+                secret_key=env.get("JUDGE_SECRET_KEY") or None,
+                totp_issuer=env.get("JUDGE_TOTP_ISSUER", a.totp_issuer),
+                login_fail_limit=int(env.get("JUDGE_LOGIN_FAIL_LIMIT", a.login_fail_limit)),
+                admin_login_fail_limit=int(env.get("JUDGE_ADMIN_LOGIN_FAIL_LIMIT", a.admin_login_fail_limit)),
+                login_window_s=int(env.get("JUDGE_LOGIN_WINDOW_S", a.login_window_s)),
+                login_lockout_s=int(env.get("JUDGE_LOGIN_LOCKOUT_S", a.login_lockout_s)),
+                ip_fail_limit=int(env.get("JUDGE_IP_FAIL_LIMIT", a.ip_fail_limit)),
+                ip_window_s=int(env.get("JUDGE_IP_WINDOW_S", a.ip_window_s)),
+                ip_lockout_s=int(env.get("JUDGE_IP_LOCKOUT_S", a.ip_lockout_s)),
+                retention_days=int(env.get("JUDGE_AUTH_RETENTION_DAYS", a.retention_days)),
             ),
         )

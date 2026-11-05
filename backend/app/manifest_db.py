@@ -8,14 +8,14 @@ from sqlalchemy.orm import Session, selectinload
 
 from protocol.manifest import assemble_manifest, manifest_digest
 
-from .models import ProblemVersion, TestGroup, VersionStatus
+from .models import ProblemVersion, TestGroup
 
 
 def build_manifest(session: Session, version_id: int) -> Optional[tuple]:
     """Returns (manifest, digest) or None if the version does not exist.
 
-    The digest of a published version is stored in problem_versions.manifest_sha256 (it never changes
-    afterwards), so claims do not rebuild the manifest. Drafts are rebuilt each time.
+    The digest is stored in problem_versions.manifest_sha256 (a version never changes), so claims do not
+    rebuild the manifest.
     """
     version = session.execute(
         select(ProblemVersion).where(ProblemVersion.id == version_id)
@@ -44,6 +44,5 @@ def manifest_digest_for_claim(session: Session, version_id: int) -> str:
     if version.manifest_sha256:
         return version.manifest_sha256
     _manifest, digest = build_manifest(session, version_id)
-    if version.status == VersionStatus.published:
-        version.manifest_sha256 = digest
+    version.manifest_sha256 = digest
     return digest

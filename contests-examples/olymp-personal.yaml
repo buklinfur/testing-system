@@ -1,0 +1,21 @@
+# A school olympiad with a personal timer: each student presses "Начать" between 09:00 and 18:00 and gets 90 minutes.
+# Joining by the invite code (judgectl contest show prints it). The leaderboard opens after 18:00.
+format_version: 1
+slug: olymp-7b-autumn
+title: "Осенняя олимпиада, 7Б"
+description: |
+  Три задачи, 90 минут с момента нажатия «Начать».
+starts_at: 2026-11-10 09:00        # JUDGE_TIMEZONE
+ends_at: 2026-11-10 18:00
+timing_mode: personal
+personal_duration: 1h30m
+scoring_mode: icpc
+leaderboard: after_end
+access: {mode: code}
+allow_upsolving: true
+languages: [python, cpp]
+submit_cooldown_sec: 30
+problems:
+  - {label: A, problem: sum-of-two, version: 1}
+  - {label: B, problem: pair-with-sum}
+  - {label: C, problem: guess-number, points: 150}

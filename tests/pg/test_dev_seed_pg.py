@@ -1,4 +1,4 @@
-"""app.dev_seed end to end without isolate: package -> published version -> backend manifest -> the worker's
+"""app.dev_seed end to end without isolate: package -> imported version -> backend manifest -> the worker's
 ProblemStore -> the runner (local backend) judges the package's own reference solutions with the expected
 verdicts. Skipped unless JUDGE_TEST_DATABASE_URL is set."""
 import contextlib
@@ -51,13 +51,13 @@ class DevSeedTests(PgCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
         self.blobs = BlobStore(self.tmp / "blobs")
-        self.teacher = self.s.get(User, self.seed["teacher"].id)
-        for key, name in dev_seed.LANGUAGES:
+        self.admin = self.s.get(User, self.seed["admin"].id)
+        for key, name in dev_seed.SYSTEM_LANGUAGES:
             dev_seed._get_or_create(self.s, dev_seed.Language, {"key": key}, name=name, config={})
         self.s.commit()  # main() works in its own session: uncommitted rows here would block it forever
 
     def version(self, root):
-        v = dev_seed.ensure_version(self.s, self.blobs, dev_seed.load_package(root), self.teacher)
+        v = dev_seed.import_dir(self.s, self.blobs, Path(root), self.admin).version
         self.s.commit()
         return v
 

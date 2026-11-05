@@ -11,6 +11,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # backend/: the package is imported as `app`
+sys.path.insert(1, str(Path(__file__).resolve().parents[2]))  # the repository root: `protocol` (shared code)
 
 from app.models import Base  # noqa: E402
 from app.settings import Settings  # noqa: E402

@@ -1,0 +1,31 @@
+format_version: 1
+slug: check-verdicts
+title: { ru: "Проверка: эталоны с верными ожиданиями" }
+type: batch
+
+# Тестовый пакет сессии 4а.4: эталоны OK, WA, TL, RE, CE с верными ожиданиями — версия станет ready.
+io: { mode: stdio }
+limits:
+  time_ms: 500
+  memory_mb: 256
+languages: [python, cpp]
+checker: { type: tokens }
+feedback: first_fail
+
+test_groups:
+  - name: samples
+    tests: "tests/sample*.in"
+    points: 0
+    visibility: open
+  - name: main
+    tests: "tests/main*.in"
+    points: 100
+    scoring: all_or_nothing
+    visibility: hidden
+
+solutions:
+  - { path: solutions/ok.py, expect: OK }
+  - { path: solutions/wa.py, expect: WA }
+  - { path: solutions/tl.py, expect: TL, note: "бесконечный цикл" }
+  - { path: solutions/re.py, expect: RE, note: "код выхода 3" }
+  - { path: solutions/ce.cpp, expect: CE, note: "синтаксическая ошибка" }

@@ -351,14 +351,27 @@ EXAMPLES = ROOT / "problems-examples"
 class StaleCancelTests(unittest.TestCase):
     """A heartbeat reply describes the job as it was when the heartbeat was sent (found in the stage 6 load run)."""
 
-    def worker(self, judgement_id, attempt):
+    def worker(self, judgement_id, attempt, check_id=None):
         from types import SimpleNamespace
         return SimpleNamespace(_lock=threading.Lock(), lease_lost=threading.Event(),
-                               _state={"judgement_id": judgement_id, "attempt": attempt})
+                               _state={"judgement_id": judgement_id, "check_id": check_id, "attempt": attempt})
 
-    def cancel(self, w, judgement_id, attempt):
+    def cancel(self, w, judgement_id, attempt, check_id=None):
         from worker.process import WorkerProcess
-        WorkerProcess._on_cancel(w, judgement_id, attempt)
+        WorkerProcess._on_cancel(w, judgement_id, attempt, check_id)
+
+    def test_cancel_for_the_held_check_is_applied(self):
+        w = self.worker(None, 1, check_id=7)
+        self.cancel(w, None, 1, check_id=7)
+        self.assertTrue(w.lease_lost.is_set())
+
+    def test_a_cancel_about_a_judgement_does_not_hit_a_check_with_the_same_number(self):
+        w = self.worker(None, 1, check_id=30)  # judgement 30 finished, check 30 claimed (ids of two tables)
+        self.cancel(w, 30, 1)
+        self.assertFalse(w.lease_lost.is_set())
+        w = self.worker(30, 1)
+        self.cancel(w, None, 1, check_id=30)
+        self.assertFalse(w.lease_lost.is_set())
 
     def test_cancel_for_the_held_attempt_is_applied(self):
         w = self.worker(30, 1)
@@ -379,6 +392,41 @@ class StaleCancelTests(unittest.TestCase):
         w = self.worker(None, None)
         self.cancel(w, 30, 1)
         self.assertFalse(w.lease_lost.is_set())
+
+
+class ReleasePathTests(unittest.TestCase):
+    """The `release` path of a job is followed only under /internal/worker/v1/: the request carries the token."""
+
+    def client(self):
+        from worker.client import ApiClient
+        sent = []
+
+        class Recorder:
+            headers: dict = {}
+
+            def request(self, method, url, **kw):
+                sent.append(url)
+                from types import SimpleNamespace
+                return SimpleNamespace(status_code=200, json=lambda: {"released": True})
+        api = ApiClient("http://127.0.0.1:8001", "jw_secret")
+        api.session = Recorder()
+        return api, sent
+
+    def test_a_relative_path_under_the_prefix_is_followed(self):
+        api, sent = self.client()
+        self.assertEqual(api.release_path("/problem-checks/5/release", 1, "x"), {"released": True})
+        self.assertEqual(sent, ["http://127.0.0.1:8001/internal/worker/v1/problem-checks/5/release"])
+
+    def test_anything_else_is_refused_and_nothing_is_sent(self):
+        from worker.client import ApiError
+        api, sent = self.client()
+        for bad in ("http://evil.example/steal", "https://127.0.0.1:8001/internal/worker/v1/judgements/1/release",
+                    "//evil.example/steal", "/judgements/../../../steal", "/judgements/%2e%2e/steal",
+                    "judgements/1/release", "/judgements/1/release?to=http://evil", "/judgements/1/release#x",
+                    "/a//b", "/judgements/./1", "/@evil.example/x", "\\evil\\x", "", None, 5):
+            with self.subTest(path=bad), self.assertRaises(ApiError):
+                api.release_path(bad, 1, "x")
+        self.assertEqual(sent, [], "the token went nowhere")
 
 
 class RunnerHookTests(unittest.TestCase):

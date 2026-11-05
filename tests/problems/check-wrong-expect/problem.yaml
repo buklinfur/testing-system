@@ -1,0 +1,29 @@
+format_version: 1
+slug: check-wrong-expect
+title: { ru: "Проверка: неверные ожидания эталонов" }
+type: batch
+
+# Тестовый пакет сессии 4а.4: неверное решение ожидает OK, медленное ожидает OK (получит TL) — версия failed.
+io: { mode: stdio }
+limits:
+  time_ms: 500
+  memory_mb: 256
+languages: [python, cpp]
+checker: { type: tokens }
+feedback: first_fail
+
+test_groups:
+  - name: samples
+    tests: "tests/sample*.in"
+    points: 0
+    visibility: open
+  - name: main
+    tests: "tests/main*.in"
+    points: 100
+    scoring: all_or_nothing
+    visibility: hidden
+
+solutions:
+  - { path: solutions/ok.py, expect: OK }
+  - { path: solutions/wa.py, expect: OK, note: "на самом деле WA" }
+  - { path: solutions/slow.py, expect: OK, note: "на самом деле TL" }

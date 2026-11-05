@@ -1,0 +1,15 @@
+# The practice archive: open to every student, no end, no leaderboard (docs/CONTESTS.md).
+format_version: 1
+slug: practice
+title: "Тренировка"
+description: |
+  Задачи для самостоятельной работы. Решайте в любом порядке, сколько угодно попыток.
+starts_at: 2026-09-01 00:00
+access: {mode: open}
+leaderboard: hidden
+problems:
+  - {label: A, problem: sum-of-two}
+  - {label: B, problem: pair-with-sum}
+  - {label: C, problem: guess-number}
+  - {label: D, problem: quiz-python-basics}
+  - {label: E, problem: what-is-the-output}

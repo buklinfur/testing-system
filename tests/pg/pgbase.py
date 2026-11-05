@@ -10,6 +10,7 @@ import os
 import sys
 import unittest
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -17,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.settings import QueueSettings  # noqa: E402  (pure module, no database needed)
+from protocol.languages import SYSTEM_LANGUAGES  # noqa: E402
 
 URL = os.environ.get("JUDGE_TEST_DATABASE_URL")
 
@@ -34,7 +36,7 @@ if URL and HAVE_SA:
 
     from app import queue as q
     from app.models import (
-        Base, Blob, Contest, ContestMode, ContestProblem, Language, Problem, ProblemType, ProblemVersion, Role,
+        AccessMode, Base, Blob, Contest, ContestProblem, ContestState, Language, Problem, ProblemType, ProblemVersion, Role,
         Submission, TestCase, TestGroup, User, VersionStatus,
     )
 
@@ -74,14 +76,14 @@ class PgCase(unittest.TestCase):
     # ---------------------------------------------------------------- seed helpers
     def make_seed(self):
         s = self.s
-        teacher = User(login="teacher", password_hash="x", display_name="T", role=Role.teacher)
-        s.add_all([teacher, Language(key="python", name="Python", config={})])
+        admin = User(login="admin", password_hash="x", display_name="A", role=Role.admin)
+        s.add_all([admin] + [Language(key=k, name=n, config={}) for k, n in SYSTEM_LANGUAGES])  # as the migration
         s.flush()
         s.add_all([Blob(sha256="a" * 64, size_bytes=1), Blob(sha256="b" * 64, size_bytes=1), Blob(sha256="c" * 64, size_bytes=1)])
-        problem = Problem(slug="sum", owner_id=teacher.id)
+        problem = Problem(slug="sum", owner_id=admin.id)
         s.add(problem)
         s.flush()
-        version = ProblemVersion(problem_id=problem.id, version=1, status=VersionStatus.published, type=ProblemType.batch,
+        version = ProblemVersion(problem_id=problem.id, version=1, status=VersionStatus.ready, type=ProblemType.batch,
                                  titles={"ru": "S"}, statements={"ru": ""}, config={"limits": {"time_ms": 1000}})
         s.add(version)
         s.flush()
@@ -90,16 +92,18 @@ class PgCase(unittest.TestCase):
         s.flush()
         tests = [TestCase(group_id=group.id, position=i, name=f"t{i}", input_sha256="a" * 64, answer_sha256="b" * 64) for i in range(2)]
         s.add_all(tests)
-        contest = Contest(slug="c", title="C", mode=ContestMode.practice, created_by=teacher.id)
+        contest = Contest(slug="c", title="C", starts_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                          state=ContestState.published, access_mode=AccessMode.open, created_by=admin.id)
         s.add(contest)
         s.flush()
-        cp = ContestProblem(contest_id=contest.id, problem_version_id=version.id, label="A", position=0)
+        cp = ContestProblem(contest_id=contest.id, problem_id=problem.id, problem_version_id=version.id, label="A",
+                            position=0)
         s.add(cp)
         s.commit()
-        return {"teacher": teacher, "version": version, "cp": cp, "tests": tests}
+        return {"admin": admin, "version": version, "cp": cp, "tests": tests}
 
     def student(self, n: int):
-        u = User(login=f"s{n}", password_hash="x", display_name=f"S{n}", role=Role.student)
+        u = User(login=f"student{n}", password_hash="x", display_name=f"S{n}", role=Role.student)
         self.s.add(u)
         self.s.flush()
         return u
@@ -118,6 +122,34 @@ class PgCase(unittest.TestCase):
         worker = q.register_worker(self.s, token, name, list(caps), {}, self.settings)
         self.s.commit()
         return token, worker
+
+    def finish_checks(self, outcome="ready", reason=None, report=None):
+        """Bring every queued check of a problem version to an end through the real code path (claim_check, then
+        finish, as the worker API does), the way a worker would: the versions become ready (or failed). Commits in a
+        session of its own. Returns the number of checks ended."""
+        from app import problem_checks as checks
+        from app.models import Worker
+        n, qs = 0, PgCase.settings  # not self.settings: API test classes use that name for the app's Settings
+        with self.Session() as s:
+            worker = s.execute(text("SELECT id FROM workers WHERE name = 'test-checker'")).scalar()
+            if worker is None:
+                token = q.authenticate(s, q.create_worker_token(s, "tok-test-checker", ["cpu", "problem_check"]))
+                worker = q.register_worker(s, token, "test-checker", ["cpu", "problem_check"], {}, qs).id
+                s.commit()
+            worker = s.get(Worker, worker)
+            while True:
+                check = checks.claim_check(s, worker, qs)  # alone here: no claim lock needed
+                if check is None:
+                    break
+                body = report or {"outcome": outcome,
+                                  "reason": reason or (None if outcome == "ready" else "solution_mismatch"),
+                                  "worker": "test-checker", "programs": [], "solutions": []}
+                checks.finish(s, worker, check.id, {"attempt": check.attempt, "outcome": body["outcome"],
+                                                    "report": body}, qs)
+                s.commit()
+                n += 1
+        self.s.expire_all()
+        return n
 
     def ok_payload(self, j, tests=None):
         tests = tests if tests is not None else [{"test_case_id": t.id, "verdict": "OK", "time_ms": 5, "memory_kb": 100,

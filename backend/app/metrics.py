@@ -35,4 +35,9 @@ def render_prometheus(snap: dict) -> str:
         out.append(_line("judge_finished_total", n, {"verdict": verdict}))
     metric("judge_requeued_total", "Judgements returned to the queue after a lost worker or internal error", "counter")
     out.append(_line("judge_requeued_total", snap["requeued_total"]))
+    checks = snap.get("checks")
+    if checks is not None:  # problem checks (4a.4): not part of the students' queue
+        metric("judge_problem_checks", "Checks of problem versions by state")
+        for state in ("queued", "running"):
+            out.append(_line("judge_problem_checks", checks[state], {"state": state}))
     return "\n".join(out) + "\n"

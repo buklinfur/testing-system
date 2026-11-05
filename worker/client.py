@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from typing import Callable, Optional
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
 log = logging.getLogger("judge.client")
 API = "/internal/worker/v1"
+SAFE_RELEASE_PATH = re.compile(r"/[A-Za-z0-9_-]+(/[A-Za-z0-9_.-]+)*")  # no scheme, host, query, %-escapes
 
 
 class ApiError(Exception):
@@ -95,10 +98,13 @@ class ApiClient:
         return self._json("POST", "/claim").get("job")
 
     def heartbeat(self, state: str, judgement_id: Optional[int], attempt: Optional[int],
-                  phase: Optional[str], done: Optional[int], total: Optional[int], stats: dict) -> dict:
-        return self._json("POST", "/heartbeat", json={
-            "state": state, "judgement_id": judgement_id, "attempt": attempt,
-            "phase": phase, "tests_done": done, "tests_total": total, "stats": stats})
+                  phase: Optional[str], done: Optional[int], total: Optional[int], stats: dict,
+                  check_id: Optional[int] = None) -> dict:
+        body = {"state": state, "judgement_id": judgement_id, "attempt": attempt,
+                "phase": phase, "tests_done": done, "tests_total": total, "stats": stats}
+        if check_id is not None:  # a check of a problem version (4a.4); done/total then count solutions
+            body["check_id"] = check_id
+        return self._json("POST", "/heartbeat", json=body)
 
     def manifest(self, version_id: int) -> dict:
         return self._json("GET", f"/problem-versions/{version_id}/manifest")
@@ -122,18 +128,44 @@ class ApiClient:
     def release(self, judgement_id: int, attempt: int, reason: str) -> None:
         self._json("POST", f"/judgements/{judgement_id}/release", json={"attempt": attempt, "reason": reason})
 
+    def release_check(self, check_id: int, attempt: int, reason: str) -> None:
+        self._json("POST", f"/problem-checks/{check_id}/release", json={"attempt": attempt, "reason": reason})
+
+    def release_path(self, path: str, attempt: int, reason: str) -> dict:
+        """Give back a job of a kind this worker does not know, by the `release` path the job carries.
+
+        The path is taken only as a relative path under the API prefix (/internal/worker/v1): the request carries the
+        token, so a full URL, a host-relative `//host/...`, `..`, a query or anything outside the prefix is refused
+        (ApiError) and nothing is sent."""
+        if not isinstance(path, str) or not SAFE_RELEASE_PATH.fullmatch(path) or "//" in path \
+                or any(part in (".", "..") for part in path.split("/")):
+            raise ApiError(f"refused release path {path!r}: only a relative path under {API}/ is followed")
+        base, target = urlsplit(self.base), urlsplit(urljoin(self.base + "/", path.lstrip("/")))
+        if (target.scheme, target.netloc) != (base.scheme, base.netloc) or not target.path.startswith(base.path + "/"):
+            raise ApiError(f"refused release path {path!r}: it leaves {API}/")  # a second net under the regex
+        return self._json("POST", path, json={"attempt": attempt, "reason": reason})
+
     def submit_result(self, judgement_id: int, payload: dict, retry_for_s: float = 600.0,
                       sleep: Callable[[float], None] = time.sleep) -> dict:
         """Deliver a finished result. Transient errors are retried with backoff (the work is expensive).
         409 and auth errors are not retried."""
+        return self._deliver(f"/judgements/{judgement_id}/result", f"judgement {judgement_id}", payload, retry_for_s,
+                             sleep)
+
+    def submit_check_result(self, check_id: int, payload: dict, retry_for_s: float = 600.0,
+                            sleep: Callable[[float], None] = time.sleep) -> dict:
+        """The end of a check of a problem version; retried like submit_result."""
+        return self._deliver(f"/problem-checks/{check_id}/result", f"check {check_id}", payload, retry_for_s, sleep)
+
+    def _deliver(self, path: str, what: str, payload: dict, retry_for_s: float, sleep) -> dict:
         deadline = time.monotonic() + retry_for_s
         delay = 1.0
         while True:
             try:
-                return self._json("POST", f"/judgements/{judgement_id}/result", json=payload, timeout=60)
+                return self._json("POST", path, json=payload, timeout=60)
             except ApiTransient as exc:
                 if time.monotonic() + delay > deadline:
                     raise
-                log.warning("result of judgement %s not delivered (%s); retry in %.0fs", judgement_id, exc, delay)
+                log.warning("result of %s not delivered (%s); retry in %.0fs", what, exc, delay)
                 sleep(delay + random.random())
                 delay = min(delay * 2, 30.0)
