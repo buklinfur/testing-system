@@ -235,6 +235,26 @@ sudo systemctl restart judge-api-internal judge-reaper judge-worker
 ```
 Перезапуск воркеров корректный: текущие проверки дорабатываются, потом процессы выходят и systemd поднимает новые.
 
+**Обновление до 4а.4 (проверка задач эталонами).** Меняются протокол воркера и схема (миграция `b7e3d91a4c62`),
+поэтому сервисы останавливаются до установки, а не перезапускаются после. `/etc/judge/worker.env` создаётся из
+шаблона только один раз, его надо поправить руками: воркер получает проверки версий задач, только если объявляет
+capability `problem_check` (миграция уже добавила её неотозванным токенам с `cpu`).
+
+```bash
+(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4a4.dump)     # резервная копия базы
+sudo systemctl stop judge-worker judge-reaper judge-api-internal
+sudo $P ./deploy/install-wsl.sh                                               # код + миграция
+sudo sed -i 's/^JUDGE_CAPABILITIES=cpu$/JUDGE_CAPABILITIES=cpu,problem_check/' /etc/judge/worker.env
+sudo systemctl start judge-api-internal judge-reaper judge-worker
+j .venv/bin/python -m app.judgectl worker list      # CAPS: cpu,problem_check у каждого воркера
+j .venv/bin/python -m app.judgectl status           # migration b7e3d91a4c62, раздел checks
+```
+Существующие версии задач остаются `ready` (их никто не проверял). Новые импорты с чекером, интерактором или
+эталонами ждут проверки (`pending_check`); если ни один воркер не объявляет `problem_check`, они не станут `ready`
+никогда — `judgectl status` покажет растущее число `pending_check`. Перепроверить старую версию:
+`judgectl problem recheck <slug>@<v>`. Настройки бэкенда: `JUDGE_MAX_CONCURRENT_CHECKS` (1),
+`JUDGE_CHECK_TIMEOUT_SEC` (600) в `backend.env`.
+
 ## 7. Внешний доступ (Caddy)
 
 Caddy (собственный домен `.ru`, модуль 6) проксирует только публичный API (порт 8000, модуль 4). **Порт 8001 в Caddyfile не добавлять.**

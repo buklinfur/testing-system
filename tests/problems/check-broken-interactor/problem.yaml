@@ -1,0 +1,22 @@
+format_version: 1
+slug: check-broken-interactor
+title: { ru: "Проверка: интерактор не компилируется" }
+type: interactive
+
+# Тестовый пакет сессии 4а.4: интерактор с синтаксической ошибкой — версия failed, эталоны не запускаются.
+limits:
+  time_ms: 1000
+  memory_mb: 256
+languages: [python, cpp]
+interactor: { path: interactor/interactor.cpp }
+feedback: verdict_only
+
+test_groups:
+  - name: main
+    tests: "tests/t*.in"
+    points: 100
+    scoring: sum
+    visibility: hidden
+
+solutions:
+  - { path: solutions/ok.py, expect: OK }

@@ -657,4 +657,12 @@ judgectl status   # БД, живые воркеры, глубина очеред
   `version_checks.requested_by` — след при удалении пользователя (§5.5).
 - **Вид задания у воркера** (D-056, этап 4): `kind` проверяется явно, незнакомый — в лог и `release` по пути из
   задания, без выполнения; `SIGTERM` во время проверки возвращает её сразу, а не дорабатывает.
+- **Поле `release` задания** (этап 5): воркер идёт по нему только как по относительному пути под
+  `/internal/worker/v1/`; полный URL или выход за префикс — отказ с логом, токен никуда не уходит.
+- **Приёмка 4а.4** (5 ноября 2026): все тесты, включая `tests/pg` на PostgreSQL 16; сквозной тест
+  `tests/pg/test_problem_check_e2e_pg.py` — настоящий внутренний API (uvicorn) и настоящий `WorkerProcess` проверяют
+  пакеты `tests/problems/check-*` и примеры (`check-verdicts`, `sum-of-two`, `pair-with-sum`, `guess-number` → `ready`;
+  `check-wrong-expect` → `solution_mismatch`; `check-broken-checker` / `-interactor` → `*_compile_failed`); smoke
+  `tools/smoke-admin-api.sh` на judge_test с `SEED_CMD` — `failures: 0, skipped: 0` дважды подряд; `sandbox-check` и
+  `redteam` на isolate. Проверка на установке — по списку команд сессии.
 - **После приёмки** `module-4a` сливается в `main` (`git merge --no-ff`), push делает владелец.

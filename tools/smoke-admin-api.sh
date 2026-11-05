@@ -2,7 +2,10 @@
 # Smoke test of the admin API (docs/ADMIN_API.md) with curl, against a running public app: the check scenario of
 # session 4a.3a through the API: a class from CSV with a class column, a contest for a group, adding and removing a
 # student, deadlines with the policies late and no, an extension for one student, submissions and a rejudge in two
-# steps, the rollback of the import (K3), the profile time zone, system, audit, languages.
+# steps, the rollback of the import (K3), the profile time zone, system, audit, languages; and of session 4a.4:
+# uploaded problems are checked by a worker (it waits for ready, up to 120 s), a package whose checker does not
+# compile (tests/problems/check-broken-checker) ends failed and cannot be pinned, a recheck runs once and ends ready.
+# A worker with the capability problem_check must be running (judgectl worker list: CAPS).
 #   tools/smoke-admin-api.sh [BASE_URL] [ORIGIN]       defaults: http://127.0.0.1:8000 and $JUDGE_PUBLIC_ORIGIN
 # It asks for an admin (login, password, a TOTP code from the phone); ADMIN_LOGIN, ADMIN_PASSWORD and TOTP_CODE
 # from the environment are used instead (named, never shown). Secrets reach curl only through files in a private
@@ -16,7 +19,8 @@
 # so the deadlines and the access through the group are really checked only with SEED_CMD.
 #
 # Everything it makes is named smoke-<time> (contest, groups, students); the contest is archived at the end, the
-# imported students are rolled back. Every request gives up after 10 s. Exit code = number of failures.
+# imported students are rolled back, the problem check-broken-checker is archived (and unarchived on the next run).
+# Every request gives up after 10 s. Exit code = number of failures.
 set -uo pipefail
 BASE=${1:-http://127.0.0.1:8000}; ORIGIN=${2:-${JUDGE_PUBLIC_ORIGIN:-}}
 [ -n "$ORIGIN" ] || { echo "usage: $0 [BASE_URL] ORIGIN   (ORIGIN = JUDGE_PUBLIC_ORIGIN of the server)"; exit 2; }
@@ -50,6 +54,16 @@ print(json.dumps(d, ensure_ascii=False)[:140])' "$D/body")"
 check() {  # check <label> <python expression over d = the last JSON body>
   if python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); sys.exit(0 if eval(sys.argv[2]) else 1)' \
       "$D/body" "$2" 2>/dev/null; then echo "OK   $1"; else fail "$1"; fi
+}
+poll() {  # poll <label> <path> <python condition over d> [timeout s]: GET quietly until it holds
+  local label=$1 path=$2 cond=$3 limit=${4:-120} start=$SECONDS
+  while :; do
+    curl -s --noproxy '*' --max-time 10 -o "$D/body" -H @"$D/cookie" "$BASE$path"
+    if python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); sys.exit(0 if eval(sys.argv[2]) else 1)' \
+        "$D/body" "$cond" 2>/dev/null; then echo "OK   $label ($((SECONDS - start)) s)"; return 0; fi
+    [ $((SECONDS - start)) -ge "$limit" ] && { fail "$label: not within $limit s: $(head -c 200 "$D/body")"; return 1; }
+    sleep 2
+  done
 }
 val() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$D/body" "$1"; }
 json() { python3 -c 'import json, sys; print(json.dumps(eval(sys.argv[1]), ensure_ascii=False))' "$1" > "$D/req"; }
@@ -116,11 +130,14 @@ G2ID=$(val "next(g['id'] for g in d['items'] if g['name'] == '$G2')" 2>/dev/null
 get "group $G1"                                       200 "/api/admin/groups/$G1ID"
 check "2 students in it"                              "len(d['students']) == 2"
 
-echo "--- problems (the same content again: 200 exists) and a contest only for the group"
+echo "--- problems (the same content again: 200 exists), checked by a worker; a contest only for the group"
 for p in sum-of-two pair-with-sum; do
   "$HERE/pack-problem.sh" "$ROOT/problems-examples/$p" > "$D/$p.zip" || fail "pack $p"
   c "upload $p"                                       '200|201' POST /api/admin/problems -H "$O" -H @"$D/cookie" -H @"$D/csrf" \
                                                           -H 'Content-Type: application/zip' --data-binary @"$D/$p.zip"
+  V=$(val 'd["version"]' 2>/dev/null || echo 0)
+  eval "V_${p//-/_}=$V"
+  poll "$p v$V is ready (the worker's check)"         "/api/admin/problems/$p/versions/$V" "d['status'] == 'ready'"
 done
 CONTEST="{'format_version': 1, 'slug': '$SLUG', 'title': 'Smoke $STAMP', 'starts_at': '2026-01-01 00:00',
           'ends_at': '2099-01-01 00:00', 'submit_cooldown_sec': 0, 'access': {'mode': 'groups', 'groups': ['$G1']},
@@ -202,6 +219,29 @@ send "roll back the import"                           200 POST "/api/admin/users
 check "3 deleted; $G2 deleted; $G1 kept (contest)"    "len(d['deleted']) == 3 and d['groups_deleted'] == ['$G2'] and any(k.startswith('$G1:') for k in d['groups_kept'])"
 get "$G2 is gone"                                     404 "/api/admin/groups/$G2ID"
 
+echo "--- checks of problem versions (4a.4): a broken checker fails, cannot be pinned; a recheck"
+BROKEN=check-broken-checker
+c "unarchive $BROKEN if an earlier run archived it"   '200|404' POST "/api/admin/problems/$BROKEN/unarchive" -H "$O" -H @"$D/cookie" -H @"$D/csrf"
+"$HERE/pack-problem.sh" "$ROOT/tests/problems/$BROKEN" > "$D/broken.zip" || fail "pack $BROKEN"
+c "upload $BROKEN"                                    '200|201' POST /api/admin/problems -H "$O" -H @"$D/cookie" -H @"$D/csrf" \
+                                                          -H 'Content-Type: application/zip' --data-binary @"$D/broken.zip"
+check "pending_check with a check, or already there"  "d['result'] == 'exists' or (d['status'] == 'pending_check' and d['check_id'])"
+VB=$(val 'd["version"]' 2>/dev/null || echo 0)
+poll "$BROKEN v$VB ends failed"                       "/api/admin/problems/$BROKEN/versions/$VB" "d['status'] == 'failed'"
+check "report: checker_compile_failed with the compiler's log, no solution run" \
+      "d['check_report']['reason'] == 'checker_compile_failed' and not d['check_report']['programs'][0]['ok'] and 'error' in d['check_report']['programs'][0]['log'] and d['check_report']['solutions'] == [] and d['checks'][0]['outcome'] == 'failed'"
+send "pin the failed version: refused"                409 PUT "/api/admin/contests/$SLUG-checks" \
+     "{'format_version': 1, 'slug': '$SLUG-checks', 'title': 'Smoke checks', 'starts_at': '2026-01-01 00:00', 'problems': [{'label': 'A', 'problem': '$BROKEN', 'version': $VB}]}"
+check "the status and where the report is"             "'v$VB is failed' in d['problems'][0] and 'judgectl problem show $BROKEN@$VB' in d['problems'][0]"
+send "recheck sum-of-two v$V_sum_of_two"              '202|200' POST "/api/admin/problems/sum-of-two/versions/$V_sum_of_two/recheck"
+check "queued (or one already queued / running); the version stays ready" "d['result'] in ('created', 'already_queued', 'already_running') and d['status'] == 'ready'"
+RC=$(val 'd["check"]["id"]' 2>/dev/null || echo 0)
+send "recheck again at once"                          200 POST "/api/admin/problems/sum-of-two/versions/$V_sum_of_two/recheck"
+check "nothing new: the same check"                   "d['result'] in ('already_queued', 'already_running') and d['check']['id'] == $RC"
+poll "the recheck ends ready"                         "/api/admin/problems/sum-of-two/versions/$V_sum_of_two" \
+     "d['status'] == 'ready' and any(c['id'] == $RC and c['outcome'] == 'ready' for c in d['checks'])"
+send "archive $BROKEN (test data)"                    200 POST "/api/admin/problems/$BROKEN/archive"
+
 echo "--- the rest: archive, profile, system, audit, languages"
 send "archive the contest"                            200 POST "/api/admin/contests/$SLUG/archive"
 send "archive the group: answers its contests (K6)"    200 POST "/api/admin/groups/$G1ID/archive"
@@ -212,6 +252,7 @@ send "a field other than timezone"                    422 PUT /api/auth/profile 
 send "clear it"                                       200 PUT /api/auth/profile "{'timezone': None}"
 get "system"                                          200 /api/admin/system
 check "the database is at the migration head"         "d['migration']['ok'] and 'blobs' not in d"
+check "a checks section, no check waiting"             "d['checks']['queued'] == 0 and d['checks']['running'] == 0"
 get "audit of groups"                                 200 "/api/admin/audit?action=group.&limit=5"
 check "newest first, times with Z"                    "d['items'] and all(i['at'].endswith('Z') for i in d['items'])"
 get "languages"                                       200 /api/admin/languages
