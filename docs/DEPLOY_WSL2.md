@@ -278,6 +278,55 @@ j .venv/bin/python -m app.judgectl status           # migration b7e3d91a4c62, р
 `judgectl problem recheck <slug>@<v>`. Настройки бэкенда: `JUDGE_MAX_CONCURRENT_CHECKS` (1),
 `JUDGE_CHECK_TIMEOUT_SEC` (600) в `backend.env`.
 
+**Обновление до 4в.1 (лента класса и ручные задания).** Одна новая миграция `b32303b5df22` (таблицы ленты, работ,
+сдач и оценок; у `deadline_extensions` вторая цель). Код воркера и протокол не менялись. Из репозитория на ветке
+`module-4v` (или на `master` после слияния):
+
+```bash
+(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4v1.dump)      # 0: резервная копия, вне репозитория
+sudo systemctl stop judge-worker judge-reaper judge-api-internal
+# публичное приложение (python -m app.public_main) — остановить в его терминале (Ctrl-C)
+sudo $P ./deploy/install-wsl.sh                                                # код + alembic upgrade head
+# лимит текста ответа (по умолчанию 64 КБ; строку можно не добавлять, если устраивает значение по умолчанию):
+sudo grep -q '^JUDGE_ASSIGNMENT_TEXT_MAX_KB=' /etc/judge/backend.env || echo 'JUDGE_ASSIGNMENT_TEXT_MAX_KB=64' | sudo tee -a /etc/judge/backend.env
+sudo systemctl start judge-api-internal judge-reaper judge-worker
+j .venv/bin/python -m app.judgectl status            # migration b32303b5df22 (head), config без замечаний
+j .venv/bin/python -m app.public_main                # публичное приложение, в отдельном терминале
+```
+
+Проверка — `tools/smoke-admin-api.sh` с `SEED_CMD=tools/seed-as-judge.sh` (тот же путь, что в 4а, D-047): новый блок
+ленты сдаёт работы через `dev_seed --item` как `dev-student-1` и `-2`. Без `SEED_CMD` сдачи пропускаются (`SKIP`
+с командой), а ручная проверка через консоль:
+
+```bash
+j .venv/bin/python -m app.judgectl group create 'проверка 4в'
+j .venv/bin/python -m app.judgectl item create --kind assignment --title 'Проверка' --group 'проверка 4в' \
+    --due '2026-12-31 23:59' --grading points --max-points 5                 # печатает id элемента
+j .venv/bin/python -m app.judgectl item publish <id>
+j .venv/bin/python -m app.judgectl work list --item <id>                      # пусто, пока в группе нет учеников
+j .venv/bin/python -m app.judgectl group add 'проверка 4в' <логин>
+j .venv/bin/python -m app.judgectl work show <id> <логин>                     # assigned, сдач нет
+j .venv/bin/python -m app.judgectl item archive <id>
+j .venv/bin/python -m app.judgectl group archive 'проверка 4в'                # в stderr — элемент ленты группы
+```
+
+**Данные, которые остаются в рабочей базе** после smoke и ручной проверки: группы `smoke <время>`, `smoke <время> b`
+(откатывается с импортом), `smoke <время> feed` (архивная), элементы ленты (архивные), работы, сдачи с текстом ответа
+(блоб `answer.md`), оценки и продление `dev-student-2`, записи аудита; плюс то, что оставлял smoke 4а. Всё это убирает
+`deploy/dev/reset-production.sh` перед учениками: он сначала очищает таблицы ленты (`TRUNCATE feed_items CASCADE`),
+потому что откат миграции `b32303b5df22` при элементах ленты отказывает, затем пересоздаёт базу.
+
+**Откат** — только из дампа: `alembic downgrade` миграции `b32303b5df22` отказывает, пока есть элементы ленты или их
+продления.
+
+```bash
+sudo systemctl stop judge-worker judge-reaper judge-api-internal              # и публичное приложение (Ctrl-C)
+git switch master                                                              # код до 4в.1
+sudo -u postgres pg_restore --clean --if-exists -d judge < ~/judge-before-4v1.dump
+sudo $P ./deploy/install-wsl.sh                                                # код master; база уже на его миграции
+sudo systemctl start judge-api-internal judge-reaper judge-worker
+```
+
 ## 7. Внешний доступ (Caddy)
 
 Caddy (собственный домен `.ru`, модуль 6) проксирует только публичный API (порт 8000, модуль 4). **Порт 8001 в Caddyfile не добавлять.**

@@ -16,6 +16,14 @@ j() {  # as judge with the backend environment
 }
 
 for u in judge-worker judge-reaper judge-api-internal; do systemctl --no-pager stop "$u" || true; done
+# The downgrade of the class feed (migration b32303b5df22, 4v.1) refuses while feed items or their extensions exist
+# (the old schema cannot hold them). The whole database goes anyway: empty the feed first - TRUNCATE ... CASCADE also
+# empties every table that refers to feed_items (audience, works, hand-ins and their files, reviews, extensions).
+j /opt/judge/.venv/bin/python -c 'import os, sqlalchemy as sa
+e = sa.create_engine(os.environ["DATABASE_URL"])
+with e.begin() as c:
+    if c.execute(sa.text("SELECT to_regclass('"'"'feed_items'"'"')")).scalar() is not None:
+        c.execute(sa.text("TRUNCATE feed_items CASCADE"))'
 j /opt/judge/.venv/bin/alembic -c /opt/judge/alembic.ini downgrade base
 j /opt/judge/.venv/bin/alembic -c /opt/judge/alembic.ini upgrade head
 find /var/lib/judge/blobs -mindepth 1 -delete
