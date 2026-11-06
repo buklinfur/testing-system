@@ -316,16 +316,42 @@ j .venv/bin/python -m app.judgectl group archive 'проверка 4в'         
 `deploy/dev/reset-production.sh` перед учениками: он сначала очищает таблицы ленты (`TRUNCATE feed_items CASCADE`),
 потому что откат миграции `b32303b5df22` при элементах ленты отказывает, затем пересоздаёт базу.
 
-**Откат** — только из дампа: `alembic downgrade` миграции `b32303b5df22` отказывает, пока есть элементы ленты или их
-продления.
+**Откат 4в.1** — только из дампа: `alembic downgrade` миграции `b32303b5df22` отказывает, пока есть элементы ленты или
+их продления. Порядок — общий шаблон ниже, с дампом `~/judge-before-4v1.dump` и кодом ветки `master`.
+
+### Откат обновления: пересоздание базы из дампа (D-064)
+
+Любое обновление начинается с дампа (шаг 0: `(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-<что>.dump)`,
+файл вне репозитория). Откат — **пересоздание базы** из этого дампа, а не `pg_restore --clean`: `--clean` удаляет только
+то, что есть в дампе, а таблицы, типы и индексы, которые добавило обновление, остаются и мешают старому коду и его
+миграциям.
 
 ```bash
 sudo systemctl stop judge-worker judge-reaper judge-api-internal              # и публичное приложение (Ctrl-C)
-git switch master                                                              # код до 4в.1
-sudo -u postgres pg_restore --clean --if-exists -d judge < ~/judge-before-4v1.dump
-sudo $P ./deploy/install-wsl.sh                                                # код master; база уже на его миграции
+git switch <прежняя ветка>                                                    # код до обновления, например master
+sudo -u postgres dropdb judge                                                  # отказ, если к judge кто-то подключён
+sudo -u postgres pg_restore --create -d postgres < ~/judge-before-<что>.dump    # CREATE DATABASE judge из дампа, через stdin
+sudo $P ./deploy/install-wsl.sh                                                # прежний код; база уже на его миграции
 sudo systemctl start judge-api-internal judge-reaper judge-worker
+j .venv/bin/python -m app.judgectl status                                      # миграция = head прежнего кода
 ```
+
+`pg_restore --create` подключается к служебной базе `postgres`, создаёт `judge` с владельцем, правами и настройками
+из дампа (роль `judge` уже есть) и восстанавливает в неё данные. Файл дампа открывает ваша оболочка, `postgres`
+читает его из stdin — ему не нужен доступ к вашему домашнему каталогу.
+
+**`dropdb` отвечает «database "judge" is being accessed by other users».** Это не повод добавлять `--force`: где-то
+ещё работает процесс с подключением (публичное приложение в другом терминале, `judge-dev`, ручной `psql`, воркер,
+который не остановился). Найти его:
+
+```bash
+sudo -u postgres psql -X -c "SELECT pid, usename, application_name, client_addr, backend_start, state, left(query, 60) AS query
+                             FROM pg_stat_activity WHERE datname = 'judge' ORDER BY backend_start"
+```
+
+Остановите найденные процессы штатно (сервис — `systemctl stop`, приложение — Ctrl-C в его терминале) и повторите
+`dropdb`. Только если процесс уже недоступен, его подключение закрывается так:
+`sudo -u postgres psql -X -c "SELECT pg_terminate_backend(<pid>)"`.
 
 ## 7. Внешний доступ (Caddy)
 
