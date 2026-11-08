@@ -431,3 +431,20 @@ tools/smoke-internal-api.sh /tmp/judge-token http://127.0.0.1:8002   # прот�
 `/etc/judge/worker.env` (D-065).
 `dev_seed` и smoke-скрипт меняют данные: только для `judge_test`. Ручные `runner.cli` (box 100–101) можно запускать
 при работающих сервисах; два ручных запуска одновременно конфликтуют между собой.
+
+**Схемы прерванных прогонов `tests/pg`.** Каждый класс тестов работает в своей одноразовой схеме и удаляет её в конце;
+прерванный прогон (Ctrl-C, зависание, убитый процесс) удалить её не успевает. Имена схем несут время создания
+(`t_<unixtime>_<hex>`, у миграционных тестов `m_<unixtime>_<hex>`), и первый класс каждого прогона удаляет такие схемы
+старше 6 часов (`tests/pg/pgbase.py`, сообщение `pgbase: dropped N stale test schemas` в stderr); идущий параллельно
+прогон и схемы с другими именами не затрагиваются. Схемы старого формата без времени (`t_<10 hex>`, `m_<10 hex>`,
+до 4б.0) так не удаляются — один раз вручную, когда pg-тесты не идут:
+
+```bash
+set -a; . ~/.config/judge/test.env; set +a
+.venv/bin/python -c "import os, sqlalchemy as sa
+e = sa.create_engine(os.environ['JUDGE_TEST_DATABASE_URL'])
+with e.begin() as c:
+    names = c.execute(sa.text(\"SELECT schema_name FROM information_schema.schemata WHERE schema_name ~ '^[tm]_[0-9a-f]{10}\$'\")).scalars().all()
+    [c.execute(sa.text(f'DROP SCHEMA \"{n}\" CASCADE')) for n in names]
+    print('dropped', len(names))"
+```

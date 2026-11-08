@@ -6,9 +6,8 @@ or at CHECK constraints, so index, enum and constraint definitions are also comp
 create_all builds (PgCase's schema). Hand-written data steps of migrations have their own tests.
 """
 import re
-import uuid
 
-from tests.pg.pgbase import HAVE_SA, ROOT, URL, PgCase, requires_pg
+from tests.pg.pgbase import HAVE_SA, ROOT, URL, PgCase, requires_pg, schema_name
 
 if URL and HAVE_SA:
     from alembic import command
@@ -48,7 +47,7 @@ class MigrationTests(PgCase):
 
     def scratch_schema(self):
         """A fresh empty schema and an engine bound to it; dropped at cleanup."""
-        schema = "m_" + uuid.uuid4().hex[:10]
+        schema = schema_name("m")  # with its creation time: pgbase sweeps it if an interrupted run left it
         admin = create_engine(URL)
         with admin.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA "{schema}"'))
