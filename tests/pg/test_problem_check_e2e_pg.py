@@ -4,7 +4,6 @@ API (uvicorn on a free localhost port) -> a real WorkerProcess (local sandbox) -
 The test packages in tests/problems/check-* and the examples in problems-examples/ are imported as they are. Skipped
 unless JUDGE_TEST_DATABASE_URL is set. The isolate backend is not used here (sandbox-check / redteam by hand).
 """
-import os
 import socket
 import tempfile
 import threading
@@ -12,9 +11,9 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest import mock
 
 from tests.pg.pgbase import HAVE_SA, ROOT, URL, PgCase, requires_pg
+from tests.unsafe_local import enable_for_test
 
 EXAMPLES = ROOT / "problems-examples"
 PACKAGES = ROOT / "tests" / "problems"
@@ -62,10 +61,10 @@ def free_port() -> int:
 
 @requires_pg
 @unittest.skipUnless(HAVE_UVICORN, "needs uvicorn")
-@mock.patch.dict(os.environ, {"JUDGE_ALLOW_UNSAFE_LOCAL": "1"})
 class ProblemCheckEndToEndTests(PgCase):
     def setUp(self):
         super().setUp()
+        enable_for_test(self)  # the local backend for this test only (tests/unsafe_local.py)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)

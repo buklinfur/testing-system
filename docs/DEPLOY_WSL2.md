@@ -407,5 +407,8 @@ python -m app.judgectl queue judgements --last 20
 (umask 077; python -m app.judgectl worker token create smoke | tail -1 > /tmp/judge-token)
 tools/smoke-internal-api.sh /tmp/judge-token http://127.0.0.1:8002   # протокол воркера curl-ом, код выхода = число провалов
 ```
+Воркер на dev-бэкенде (`JUDGE_BACKEND=local`, без песочницы) для такой проверки запускается вручную, с
+`JUDGE_ALLOW_UNSAFE_LOCAL=1 JUDGE_DEV=1`; под systemd он не стартует никогда, даже с этими флагами в
+`/etc/judge/worker.env` (D-065).
 `dev_seed` и smoke-скрипт меняют данные: только для `judge_test`. Ручные `runner.cli` (box 100–101) можно запускать
 при работающих сервисах; два ручных запуска одновременно конфликтуют между собой.

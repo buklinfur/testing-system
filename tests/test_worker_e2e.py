@@ -19,7 +19,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend"))
-os.environ["JUDGE_ALLOW_UNSAFE_LOCAL"] = "1"
 
 import worker.process as worker_process  # noqa: E402
 from tests.fakebackend import TOKEN, FakeBackend  # noqa: E402
@@ -27,6 +26,11 @@ from worker.client import ApiClient  # noqa: E402
 from worker.config import WorkerConfig  # noqa: E402
 from worker.process import WorkerProcess  # noqa: E402
 from worker.topology import WorkerSlot  # noqa: E402
+from tests.unsafe_local import child_env, enable_for_module  # noqa: E402
+
+
+def setUpModule():
+    enable_for_module()  # JUDGE_ALLOW_UNSAFE_LOCAL / JUDGE_DEV for this module's tests only (tests/unsafe_local.py)
 
 EX = ROOT / "problems-examples"
 OK_SUM = (EX / "sum-of-two/solutions/ok.py").read_bytes()
@@ -470,10 +474,10 @@ class CheckE2E(unittest.TestCase):
 
 class SupervisorE2E(unittest.TestCase):
     def start_supervisor(self, h: WorkerHarness, workers: int = 2) -> subprocess.Popen:
-        env = dict(os.environ, JUDGE_API_URL=h.url, JUDGE_WORKER_TOKEN=TOKEN, JUDGE_BACKEND="local",
-                   JUDGE_ALLOW_UNSAFE_LOCAL="1", JUDGE_PIN_CPUS="0", JUDGE_WORKERS=str(workers),
-                   JUDGE_MACHINE_NAME="sup", JUDGE_CACHE_DIR=str(Path(h.tmp.name) / "supcache"),
-                   JUDGE_POLL_INTERVAL_S="0.05", JUDGE_HEARTBEAT_INTERVAL_S="0.2", JUDGE_DRAIN_TIMEOUT_S="20")
+        env = child_env(JUDGE_API_URL=h.url, JUDGE_WORKER_TOKEN=TOKEN, JUDGE_BACKEND="local",
+                        JUDGE_PIN_CPUS="0", JUDGE_WORKERS=str(workers),
+                        JUDGE_MACHINE_NAME="sup", JUDGE_CACHE_DIR=str(Path(h.tmp.name) / "supcache"),
+                        JUDGE_POLL_INTERVAL_S="0.05", JUDGE_HEARTBEAT_INTERVAL_S="0.2", JUDGE_DRAIN_TIMEOUT_S="20")
         proc = subprocess.Popen([sys.executable, "-m", "worker", "run"], cwd=ROOT, env=env)
         self.addCleanup(lambda: proc.poll() is None and (proc.kill(), proc.wait()))
         return proc

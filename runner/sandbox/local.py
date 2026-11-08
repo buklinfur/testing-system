@@ -1,7 +1,9 @@
 """UNSAFE development backend: plain subprocess + rlimits. NOT a sandbox.
 
 It exists so the judging logic can be tested on machines without isolate (CI, a laptop).
-Never use it for code written by students. Enabled only if JUDGE_ALLOW_UNSAFE_LOCAL=1.
+Never use it for code written by students. Enabled only on a development machine (D-065): JUDGE_ALLOW_UNSAFE_LOCAL=1
+and JUDGE_DEV=1, and not under systemd (INVOCATION_ID, which systemd sets for every service, must be absent). The
+worker checks the same before it starts (worker/cli.py, its own code): bypassing one check does not open the other.
 """
 from __future__ import annotations
 
@@ -65,12 +67,29 @@ class _LocalRunning(RunningProcess):
         return RunResult(Verdict.OK, **base)
 
 
+def local_refusal(env: Mapping[str, str]) -> Optional[str]:
+    """Why the unsafe local backend may not run with this environment, or None when it may. The reason names the
+    missing conditions only, never the value of any variable."""
+    missing = []
+    if env.get("JUDGE_ALLOW_UNSAFE_LOCAL") != "1":
+        missing.append("JUDGE_ALLOW_UNSAFE_LOCAL=1 is not set")
+    if env.get("JUDGE_DEV") != "1":
+        missing.append("JUDGE_DEV=1 is not set")
+    if "INVOCATION_ID" in env:
+        missing.append("it runs under systemd (INVOCATION_ID is set)")
+    if not missing:
+        return None
+    return ("the local backend is UNSAFE (no sandbox) and runs only on a development machine: "
+            + "; ".join(missing))
+
+
 class LocalSandbox(Sandbox):
     inside_path = ""
 
     def __init__(self) -> None:
-        if os.environ.get("JUDGE_ALLOW_UNSAFE_LOCAL") != "1":
-            raise SandboxError("the local backend is UNSAFE; set JUDGE_ALLOW_UNSAFE_LOCAL=1 to use it for development")
+        refusal = local_refusal(os.environ)
+        if refusal:
+            raise SandboxError(refusal)
         self._tmp: Optional[str] = None
         self.box_dir = Path()
 

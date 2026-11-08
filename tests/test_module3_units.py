@@ -11,7 +11,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend"))
-os.environ["JUDGE_ALLOW_UNSAFE_LOCAL"] = "1"
 
 from app import loadinfo, metrics  # noqa: E402
 from app.blobstore import BlobStore  # noqa: E402
@@ -24,6 +23,11 @@ from worker import topology  # noqa: E402
 from worker.cache import DiskCache, DiskJuryCache, IntegrityError  # noqa: E402
 from worker.config import WorkerConfig  # noqa: E402
 from worker.supervisor import Supervisor, restart_delay  # noqa: E402
+from tests.unsafe_local import enable_for_module  # noqa: E402
+
+
+def setUpModule():
+    enable_for_module()  # JUDGE_ALLOW_UNSAFE_LOCAL / JUDGE_DEV for this module's tests only (tests/unsafe_local.py)
 
 
 def sha(data: bytes) -> str:
