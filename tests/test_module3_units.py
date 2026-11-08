@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -345,8 +346,78 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(restart_delay(1, 1), 1.0)
         self.assertEqual(restart_delay(3, 1), 4.0)
         self.assertEqual(restart_delay(20, 1), 60.0)
-        self.assertEqual(restart_delay(1, 78), 60.0)
-        self.assertEqual(restart_delay(1, 75), 60.0)
+        self.assertEqual(restart_delay(1, 75), 60.0)  # superseded: restarted, but not before a minute
+
+    def test_exit_78_is_final_no_restart_and_the_supervisor_exits_78(self):
+        """78 = a configuration error: the worker is not restarted, the others are stopped, run() returns 78."""
+        clock = [0.0]
+        procs = []
+
+        def spawn(slot):
+            p = self.FakeProc()
+            procs.append(p)
+            return p
+
+        slots = topology.plan_workers([], workers=2, pin=False)
+        sup = Supervisor(WorkerConfig(token="t"), slots, spawn=spawn, clock=lambda: clock[0])
+        sup.tick()
+        procs[0].code = 78
+        sup.tick()
+        self.assertTrue(sup.stopping.is_set())
+        self.assertEqual(sup.exit_code, 78)
+        clock[0] += 3600
+        sup.tick()
+        self.assertEqual(len(procs), 2, "never restarted, nobody else started")
+
+    def test_run_returns_78_after_stopping_the_others(self):
+        procs = []
+
+        class Proc(self.FakeProc):
+            def send_signal(self, sig):  # a worker finishes its job and exits on SIGTERM
+                super().send_signal(sig)
+                self.code = 0
+
+        def spawn(slot):
+            p = Proc()
+            p.code = 78 if not procs else None  # worker 0: bad token at once; worker 1 keeps running
+            procs.append(p)
+            return p
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = WorkerConfig(token="t", cache_dir=Path(tmp), drain_timeout_s=1)
+            sup = Supervisor(cfg, topology.plan_workers([], workers=2, pin=False), spawn=spawn)
+            with mock.patch("signal.signal"):
+                self.assertEqual(sup.run(), 78)
+        self.assertEqual(len(procs), 2)
+        self.assertTrue(procs[1].signals, "the other worker was asked to stop")
+
+    def test_exit_75_is_still_restarted(self):
+        clock = [0.0]
+        procs = []
+
+        def spawn(slot):
+            p = self.FakeProc()
+            procs.append(p)
+            return p
+
+        sup = Supervisor(WorkerConfig(token="t"), topology.plan_workers([], workers=1, pin=False), spawn=spawn,
+                         clock=lambda: clock[0])
+        sup.tick()
+        procs[0].code = 75
+        sup.tick()
+        clock[0] += 59
+        sup.tick()
+        self.assertEqual(len(procs), 1)
+        clock[0] += 2
+        sup.tick()
+        self.assertEqual((len(procs), sup.stopping.is_set(), sup.exit_code), (2, False, 0))
+
+    def test_systemd_unit_does_not_restart_on_78(self):
+        unit = (ROOT / "deploy" / "systemd" / "judge-worker.service").read_text(encoding="utf-8")
+        lines = {line.split("=", 1)[0]: line.split("=", 1)[1] for line in unit.splitlines()
+                 if "=" in line and not line.lstrip().startswith("#")}
+        self.assertEqual(lines.get("Restart"), "always")
+        self.assertEqual(lines.get("RestartPreventExitStatus"), "78")
 
 
 EXAMPLES = ROOT / "problems-examples"

@@ -245,6 +245,25 @@ journalctl -u judge-worker -u judge-api-internal -u judge-reaper --since -5min -
 `judge_typical_judge_seconds`, `judge_queue_wait_seconds`, `judge_finished_total{verdict}`, `judge_requeued_total`.
 Тревожные признаки: все воркеры заняты и растёт `oldest_queued_age`; растёт `requeued_total` (воркеры падают); нет воркеров онлайн.
 
+**Воркеры остановились с кодом 78** — окончательная ошибка конфигурации ([`WORKER.md`](WORKER.md) «Остановка и
+сбои»): supervisor не перезапускает воркер, вышедший с 78, останавливает остальные и выходит с 78 сам, а systemd
+(`RestartPreventExitStatus=78`) службу не перезапускает. Выглядит так:
+
+```text
+$ systemctl status judge-worker
+     Active: failed (Result: exit-code) since …
+    Process: 1234 ExecStart=/opt/judge/.venv/bin/python -m worker run (code=exited, status=78/CONFIG)
+
+$ journalctl -u judge-worker -n 20
+ERROR [w0] judge.worker: cannot register: authentication failed …
+ERROR [sup] judge.supervisor: worker 0 exited with code 78 (a configuration error, see its log above): not restarting; …
+```
+
+Причину называет строка `ERROR` перед ней: токен (`JUDGE_WORKER_TOKEN` в `/etc/judge/worker.env` отозван или неверен —
+новый: `judgectl worker token create`), настройка (`bad configuration: …`) или dev-бэкенд (`backend=local is UNSAFE …`,
+D-065). Исправить и `sudo systemctl start judge-worker`. Код **75** (вытеснение процессом с тем же именем) так не
+выглядит: supervisor перезапускает воркер через минуту, служба остаётся `active`.
+
 В журнале `isolate.service` записи `A process of this unit has been killed by the OOM killer` появляются при каждом
 `redteam` (тесты `memory-bomb` специально выедают память, ядро убивает их внутри cgroup песочницы) и при решениях учеников
 с ML. Сам cg-keeper при этом не страдает.
