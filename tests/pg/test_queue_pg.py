@@ -378,6 +378,7 @@ class LoadTests(PgCase):
         self.s.commit()
         q.heartbeat(self.s, w, state="idle", judgement_id=None, attempt=None, phase=None, tests_done=None, tests_total=None, stats={})
         self.s.commit()
+        q.read_one_moment(self.s)  # every number below is of this one moment
         snap = q.load_snapshot(self.s, self.settings, user_id=b.id)
         self.assertEqual((snap.queue_length, snap.workers_online, snap.workers_busy), (4, 1, 0))
         self.assertEqual(snap.my_position, 4, "equal counters: age decides, student 2 came last")
@@ -395,7 +396,10 @@ class LoadTests(PgCase):
         self.s.commit()
 
     def counters(self):
+        self.s.commit()
+        q.read_one_moment(self.s)
         snap = q.load_snapshot(self.s, self.settings)
+        self.s.commit()
         return snap.workers_online, snap.workers_busy, snap.level
 
     def test_busy_follows_the_jobs_without_waiting_for_a_heartbeat(self):
@@ -438,6 +442,7 @@ class LoadTests(PgCase):
             self.submission(student)
         self.s.commit()
         self.assertEqual(self.counters(), (1, 0, "overloaded"), "two jobs, one worker that will take them")
+        q.read_one_moment(self.s)
         metrics_out = q.collect_metrics(self.s, self.settings)
         self.assertEqual(metrics_out["workers_by_state"], {"idle": 1, "draining": 1}, "metrics still show both")
 

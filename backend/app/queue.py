@@ -444,7 +444,7 @@ def _recent_durations(session: Session, limit: int = 50) -> list:
     return [(float(a), float(b)) for a, b in rows]
 
 
-def _workers_online(session: Session, settings: QueueSettings) -> tuple:
+def _workers_online(session: Session, settings: QueueSettings, now: datetime) -> tuple:
     """(capacity, busy, by_state) of workers with a fresh heartbeat.
 
     capacity counts idle and busy workers only: a draining worker takes no new jobs. A worker that holds a check of
@@ -452,7 +452,7 @@ def _workers_online(session: Session, settings: QueueSettings) -> tuple:
     itself is not counted anywhere the students see. busy counts the workers that actually hold a judgement in
     progress (the judgements table), not the state flag, which the heartbeat updates only every few seconds.
     """
-    cutoff = _now() - timedelta(seconds=settings.heartbeat_timeout_s)
+    cutoff = now - timedelta(seconds=settings.heartbeat_timeout_s)  # `now`: the moment of the snapshot (database)
     fresh = (Worker.last_heartbeat >= cutoff, Worker.state != "stopped")
     by_state = {state: n for state, n in session.execute(
         select(Worker.state, func.count()).where(*fresh).group_by(Worker.state)).all()}
@@ -465,21 +465,44 @@ def _workers_online(session: Session, settings: QueueSettings) -> tuple:
     return by_state.get("idle", 0) + by_state.get("busy", 0) - checking, busy, by_state
 
 
-def read_one_moment(session: Session) -> None:
-    """Make the following reads see one moment of the database (call before the first query of the transaction).
+MOMENT = "judge.moment"  # session.info key: (the transaction, its database time), set by read_one_moment
 
-    The load snapshot and the status page are several queries; under READ COMMITTED a judgement finished
-    between them is counted in one and not in the other (e.g. 5 busy workers but 4 holding a job).
+
+def read_one_moment(session: Session) -> datetime:
+    """Start a transaction whose reads all see one moment of the database, and mark it for the snapshot functions
+    (load_snapshot, collect_metrics, worker_table), which refuse without the mark (D-067).
+
+    The snapshot is several queries; under READ COMMITTED a judgement claimed or finished between them is counted in
+    one and not in the other (5 busy workers but 4 holding a job, a place behind the end of the queue). Here the
+    transaction is REPEATABLE READ, and every time in the snapshot is the database's now() of that transaction, read
+    once - never the clock of this process. It must be the first thing the transaction does: an endpoint that already
+    read (the session check) commits first. The mark belongs to this transaction: after a commit or a rollback the
+    snapshot functions refuse until read_one_moment is called again. Returns the moment.
     """
+    if session.in_transaction():
+        raise QueueError("read_one_moment must start the transaction: commit or roll back what was read before")
     session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+    at = session.execute(select(func.now())).scalar_one()
+    session.info[MOMENT] = (session.get_transaction(), at)
+    return at
+
+
+def _moment(session: Session) -> datetime:
+    """The database time of the snapshot's transaction; QueueError without read_one_moment in this transaction."""
+    mark = session.info.get(MOMENT)
+    if mark is None or mark[0] is not session.get_transaction() or not session.in_transaction():
+        raise QueueError("the load snapshot reads one moment of the database: call queue.read_one_moment() first, "
+                         "at the start of this transaction")
+    return mark[1]
 
 
 def load_snapshot(session: Session, settings: QueueSettings, user_id: Optional[int] = None,
                   judgement_id: Optional[int] = None) -> LoadSnapshot:
-    """Numbers for the students' load indicator: queue length, busy workers, expected wait."""
+    """Numbers for the students' load indicator: queue length, busy workers, expected wait. Needs read_one_moment."""
+    now = _moment(session)
     queued = session.execute(select(func.count()).select_from(Judgement).where(
         Judgement.status == JudgementStatus.queued)).scalar_one()
-    online, busy, _ = _workers_online(session, settings)
+    online, busy, _ = _workers_online(session, settings, now)
     typical = typical_judge_seconds([d for d, _w in _recent_durations(session)])
     snap = LoadSnapshot(queue_length=queued, workers_online=online, workers_busy=busy, typical_seconds=typical)
     if user_id is not None or judgement_id is not None:
@@ -490,10 +513,12 @@ def load_snapshot(session: Session, settings: QueueSettings, user_id: Optional[i
 
 
 def collect_metrics(session: Session, settings: QueueSettings) -> dict:
+    """Queue and worker metrics (/internal/metrics, /internal/status, /system). Needs read_one_moment."""
+    now = _moment(session)
     queued = session.execute(select(func.count(), func.min(Judgement.created_at)).where(
         Judgement.status == JudgementStatus.queued)).one()
     in_flight = session.execute(select(func.count()).select_from(Judgement).where(Judgement.status.in_(IN_FLIGHT))).scalar_one()
-    online, _busy, by_state = _workers_online(session, settings)
+    online, _busy, by_state = _workers_online(session, settings, now)
     durations = _recent_durations(session)
     finished = dict(session.execute(select(Judgement.verdict, func.count()).where(
         Judgement.status == JudgementStatus.finished).group_by(Judgement.verdict)).all())
@@ -501,7 +526,7 @@ def collect_metrics(session: Session, settings: QueueSettings) -> dict:
     waits = sorted(w for _d, w in durations)
     return {
         "queue_length": queued[0],
-        "oldest_queued_age_s": (_now() - queued[1]).total_seconds() if queued[1] else 0.0,
+        "oldest_queued_age_s": (now - queued[1]).total_seconds() if queued[1] else 0.0,
         "in_flight": in_flight, "workers_online": online, "workers_by_state": by_state,
         "typical_seconds": typical_judge_seconds([d for d, _w in durations]),
         "median_wait_s": waits[len(waits) // 2] if waits else 0.0,
@@ -512,14 +537,15 @@ def collect_metrics(session: Session, settings: QueueSettings) -> dict:
 
 
 def worker_table(session: Session, settings: QueueSettings) -> list:
-    """One row per worker for the admin status page / CLI."""
-    now = _now()
+    """One row per worker for the admin status page / CLI. Needs read_one_moment."""
+    now = _moment(session)
     held = {r.worker_id: r.id for r in session.execute(select(Judgement.worker_id, Judgement.id).where(
         Judgement.status.in_(IN_FLIGHT))).all()}
     checking = {r.worker_id: r.id for r in session.execute(select(VersionCheck.worker_id, VersionCheck.id).where(
         VersionCheck.status == CheckStatus.running)).all()}
     rows = []
-    for w in session.execute(select(Worker).order_by(Worker.name)).scalars():
+    # populate_existing: the rows as this transaction's snapshot sees them, not objects an earlier one left in the session
+    for w in session.execute(select(Worker).order_by(Worker.name).execution_options(populate_existing=True)).scalars():
         age = (now - w.last_heartbeat).total_seconds() if w.last_heartbeat else None
         online = age is not None and age <= settings.heartbeat_timeout_s and w.state != "stopped"
         rows.append({"id": w.id, "name": w.name, "state": w.state if online else "offline", "heartbeat_age_s": age,

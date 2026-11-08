@@ -135,8 +135,9 @@ class WorkerApiTests(PgCase):
         real = q.read_one_moment
 
         def spy(session):
-            real(session)
+            moment = real(session)
             seen.append(session.execute(text("SHOW transaction_isolation")).scalar_one())
+            return moment
         with mock.patch.object(q, "read_one_moment", spy):
             self.assertEqual(self.client.get("/internal/status").status_code, 200)
             self.assertEqual(self.client.get("/internal/metrics").status_code, 200)
