@@ -200,10 +200,12 @@ def claim(worker: Worker = Depends(current_worker), session: Session = Depends(g
 
 
 @router.post("/heartbeat")
-def heartbeat(body: HeartbeatBody, worker: Worker = Depends(current_worker), session: Session = Depends(get_session)):
+def heartbeat(body: HeartbeatBody, worker: Worker = Depends(current_worker), session: Session = Depends(get_session),
+              settings=Depends(get_settings)):
+    """{cancel, reclaimed}: reclaimed lists the jobs this worker held without naming them, returned to the queue."""
     reply = q.heartbeat(session, worker, state=body.state, judgement_id=body.judgement_id, attempt=body.attempt,
                         phase=body.phase, tests_done=body.tests_done, tests_total=body.tests_total, stats=body.stats,
-                        check_id=body.check_id)
+                        check_id=body.check_id, settings=settings.queue)
     session.commit()
     return reply
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -34,6 +35,10 @@ PRIORITY_REJUDGE = 10
 CLAIM_LOCK_KEY = 7_340_001  # pg_advisory_xact_lock key: claims are serialized (milliseconds), see docs/QUEUE.md
 ACTIVE = (JudgementStatus.queued, JudgementStatus.compiling, JudgementStatus.running)
 IN_FLIGHT = (JudgementStatus.compiling, JudgementStatus.running)
+log = logging.getLogger("judge.queue")
+# judgements.error of a judgement the server ended itself (gave up after max_attempts): a late result of its last
+# holder is refused (409), like a check whose report says by=server (D-069)
+SERVER_GAVE_UP = "the server gave up after "
 DONE = (JudgementStatus.finished, JudgementStatus.internal_error)
 
 
@@ -290,9 +295,10 @@ def queue_position(session: Session, settings: QueueSettings, judgement_id: Opti
 # ---------------------------------------------------------------------------------- heartbeat / release
 def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Optional[int], attempt: Optional[int],
               phase: Optional[str], tests_done: Optional[int], tests_total: Optional[int], stats: dict,
-              check_id: Optional[int] = None) -> dict:
+              settings: QueueSettings, check_id: Optional[int] = None) -> dict:
     """A heartbeat about the worker and the job it holds: a judgement (judgement_id) or a check (check_id; then
-    tests_done / tests_total count reference solutions)."""
+    tests_done / tests_total count reference solutions). Jobs this worker holds but does not name go back to
+    the queue (reclaim_orphans); the reply lists them in `reclaimed`."""
     worker.last_heartbeat = func.now()
     worker.state = state if state in ("idle", "busy", "draining", "stopped") else "idle"
     worker.stats = stats or {}
@@ -309,7 +315,46 @@ def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Opt
             Judgement.id == judgement_id, Judgement.worker_id == worker.id, Judgement.attempt == attempt,
             Judgement.status.in_(IN_FLIGHT)).values(**values))
         cancel = result.rowcount == 0  # taken away (reaper), finished elsewhere, or never ours
-    return {"cancel": cancel}
+    reclaimed = reclaim_orphans(session, worker, settings, judgement_id=judgement_id, check_id=check_id,
+                                attempt=attempt)
+    return {"cancel": cancel, "reclaimed": reclaimed}
+
+
+def reclaim_orphans(session: Session, worker: Worker, settings: QueueSettings, *, judgement_id: Optional[int],
+                    check_id: Optional[int], attempt: Optional[int]) -> list:
+    """The safety net «idle, but holding a job» (D-069): a judgement or a check the database says this worker holds,
+    which this heartbeat does not name (another id or attempt, or nothing) and which was handed out longer than
+    `heartbeat_timeout_s` ago by the database clock, goes back to the queue as a failed attempt (failures + 1, IE
+    after max_attempts). The grace covers a heartbeat sent just before a claim answered. The rows are taken FOR UPDATE
+    SKIP LOCKED: a job whose result is being recorded right now (finish holds the row) is left alone - and once the
+    result is in, it is not in flight any more. Returns [{"kind", "id", "attempt", "result"}]."""
+    cutoff = func.now() - timedelta(seconds=settings.heartbeat_timeout_s)
+    out = []
+    jobs = session.execute(select(Judgement).where(
+        Judgement.worker_id == worker.id, Judgement.status.in_(IN_FLIGHT), Judgement.started_at < cutoff)
+        .with_for_update(skip_locked=True)).scalars().all()
+    for j in jobs:
+        if j.id == judgement_id and j.attempt == attempt:
+            continue
+        held = j.attempt
+        result = _fail_attempt(session, j, "worker_idle_holding", settings)
+        _event(session, "orphan_reclaimed", worker.id, j.id, attempt=held, result=result)
+        log.warning("worker %s (%s) holds judgement %s attempt %s but its heartbeat does not name it: %s",
+                    worker.id, worker.name, j.id, held, result)
+        out.append({"kind": "judgement", "id": j.id, "attempt": held, "result": result})
+    for check in checks.orphans(session, worker, cutoff):
+        if check.id == check_id and check.attempt == attempt:
+            continue
+        held = check.attempt
+        result = checks.fail_attempt(session, check, "worker_idle_holding",
+                                     "the worker's heartbeat did not name the check it held", settings)
+        checks.record_orphan(session, check, worker, held, result)
+        log.warning("worker %s (%s) holds check %s attempt %s but its heartbeat does not name it: %s",
+                    worker.id, worker.name, check.id, held, result)
+        out.append({"kind": "check", "id": check.id, "attempt": held, "result": result})
+    if out and worker.state == "busy" and judgement_id is None and check_id is None:
+        worker.state = "idle"
+    return out
 
 
 def _free(worker: Worker) -> None:
@@ -339,7 +384,7 @@ def _fail_attempt(session: Session, j: Judgement, reason: str, settings: QueueSe
     j.failures += 1
     if j.failures >= settings.max_attempts:
         j.status, j.verdict, j.finished_at = JudgementStatus.internal_error, Verdict.IE, func.now()
-        j.error = f"gave up after {j.failures} failed attempts; last reason: {reason}"
+        j.error = f"{SERVER_GAVE_UP}{j.failures} failed attempts; last reason: {reason}"
         _event(session, "gave_up", j.worker_id, j.id, reason=reason, failures=j.failures)
         return "gave_up"
     _event(session, "requeued", j.worker_id, j.id, reason=reason, failures=j.failures, attempt=j.attempt)
@@ -386,6 +431,8 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
         raise LeaseLost("the judgement belongs to another worker or attempt")
     _free(worker)  # rolled back with everything else if the result turns out to be malformed
     if j.status in DONE:
+        if j.status == JudgementStatus.internal_error and (j.error or "").startswith(SERVER_GAVE_UP):
+            raise LeaseLost("the server already ended this judgement (gave up after max_attempts)")
         return "already_recorded"  # the same result delivered twice (network retry)
     if j.status not in IN_FLIGHT:
         raise LeaseLost("the judgement is not in progress")
@@ -397,6 +444,8 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
 
     if verdict == Verdict.IE:
         j.error = payload.get("error")
+        if (j.error or "").startswith(SERVER_GAVE_UP):  # the server's mark is only ever the server's (D-069)
+            j.error = "worker: " + j.error
         if j.failures + 1 < settings.max_attempts:
             _fail_attempt(session, j, f"internal error: {payload.get('error')}", settings)
             return "requeued"
@@ -528,6 +577,8 @@ def collect_metrics(session: Session, settings: QueueSettings) -> dict:
     finished = dict(session.execute(select(Judgement.verdict, func.count()).where(
         Judgement.status == JudgementStatus.finished).group_by(Judgement.verdict)).all())
     requeued = session.execute(select(func.coalesce(func.sum(Judgement.failures), 0))).scalar_one()
+    orphans = session.execute(select(func.count()).select_from(QueueEvent)
+                              .where(QueueEvent.kind == "orphan_reclaimed")).scalar_one()
     waits = sorted(w for _d, w in durations)
     return {
         "queue_length": queued[0],
@@ -537,6 +588,7 @@ def collect_metrics(session: Session, settings: QueueSettings) -> dict:
         "median_wait_s": waits[len(waits) // 2] if waits else 0.0,
         "finished_by_verdict": {(v.value if v else "none"): n for v, n in finished.items()},
         "requeued_total": int(requeued),
+        "orphan_reclaims": orphans,  # the safety net «idle, but holding» (D-069), within the event retention
         "checks": checks.overview(session),  # problem checks: for admins only, never in the students' numbers
     }
 

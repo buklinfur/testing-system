@@ -162,6 +162,18 @@ def held_by(session: Session, worker_id: int) -> list:
         VersionCheck.worker_id == worker_id, VersionCheck.status == CheckStatus.running).with_for_update()).scalars())
 
 
+def orphans(session: Session, worker: Worker, cutoff) -> list:
+    """Running checks of this worker handed out before `cutoff` (a database expression), locked FOR UPDATE SKIP
+    LOCKED: one whose result is being recorded right now is not returned (queue.reclaim_orphans, D-069)."""
+    return list(session.execute(select(VersionCheck).where(
+        VersionCheck.worker_id == worker.id, VersionCheck.status == CheckStatus.running,
+        VersionCheck.started_at < cutoff).with_for_update(skip_locked=True)).scalars())
+
+
+def record_orphan(session: Session, check: VersionCheck, worker: Worker, attempt: int, result: str) -> None:
+    _event(session, "orphan_reclaimed", check, worker.id, attempt=attempt, result=result)
+
+
 def checking_worker_ids(session: Session):
     """A subquery: the workers that hold a running check (not capacity for submissions, D-050)."""
     return select(VersionCheck.worker_id).where(VersionCheck.status == CheckStatus.running,

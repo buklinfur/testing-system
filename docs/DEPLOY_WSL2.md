@@ -242,8 +242,10 @@ journalctl -u judge-worker -u judge-api-internal -u judge-reaper --since -5min -
 | История очереди | `j .venv/bin/python -m app.judgectl queue events --last 30` (регистрации, `released`, `requeued`, `gave_up`, с воркером; 14 дней) |
 
 Метрики: `judge_queue_length`, `judge_queue_oldest_age_seconds`, `judge_in_flight`, `judge_workers{state}`,
-`judge_typical_judge_seconds`, `judge_queue_wait_seconds`, `judge_finished_total{verdict}`, `judge_requeued_total`.
-Тревожные признаки: все воркеры заняты и растёт `oldest_queued_age`; растёт `requeued_total` (воркеры падают); нет воркеров онлайн.
+`judge_typical_judge_seconds`, `judge_queue_wait_seconds`, `judge_finished_total{verdict}`, `judge_requeued_total`,
+`judge_orphan_reclaims` (задания, отобранные у воркера, который держал их, не называя в heartbeat; D-069).
+Тревожные признаки: все воркеры заняты и растёт `oldest_queued_age`; растёт `requeued_total` (воркеры падают); нет воркеров онлайн;
+растёт `judge_orphan_reclaims` (воркеры теряют задания: смотреть `journalctl -u judge-worker` на «could not be delivered»).
 
 **Воркеры остановились с кодом 78** — окончательная ошибка конфигурации ([`WORKER.md`](WORKER.md) «Остановка и
 сбои»): supervisor не перезапускает воркер, вышедший с 78, останавливает остальные и выходит с 78 сам, а systemd

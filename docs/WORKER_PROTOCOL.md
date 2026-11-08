@@ -14,7 +14,7 @@
 |---|---|
 | `POST /register` `{name, capabilities, info}` → `{worker_id, instance}` | создаёт/перехватывает воркера по имени, новый `instance`; возвращает прошлые задания в очередь |
 | `POST /claim` → `{job: {...} \| null}` | следующее задание: посылка в справедливом порядке с учётом `capabilities`, иначе проверка задачи (ниже) |
-| `POST /heartbeat` `{state, judgement_id \| check_id, attempt, phase, tests_done, tests_total, stats}` → `{cancel}` | жив / прогресс; `cancel=true`: задание отобрано |
+| `POST /heartbeat` `{state, judgement_id \| check_id, attempt, phase, tests_done, tests_total, stats}` → `{cancel, reclaimed}` | жив / прогресс; `cancel=true`: задание отобрано; `reclaimed: [{kind: judgement \| check, id, attempt, result: requeued \| gave_up}]` — задания, которые числились за воркером, но heartbeat их не назвал, и они выданы дольше `heartbeat_timeout_s` назад: возвращены в очередь как провал попытки (D-069). Поле новое, старый воркер его игнорирует |
 | `GET /problem-versions/{id}/manifest` → `{manifest_sha256, manifest}` | описание задачи, файлы по sha256 |
 | `GET /blobs/{sha256}` | содержимое файла (потоком); воркер сверяет хеш |
 | `POST /judgements/{id}/result` | результат; повтор безопасен |
@@ -31,7 +31,7 @@
 | 403 | запрос пришёл через прокси, чужое имя или токен не разрешает capability | — |
 | 409 `deregistered` | этот экземпляр сам сказал `deregister` (`workers.instance_id` пуст); проверяется **раньше** `superseded`, на всех маршрутах, кроме `register`, до разбора тела (D-068) | при остановке — молча; иначе выход **75** и новая регистрация |
 | 409 `superseded` | зарегистрировался другой процесс с этим именем | выход **75** и новая регистрация через минуту |
-| 409 `lease_lost` | результат или `release` от чужой или старой попытки; у проверки — сервер уже завершил её по таймауту или после `max_attempts` | результат не доставляется, в журнал «rejected» |
+| 409 `lease_lost` | результат или `release` от чужой или старой попытки; сервер уже завершил задание сам — проверку по таймауту или после `max_attempts`, посылку после `max_attempts` (D-069) | результат не доставляется, в журнал «rejected» |
 | 422 | результат не сходится с версией задачи или отчёт проверки неверен | — |
 
 **После `deregister`.** Поздний heartbeat (запрос был в пути во время остановки) больше не возвращает воркеру состояние

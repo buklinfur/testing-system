@@ -220,12 +220,12 @@ class ProblemCheckQueueTests(PgCase):
                 checks.finish(self.s, who, c.id, dict(payload, attempt=attempt), self.settings)
         self.s.rollback()
         reply = q.heartbeat(self.s, w, state="busy", judgement_id=None, attempt=2, phase=None, tests_done=1,
-                            tests_total=3, stats={}, check_id=c.id)
-        self.assertEqual(reply, {"cancel": True})
+                            tests_total=3, stats={}, settings=self.settings, check_id=c.id)
+        self.assertEqual(reply, {"cancel": True, "reclaimed": []})
         reply = q.heartbeat(self.s, w, state="busy", judgement_id=None, attempt=1, phase=None, tests_done=1,
-                            tests_total=3, stats={}, check_id=c.id)
+                            tests_total=3, stats={}, settings=self.settings, check_id=c.id)
         self.s.commit()
-        self.assertEqual(reply, {"cancel": False})
+        self.assertEqual(reply, {"cancel": False, "reclaimed": []})
         self.s.refresh(c)
         self.assertEqual((c.progress_done, c.progress_total), (1, 3))
         for bad in ({"attempt": 1}, {"attempt": 1, "outcome": "maybe", "report": {}},

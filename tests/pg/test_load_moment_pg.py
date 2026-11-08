@@ -46,12 +46,14 @@ except ImportError:  # pragma: no cover
 LOAD_KEYS = {"level", "my_position", "my_wait_seconds", "queue_length", "typical_seconds", "workers_busy",
              "workers_online"}
 METRICS_KEYS = {"checks", "finished_by_verdict", "in_flight", "median_wait_s", "oldest_queued_age_s", "queue_length",
-                "requeued_total", "typical_seconds", "workers_by_state", "workers_online"}
+                "requeued_total", "typical_seconds", "workers_by_state", "workers_online",
+                "orphan_reclaims"}  # added in stage 5 of 4b.0 (D-069): an additive key, nothing else changed
 WORKER_KEYS = {"capabilities", "check_id", "heartbeat_age_s", "id", "info", "judgement_id", "name", "state", "stats"}
 SYSTEM_KEYS = {"checks", "config_problems", "load", "metrics", "migration", "timezone", "workers", "workers_known"}
 PROMETHEUS = {"judge_finished_total", "judge_in_flight", "judge_problem_checks", "judge_queue_length",
               "judge_queue_oldest_age_seconds", "judge_queue_wait_seconds", "judge_requeued_total",
-              "judge_typical_judge_seconds", "judge_workers"}
+              "judge_typical_judge_seconds", "judge_workers",
+              "judge_orphan_reclaims"}  # added with D-069
 JUDGECTL_STATUS = {"blobs", "checks", "config_problems", "database", "migration", "migration_head", "queue", "timezone",
                    "workers_known"}
 SNAPSHOT_FUNCTIONS = ("_moment", "load_snapshot", "collect_metrics", "worker_table", "_workers_online",

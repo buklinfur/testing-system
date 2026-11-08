@@ -82,7 +82,7 @@ class WorkerApiTests(PgCase):
         self.assertEqual(self.client.get(f"{base}/blobs/{'0' * 64}", headers=h).status_code, 404)
         hb = self.client.post(f"{base}/heartbeat", headers=h, json={"state": "busy", "judgement_id": job["judgement_id"], "attempt": 1,
                                                                     "phase": "running", "tests_done": 1, "tests_total": 2, "stats": {"jobs_done": 0}})
-        self.assertEqual(hb.json(), {"cancel": False})
+        self.assertEqual(hb.json(), {"cancel": False, "reclaimed": []})
         tests = [{"test_case_id": t["id"], "verdict": "OK", "time_ms": 3, "visible_to_student": True}
                  for t in m["manifest"]["groups"][0]["tests"]]
         body = {"attempt": 1, "verdict": "OK", "score": "100", "max_score": "100", "tests": tests, "summary": {"groups": []}}
@@ -360,7 +360,7 @@ class CheckProtocolTests(PgCase):
 
         hb = self.client.post(f"{BASE}/heartbeat", headers=h, json={
             "state": "busy", "check_id": job["check_id"], "attempt": 1, "tests_done": 1, "tests_total": 2, "stats": {}})
-        self.assertEqual(hb.json(), {"cancel": False})
+        self.assertEqual(hb.json(), {"cancel": False, "reclaimed": []})
         with self.Session() as s:
             c = s.get(VersionCheck, self.check.id)
             self.assertEqual((c.progress_done, c.progress_total), (1, 2))
@@ -410,7 +410,7 @@ class CheckProtocolTests(PgCase):
         self.assertEqual((job2["check_id"], job2["attempt"]), (job["check_id"], 2))
         hb = self.client.post(f"{BASE}/heartbeat", headers=h0, json={"state": "busy", "check_id": job["check_id"],
                                                                      "attempt": 1, "stats": {}})
-        self.assertEqual(hb.json(), {"cancel": True})
+        self.assertEqual(hb.json(), {"cancel": True, "reclaimed": []})
         again = self.client.post(f"{BASE}/problem-checks/{job['check_id']}/release", headers=h0,
                                  json={"attempt": 1, "reason": "worker_stopping"})
         self.assertEqual(again.json(), {"released": False})

@@ -196,7 +196,7 @@ class FakeBackend:
                         cancel = True
                     else:
                         c.update(done=data["tests_done"], total=data["tests_total"])
-                return 200, {"cancel": cancel}
+                return 200, {"cancel": cancel, "reclaimed": []}  # the fake has no safety net (D-069)
             m = re.fullmatch(r"/problem-versions/(\d+)/manifest", path)
             if m:
                 self.manifest_downloads += 1
