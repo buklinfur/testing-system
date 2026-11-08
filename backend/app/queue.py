@@ -121,11 +121,16 @@ def _held_by(session: Session, worker_id: int) -> list:
 
 
 def deregister_worker(session: Session, worker: Worker) -> None:
+    """The worker process says goodbye: its jobs go back to the queue (not a failure) and its instance ends - every
+    later request of that instance is refused with 409 deregistered (worker_api.current_worker), so a late heartbeat
+    cannot turn `stopped` back into `idle` (D-068). A new process registers again and gets a new instance. The reaper
+    marks a silent worker `stopped` without ending its instance: that worker may come back by its next heartbeat."""
     for j in _held_by(session, worker.id):
         _release(session, j, "worker deregistered")
     for check in checks.held_by(session, worker.id):
         checks.release(session, check, "worker deregistered")
     worker.state = "stopped"
+    worker.instance_id = None
     _event(session, "worker_stopped", worker.id)
 
 

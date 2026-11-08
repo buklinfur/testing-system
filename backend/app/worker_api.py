@@ -64,6 +64,9 @@ def current_worker(token: WorkerToken = Depends(token_auth), session: Session = 
     worker = session.get(Worker, x_worker_id)
     if worker is None or worker.token_id != token.id:
         raise HTTPException(403, "unknown worker")
+    if worker.instance_id is None:  # before superseded: this instance said goodbye itself (D-068)
+        raise HTTPException(409, {"code": "deregistered",
+                                  "message": "this worker deregistered: register again to start a new instance"})
     if worker.instance_id != x_worker_instance:
         raise HTTPException(409, {"code": "superseded", "message": "another process registered under this worker name"})
     worker.last_heartbeat = func.now()  # any authenticated call proves the worker is alive

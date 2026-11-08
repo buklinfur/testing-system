@@ -166,10 +166,15 @@ class FakeBackend:
             worker = next((w for w in self.workers.values() if str(w["id"]) == headers.get("X-Worker-Id")), None)
             if worker is None:
                 return 403, {"detail": "unknown worker"}
+            if worker["instance"] is None:  # as worker_api.current_worker: deregistered before superseded
+                return 409, {"detail": {"code": "deregistered"}}
             if worker["instance"] != headers.get("X-Worker-Instance"):
                 return 409, {"detail": {"code": "superseded"}}
-            if path == "/deregister":
-                worker["state"] = "stopped"
+            if path == "/deregister":  # as queue.deregister_worker: jobs back to the queue, not a failure
+                worker["state"], worker["instance"] = "stopped", None
+                for j in self.judgements.values():
+                    if j["worker"] == worker["id"] and j["status"] in ("compiling", "running"):
+                        j.update(status="queued", worker=None, started_at=None)
                 for c in self.checks.values():
                     if c["worker"] == worker["id"] and c["status"] == "running":
                         c.update(status="queued", worker=None)

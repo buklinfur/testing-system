@@ -1,5 +1,6 @@
 """The internal worker API (FastAPI + PostgreSQL) end to end through TestClient.
 Needs: fastapi, httpx, sqlalchemy, psycopg; skipped unless JUDGE_TEST_DATABASE_URL is set."""
+import re
 import tempfile
 import unittest
 import warnings
@@ -22,7 +23,7 @@ if URL and HAVE_SA and HAVE_API:
     from app.blobstore import BlobStore
     from app.internal_main import create_internal_app
     from app.models import (Blob, CheckReason, CheckStatus, Judgement, JudgementStatus, ProblemVersion, Program,
-                            ProgramRole, TestCase, TestResult, Verdict, VersionCheck, VersionStatus)
+                            ProgramRole, TestCase, TestResult, Verdict, VersionCheck, VersionStatus, Worker)
     from app.settings import QueueSettings, Settings
     from protocol.manifest import manifest_digest
     from worker.client import ApiClient
@@ -155,6 +156,92 @@ class WorkerApiTests(PgCase):
         self.assertIn("judge_queue_length 1", text_out)
         status = self.client.get("/internal/status").json()
         self.assertIn("workers", status)
+
+    # ---------------------------------------------------------------- after deregister (D-068)
+    def concrete(self, path: str, job: dict) -> str:
+        """A real URL for a route template of the worker API: ids of this test's job, a stored blob."""
+        values = {"judgement_id": job["judgement_id"], "version_id": job["problem_version_id"], "check_id": 1,
+                  "sha256": self.in_sha}
+        return re.sub(r"\{([^}:]+)(?::[^}]+)?\}", lambda m: str(values[m.group(1)]), path)
+
+    def worker_row(self, reg):
+        self.s.expire_all()
+        return self.s.get(Worker, reg["worker_id"])
+
+    def test_every_route_refuses_a_deregistered_instance(self):
+        """Every route of the worker API, taken from the router itself (a new route is covered without touching this
+        test), answers 409 deregistered after the instance said goodbye - before superseded and before the body is
+        looked at; the worker stays stopped, nothing is changed."""
+        from app.worker_api import router
+        reg = self.register()
+        h = self.headers(reg)
+        job = self.client.post("/internal/worker/v1/claim", headers=h).json()["job"]
+        self.assertEqual(self.client.post("/internal/worker/v1/deregister", headers=h).status_code, 200)
+        w = self.worker_row(reg)
+        self.assertEqual((w.state, w.instance_id), ("stopped", None))
+        beat = w.last_heartbeat
+        self.s.expire_all()
+        self.assertEqual(self.s.get(Judgement, job["judgement_id"]).status, JudgementStatus.queued,
+                         "its job went back to the queue (not a failure)")
+        routes = [(method, route.path) for route in router.routes for method in route.methods
+                  if route.path != "/internal/worker/v1/register"]
+        self.assertGreaterEqual(len(routes), 9, "the sweep really sees the API")
+        bodies = [None, {}, {"state": "busy", "judgement_id": job["judgement_id"], "attempt": job["attempt"]},
+                  {"attempt": job["attempt"], "verdict": "OK", "score": "100", "tests": []}]
+        for method, path in routes:
+            url = self.concrete(path, job)
+            for body in bodies if method == "POST" else [None]:
+                with self.subTest(method=method, path=path, body=body):
+                    r = self.client.request(method, url, headers=h, json=body)
+                    self.assertEqual(r.status_code, 409, r.text)
+                    self.assertEqual(r.json()["detail"]["code"], "deregistered")
+        w = self.worker_row(reg)
+        self.assertEqual((w.state, w.instance_id, w.last_heartbeat), ("stopped", None, beat),
+                         "a late heartbeat did not bring it back")
+        self.s.expire_all()
+        self.assertEqual(self.s.get(Judgement, job["judgement_id"]).status, JudgementStatus.queued)
+        # deregistered comes before superseded: an instance id that never existed gets deregistered too
+        r = self.client.post("/internal/worker/v1/heartbeat", headers={**h, "X-Worker-Instance": "other"}, json={})
+        self.assertEqual((r.status_code, r.json()["detail"]["code"]), (409, "deregistered"))
+
+    def test_register_again_after_deregister_gives_a_new_instance(self):
+        reg = self.register()
+        self.client.post("/internal/worker/v1/deregister", headers=self.headers(reg))
+        again = self.register()
+        self.assertEqual(again["worker_id"], reg["worker_id"])
+        self.assertNotEqual(again["instance"], reg["instance"])
+        r = self.client.post("/internal/worker/v1/heartbeat", headers=self.headers(again), json={"state": "idle"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.worker_row(again).state, "idle")
+        r = self.client.post("/internal/worker/v1/claim", headers=self.headers(reg))  # the old instance
+        self.assertEqual((r.status_code, r.json()["detail"]["code"]), (409, "superseded"))
+
+    def test_a_worker_the_reaper_stopped_comes_back_by_its_heartbeat(self):
+        reg = self.register()
+        h = self.headers(reg)
+        with self.Session() as s:
+            s.execute(text("UPDATE workers SET last_heartbeat = now() - interval '1 hour'"))
+            s.commit()
+            q.reap(s, self.settings)
+            s.commit()
+        w = self.worker_row(reg)
+        self.assertEqual(w.state, "stopped")
+        self.assertIsNotNone(w.instance_id, "the reaper does not end the instance")
+        r = self.client.post("/internal/worker/v1/heartbeat", headers=h, json={"state": "idle"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.worker_row(reg).state, "idle")
+
+    def test_restart_under_the_same_name_supersedes_and_returns_the_jobs(self):
+        reg = self.register()
+        job = self.client.post("/internal/worker/v1/claim", headers=self.headers(reg)).json()["job"]
+        new = self.register()  # the process restarted under the same name
+        self.s.expire_all()
+        j = self.s.get(Judgement, job["judgement_id"])
+        self.assertEqual((j.status, j.worker_id, j.failures), (JudgementStatus.queued, None, 1))
+        for method, path in (("POST", "/claim"), ("POST", "/heartbeat"), ("POST", "/deregister")):
+            r = self.client.request(method, f"/internal/worker/v1{path}", headers=self.headers(reg), json={})
+            self.assertEqual((r.status_code, r.json()["detail"]["code"]), (409, "superseded"), path)
+        self.assertEqual(self.client.post("/internal/worker/v1/claim", headers=self.headers(new)).status_code, 200)
 
 
 
