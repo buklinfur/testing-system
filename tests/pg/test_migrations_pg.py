@@ -738,31 +738,3 @@ class MigrationTests(PgCase):
         with engine.begin() as conn:
             self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "e73284028c20")
             self.assertEqual(conn.execute(text("SELECT count(*) FROM thread_reads")).scalar_one(), 1)
-
-    def test_reset_production_empties_comments_and_reaches_base(self):
-        """deploy/dev/reset-production.sh: its TRUNCATE (taken from the script) empties the feed with the comment
-        threads, comments and read marks, and then `downgrade base` passes the refusals of 4v.1 and 4v.2."""
-        script = (ROOT / "deploy/dev/reset-production.sh").read_text(encoding="utf-8")
-        statements = re.findall(r'sa\.text\("(TRUNCATE [^"]+)"\)', script)
-        self.assertEqual(statements, ["TRUNCATE feed_items CASCADE"])
-        _schema, engine = self.scratch_schema()
-        with engine.begin() as conn:  # no groups and no contest deadlines: their downgrade (4a.3) refuses them
-            self.alembic(conn, "upgrade", "head")
-            self.run_sql(conn, """
-                INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
-                  (2, 'pupil', '!', 'P', 'student', true);
-                INSERT INTO feed_items (id, kind, state, title, body_md, grading, answer_kind, grades_release,
-                                        published_at, comments_enabled)
-                  VALUES (2, 'assignment', 'published', 'H', '', 'none', 'mark', 'manual', '2026-11-05 10:00+00', true);
-                INSERT INTO feed_item_audience (item_id, user_id) VALUES (2, 2)""")
-            for change in self.COMMENTS:
-                conn.execute(text(change))
-        with engine.begin() as conn:
-            conn.execute(text(statements[0]))
-            counts = {t: conn.execute(text(f"SELECT count(*) FROM {t}")).scalar_one()
-                      for t in ("feed_items", "feed_item_audience", "comment_threads", "comments", "thread_reads")}
-            self.assertEqual(counts, dict.fromkeys(counts, 0))
-            self.assertEqual(conn.execute(text("SELECT count(*) FROM users WHERE id = 2")).scalar_one(), 1)
-            self.alembic(conn, "downgrade", "base")
-            left = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")).scalars()
-            self.assertEqual(list(left), ["alembic_version"])

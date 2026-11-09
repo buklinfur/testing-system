@@ -264,8 +264,8 @@ auth_failures, auth_lockouts — неудачные попытки входа и
   - `thread_reads.user_id` → `users`, `.thread_id` → `comment_threads`, `.last_read_comment_id` → `comments`.
 
   Комментарии и ветки не удаляются; пользователи и элементы архивируются (элемент удаляется только черновиком, а
-  в черновике комментариев нет). `TRUNCATE feed_items CASCADE` (`deploy/dev/reset-production.sh`) от `RESTRICT` не
-  зависит и очищает ветки, комментарии и отметки вместе с лентой.
+  в черновике комментариев нет). Сброс установки (`deploy/dev/reset-production.sh`) пересоздаёт базу целиком (D-073)
+  и от этих правил не зависит.
 * **Следы пользователя** (`users.traces`): «comments written» (`author_id`), «comments deleted» (`deleted_by`),
   «private comment threads» (`student_id`). Отметки прочтения — не след: удаление пользователя стирает их
   (`thread_reads_deleted` в аудите `user.delete`), как сессии.

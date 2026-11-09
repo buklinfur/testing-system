@@ -2,7 +2,7 @@
 index refuses a row by its name and accepts one; two shared threads of one item and two private threads of one pair
 are impossible; every new foreign key says its ON DELETE in the catalog; what the body CHECK lets through, on a set
 of edge strings (the rules of 4v.2 are stricter: tests/test_comment_rules_units.py compares them). The migration
-itself and deploy/dev/reset-production.sh on these tables: tests/pg/test_migrations_pg.py.
+itself: tests/pg/test_migrations_pg.py.
 
 Skipped unless JUDGE_TEST_DATABASE_URL is set.
 """
