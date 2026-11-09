@@ -19,6 +19,10 @@
   classroom/access.py (audience, available_from, deadline and extensions, already graded, the answer and its
   limit); the text of F is the answer (none: just «сдано», for answer_kind mark). Prints {submission_id, work_id,
   late, status}; a refusal stops with its code and exit code 1. Not with --package / --contest.
+* `--item ID --comment TEXT [--private]`: a comment of student `dev-student-N` as through the API of 4b.2:
+  classroom.comments.post_shared (the shared thread of the item) or, with --private, post_private (their own
+  private thread of an assignment), with the rules of comment_rules.py and the rate JUDGE_COMMENT_RATE_PER_MIN.
+  Prints {comment_id, thread_id, kind, login}; a refusal stops with its code and exit code 1. Not with --text-file.
 * `--user N`: the submissions belong to student `dev-student-N` (created on demand), default 1.
 * `--source` / `--archive` / `--entry`: the solution (a zip for `--archive`); without `--source` a correct
   Python a + b solution is sent. Code-less problems (choice, text_answer) are not supported here.
@@ -46,7 +50,7 @@ from . import queue as q
 from .auth import audit
 from .blobstore import BlobStore
 from .classroom import items as feed
-from .classroom import works
+from .classroom import comments, works
 from .contests import access, service
 from .db import session_scope
 from .models import AccessMode, Contest, ContestProblem, ContestState, Language, ProblemType, ProblemVersion, Role, \
@@ -182,6 +186,24 @@ def hand_in(blobs: BlobStore, settings: Settings, args) -> int:
     return 0
 
 
+def comment(settings: Settings, args) -> int:
+    """--item --comment: one comment as the student would write it."""
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        student = _student(session, args.user)
+        try:
+            item = feed.get_item(session, args.item)
+            post = comments.post_private if args.private else comments.post_shared
+            row = post(session, student, item, now, args.comment, limit=settings.comment_rate_per_min)
+        except feed.FeedError as exc:
+            print(f"dev_seed: refused: {exc.code} ({exc})", file=sys.stderr)
+            session.rollback()
+            return 1
+        print(json.dumps({"comment_id": row.id, "thread_id": row.thread_id,
+                          "kind": "private" if args.private else "shared", "login": student.login}))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="dev_seed")
     parser.add_argument("--package", type=Path, help="problem package directory (default: built-in dev-sum)")
@@ -195,7 +217,13 @@ def main(argv=None) -> int:
     parser.add_argument("--label", help="the problem's label in --contest")
     parser.add_argument("--item", type=int, help="id of a manual assignment of the class feed: hand in work")
     parser.add_argument("--text-file", type=Path, help="with --item: the text answer")
+    parser.add_argument("--comment", help="with --item: write this comment instead of handing in work")
+    parser.add_argument("--private", action="store_true", help="with --comment: in the student's private thread")
     args = parser.parse_args(argv)
+    if args.comment is not None and (args.item is None or args.text_file):
+        parser.error("--comment goes with --item, not with --text-file")
+    if args.private and args.comment is None:
+        parser.error("--private goes with --comment")
     if args.text_file and args.item is None:
         parser.error("--text-file goes with --item")
     if args.item is not None and (args.contest or args.package):
@@ -211,6 +239,8 @@ def main(argv=None) -> int:
         parser.error("--archive needs --source")
     settings = Settings.from_env()
     blobs = BlobStore(settings.blob_dir)
+    if args.comment is not None:
+        return comment(settings, args)
     if args.item is not None:
         return hand_in(blobs, settings, args)
     source = args.source.read_bytes() if args.source else DEFAULT_SOURCE

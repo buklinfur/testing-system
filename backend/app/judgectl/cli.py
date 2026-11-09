@@ -16,7 +16,7 @@ from ..timeutil import TimezoneError
 from protocol.problem_package import PackageError
 from ..groups import GroupError
 from ..classroom.items import FeedError
-from . import accounts, contests, extensions, feed, groups as group_cmds, ops, problems, submissions
+from . import accounts, comments, contests, extensions, feed, groups as group_cmds, ops, problems, submissions
 from .core import CliError, Context, terminal_text
 from ..auth.csvimport import CsvImportError
 
@@ -232,6 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--last", type=int, default=50)
 
     feed.add_parsers(groups, command)
+    comments.add_parsers(groups, command)
 
     p = groups.add_parser("status", help="database, migrations, workers, queue, configuration, blob store",
                           parents=[common])

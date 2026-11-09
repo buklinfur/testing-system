@@ -48,6 +48,8 @@ def _fields(ctx: Context, args, editing: bool = False) -> dict:
                       ("release", "grades_release")):
         if getattr(args, arg) is not None:
             out[name] = getattr(args, arg)
+    if args.comments is not None:
+        out["comments_enabled"] = args.comments == "on"
     return out
 
 
@@ -81,7 +83,8 @@ def _print_item(ctx: Context, d: dict) -> None:
     if d["grading"] is not None:
         scale = d["grading"].value + (f" (max {d['max_points']})" if d["max_points"] is not None else "")
         ctx.print(f"  after due: statement {d['after_due_statement'].value}, submit {d['after_due_submit'].value}")
-        ctx.print(f"  grading: {scale}, answer: {d['answer_kind'].value}, grades: {d['grades_release'].value}")
+        ctx.print(f"  grading: {scale}, answer: {d['answer_kind'].value}, grades: {d['grades_release'].value}, "
+                  f"comments of students: {'on' if d['comments_enabled'] else 'off'}")
     groups = ", ".join(terminal_text(x["name"]) + (" (archived)" if x["archived"] else "")
                        for x in d["audience"]["groups"]) or "-"
     users = ", ".join(x["login"] for x in d["audience"]["users"]) or "-"
@@ -376,6 +379,8 @@ def add_parsers(groups, command) -> None:
         p.add_argument("--max-points", help="with --grading points, e.g. 5 or 10.5")
         p.add_argument("--answer", choices=["mark", "text"], help="mark: just «handed in»; text: a text answer")
         p.add_argument("--release", choices=["immediate", "manual"], help="when students see grades")
+        p.add_argument("--comments", choices=["on", "off"],
+                       help="students may write in the shared thread of an assignment (off by default)")
         if editing:
             p.add_argument("--no-due", action="store_true", help="drop the deadline")
             p.add_argument("--no-available-from", action="store_true", help="available at once")

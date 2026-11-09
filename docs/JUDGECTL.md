@@ -25,13 +25,14 @@ PYTHONPATH=.:backend python -m app.judgectl --help
   Время в таблицах — в часовом поясе `JUDGE_TIMEZONE` (по умолчанию UTC), в `--json` — всегда UTC с `Z`.
   Пароли и токены печатаются **один раз**; пачка паролей — только в новый файл 0600 (или явно в stdout).
 * **Управляющие символы.** Текст, который набрали ученики или люди без особых прав (ответы, комментарии, названия,
-  условия, имена), не должен управлять терминалом владельца. В таблицах, в строке ошибки и в выводе `item` / `work`
+  условия, имена), не должен управлять терминалом владельца. В таблицах, в строке ошибки и в выводе `item` / `work` /
+  `comment`
   управляющие символы показываются экранированными (`core.terminal_text`): C0 (ESC ANSI-последовательностей, `\r`,
   перезаписывающий строку, BEL, …), DEL, C1 и символы направления текста (U+202E и подобные, U+2028/2029) —
   в виде `\x1b`, `\x0d`, `\u202e`. Многострочный текст (ответ, комментарий, условие) сохраняет `\n` и `\t`, ячейка
   таблицы — нет. `--json` отдаёт данные как есть (JSON сам экранирует управляющие символы).
 * **Коды выхода:** 0 — успех; 1 — ошибка (`judgectl: <сообщение>` в stderr, ничего не изменено); 2 — неверные
-  аргументы; 130 — прервано (Ctrl-C / конец ввода). У отказов ленты (`item`, `work`) в конце строки — постоянный код
+  аргументы; 130 — прервано (Ctrl-C / конец ввода). У отказов ленты (`item`, `work`, `comment`) в конце строки — постоянный код
   в скобках, тот же, что `detail` в админском API: `judgectl: … (no_audience)`.
 * Необратимые команды (`delete`, `import-rollback`) просят ввести логин или id ещё раз; без терминала нужен `--yes`.
 * Команды, где вводится пароль или код 2FA (`admin add`, `admin reset-password`, `admin reset-2fa`), требуют
@@ -62,7 +63,7 @@ judgectl item   create --kind assignment|contest --title <название> [--b
                        [--group <группа>]... [--student <логин>]... [--available-from <время>] [--due <время>]
                        [--after-due-statement visible|hidden] [--after-due-submit no|late|yes]
                        [--grading points|pass_fail|none] [--max-points N] [--answer mark|text]
-                       [--release immediate|manual]
+                       [--release immediate|manual] [--comments on|off]
                 | edit <id> [поля create] [--no-due] [--no-available-from]
                 | publish <id> | archive <id> | unarchive <id> | delete <id> [--yes]
                 | list [--group <группа>] [--kind K] [--state S] [--all] | show <id>
@@ -73,6 +74,10 @@ judgectl work   list [--item <id>] [--group <группа>] [--status S] [--late
                 | show <id> <логин>
                 | grade <id> <логин> (--score N | --pass | --fail | --accept) [--comment <текст>] [--release]
                 | return <id> <логин> --comment <текст> | release <id> [<логин>...]
+judgectl comment list [--item <id>] [--group <группа>] [--awaiting | --answered] [--last N]
+                | show <id элемента> [--student <логин>]
+                | post <id элемента> [--student <логин>] (--text <текст> | --file <файл> | --file -)
+                | delete <id комментария> [--reason <текст>]
 judgectl submission show <id>
                 | rejudge (--id <id> | --contest <slug> --problem <метка> | --contest-problem-id <id>
                            | --problem-version <slug>@<версия>) [--verdicts WA,TL]
@@ -252,7 +257,7 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 
 | Команда | Что делает |
 |---|---|
-| `create --kind assignment …` | Новое задание — **черновик**. Шкала обязательна: `--grading points --max-points N`, `pass_fail` или `none`; ответ `--answer text` (по умолчанию) или `mark` («сдано», работа в тетради); оценки видны `--release manual` (по умолчанию, после публикации) или `immediate`. Политики после срока — как у задач контеста (`CONTESTS.md` §4). `--body-file` — условие в Markdown (`-` — из stdin) |
+| `create --kind assignment …` | Новое задание — **черновик**. Шкала обязательна: `--grading points --max-points N`, `pass_fail` или `none`; ответ `--answer text` (по умолчанию) или `mark` («сдано», работа в тетради); оценки видны `--release manual` (по умолчанию, после публикации) или `immediate`. Политики после срока — как у задач контеста (`CONTESTS.md` §4). `--body-file` — условие в Markdown (`-` — из stdin). `--comments on\|off` — пишут ли ученики в общую ветку (по умолчанию `off`; у контест-элемента только `off`, иначе `item_invalid`) |
 | `create --kind contest --contest <slug> …` | Ссылка на контест. Доступа не даёт: если адресаты его не получат (группы не подключены, вход по коду), в stderr — `warning:` |
 | `create … --group G --student L` | Создание и адресаты — одной транзакцией (отказ адресата — нет и элемента) |
 | `edit <id> …` | Меняются только указанные поля; `--no-due` / `--no-available-from` очищают. Другая шкала, кроме `points`, сама убирает `max_points`. После первой оценки шкала не меняется (`grading_locked`); новый срок уже принятые `late` не пересчитывает |
@@ -279,6 +284,26 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | `grade <id> <логин> --score N \| --pass \| --fail \| --accept` | Оценка по шкале задания (`--accept` — шкала `none`), можно и без сдачи; `--comment`; `--release` — сразу опубликовать. Неопубликованная оценка — подсказка `work release` в stderr |
 | `return <id> <логин> --comment C` | Вернуть на доработку (ученик видит сразу и может сдать заново) |
 | `release <id> [<логин>...]` | Опубликовать текущие оценки всех работ задания или этих учеников: по строке на ученика — `released`, `nothing_to_release` или `already_released`; у `immediate` и `none` — отказ `release_not_needed` |
+
+### comment — комментарии ([`CLASSROOM.md`](CLASSROOM.md) §9, D-076)
+
+Ветки элемента ленты: **общая** (одна на элемент) и **личная** (пара «задание — ученик», `--student <логин>`).
+Консоль читает как преподаватель — всё, удалённое тоже — и пишет как консоль (автор пуст, у учеников — «Преподаватель»,
+в аудите — `cli:<unix-user>`). Отметок прочтения у консоли нет: во входящих только «ждёт ответа» (последний
+неудалённый комментарий написал ученик), без непрочитанного; личные отметки — у админов веба (`ADMIN_API.md`).
+Текст комментариев — недоверенный: в выводе экранирован (`terminal_text`), в `--json` — как есть. Аудит —
+`comment.post`, `comment.delete` (без текста).
+
+| Команда | Что делает |
+|---|---|
+| `list […]` | Входящие: ветки, где новее всего последний комментарий — сверху. Столбцы: ветка, элемент, название, вид (`shared` / `private`), ученик личной ветки, число комментариев и удалённых, время последнего, «ждёт ответа». `--item`; `--group` — личные ветки **текущих** членов и общие ветки элементов, адресованных группе; `--awaiting` / `--answered`; `--last N` (50, не больше 200) |
+| `show <id> [--student L]` | Вся ветка по возрастанию id: время, автор (логин или `console`), тело строками `\| …`; удалённое — с пометкой `[deleted <время> by <кто>: <причина>]` и текстом. В заголовке — включены ли комментарии учеников и может ли консоль писать (иначе код). Ветки ещё нет — `no comments yet`. Личная ветка ученика, который не адресат и у которого нет ни работы, ни ветки, — `thread_not_found` |
+| `post <id> [--student L] (--text T \| --file F)` | Комментарий консоли: в общую ветку (и при выключенных комментариях учеников, и в архивном элементе, кроме черновика — `not_published`) или, с `--student`, в личную ветку задания (`not_an_assignment`, `not_a_student`, `not_addressed`). `--file -` — из stdin; файл — UTF-8 до 64 КБ (иначе ошибка, без подмены символов). Тело: `comment_required`, `comment_invalid` (NUL), `comment_too_long` (> 4000 символов) |
+| `delete <id> [--reason R]` | Мягкое удаление любого комментария, **без подтверждения**: ученики его больше не видят, преподаватели видят с текстом, кем и почему удалён. Причина — до 200 символов (`reason_too_long`); повтор — `already_deleted`; нет такого — `comment_not_found` |
+
+Сообщения учеников до 4б.2 пишет только `dev_seed` (dev, `JUDGE_DEV=1`): `--item <id> --comment <текст> [--private]
+[--user N]` — от `dev-student-N` через те же правила и ту же частоту (`JUDGE_COMMENT_RATE_PER_MIN`), отказ — код в
+stderr и выход 1.
 
 ### submission — посылки
 

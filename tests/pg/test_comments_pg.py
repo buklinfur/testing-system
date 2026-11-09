@@ -254,6 +254,23 @@ class CommentServiceTests(PgCase):
         self.assertEqual(teacher["comments"][1]["author"]["console"], True)
         self.assertIsNone(comments.shared_thread(self.s, comments.CONSOLE, item, T0)["unread"])
 
+    def test_the_card_of_a_comment_is_its_view_in_the_thread_and_where_it_is(self):
+        item = self.assignment()
+        shared = self.post(comments.post_shared, self.a, item, T0, "вопрос")
+        private = self.post(comments.teacher_post, self.console, item, T0, "лично", student=self.b)
+        self.post(comments.delete_comment, self.actor, shared.id, T0 + S, "не по теме")
+        for viewer in (self.admin, comments.CONSOLE):
+            in_thread = comments.shared_thread(self.s, viewer, item, T0)["comments"][0]
+            card = comments.comment_card(self.s, viewer, self.s.get(Comment, shared.id))
+            self.assertEqual({k: card[k] for k in in_thread}, in_thread)
+            self.assertEqual((card["item"], card["kind"], card["student"]), (item.id, "shared", None))
+        card = comments.comment_card(self.s, self.admin, self.s.get(Comment, private.id))
+        self.assertEqual((card["kind"], card["thread_id"], card["student"]["login"], card["author"]["console"]),
+                         ("private", private.thread_id, self.b.login, True))
+        student_card = comments.comment_card(self.s, self.b, self.s.get(Comment, private.id))
+        self.assertEqual(student_card["student"], {"display_name": self.b.display_name})
+        self.assertNotIn("login", repr(student_card))
+
     def test_pages_of_a_thread(self):
         item = self.assignment()
         posted = [self.post(comments.teacher_post, self.actor, item, T0, f"№{i}").id for i in range(5)]

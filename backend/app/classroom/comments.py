@@ -287,6 +287,21 @@ def _comment_view(comment: Comment, author: Optional[User], deleter: Optional[Us
             "delete_reason": comment.delete_reason}
 
 
+def comment_card(db: Session, viewer, comment: Comment) -> dict:
+    """One comment as `viewer` sees it in a thread, with where it is: the item, the thread and its kind, the student
+    of a private thread. No access check: for the answer to a comment the viewer has just written or deleted (the
+    admin API, judgectl)."""
+    thread = db.get(CommentThread, comment.thread_id)
+    author = db.get(User, comment.author_id) if comment.author_id is not None else None
+    deleter = db.get(User, comment.deleted_by) if comment.deleted_by is not None else None
+    student = db.get(User, thread.student_id) if thread.student_id is not None else None
+    return {**_comment_view(comment, author, deleter, viewer), "thread_id": thread.id, "item": thread.item_id,
+            "kind": "shared" if student is None else "private",
+            "student": None if student is None else (
+                {"id": student.id, "login": student.login, "display_name": student.display_name}
+                if access.is_admin(viewer) else {"display_name": student.display_name})}
+
+
 def _can_post(db: Session, viewer, item: FeedItem, student: Optional[User], now: datetime,
               thread: Optional[CommentThread]) -> Optional[str]:
     """None when the viewer may write in the thread now, else the code (the body and the rate aside)."""
