@@ -8,7 +8,8 @@
 # 4. a second database judge_reset_check_fresh made the fresh way, migrated, and compared with the reset one by the
 #    catalog: owner and privileges of the database and of the schema public, table owners, rows, models ==
 #    migrations (tools/reset_check.py compare). Exit 0: the same; 1: the differences are printed.
-# Both databases and the role are dropped at the end (and at the start, if an interrupted run left them). Python and
+# Both databases and the role are dropped at the end, on any failure and on Ctrl-C (and at the start, if a killed
+# run left them); the names are checked against a fixed list first, so `judge` can never be dropped here. Python and
 # alembic run as you ($SUDO_USER) from this repository's .venv; the URLs (a random password) go through the
 # environment, never the command line. Needs: the repository root, .venv, password logins on 127.0.0.1.
 set -euo pipefail
@@ -21,6 +22,13 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 ROLE=judge_reset_check
 DB=$ROLE
 FRESH=${ROLE}_fresh
+# a typo in the names above must never point the drops below at a real database or role
+for name in "$ROLE" "$DB" "$FRESH"; do
+  case $name in
+    judge_reset_check|judge_reset_check_fresh) ;;
+    *) echo "refusing: '$name' is not a throw-away name of this check: only judge_reset_check and judge_reset_check_fresh"; exit 1 ;;
+  esac
+done
 
 cleanup() {
   judge_psql_admin -v db="$DB" -v fresh="$FRESH" -v role="$ROLE" <<'SQL'
@@ -29,7 +37,8 @@ SELECT format('DROP ROLE %I', rolname) FROM pg_roles WHERE rolname = :'role' \ge
 SQL
 }
 cleanup
-trap cleanup EXIT
+trap cleanup EXIT  # any failure from here on (set -e) or Ctrl-C drops what this run created
+trap 'exit 130' INT TERM
 
 PW=$(openssl rand -hex 24)
 url() { echo "postgresql+psycopg://$ROLE:$PW@127.0.0.1:5432/$1"; }

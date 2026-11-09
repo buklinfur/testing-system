@@ -70,3 +70,9 @@ class ResetScriptTests(unittest.TestCase):
         self.assertIn('judge_db_recreate "$DB"', check)
         self.assertIn('judge_db_create "$FRESH" "$ROLE"', check)
         self.assertIn("trap cleanup EXIT", check)
+        # the names are checked against a fixed list before anything is dropped or created
+        allow = check.find("judge_reset_check|judge_reset_check_fresh) ;;")
+        self.assertGreater(allow, 0)
+        self.assertLess(allow, check.find("\ncleanup\n"))
+        # the cleanup trap is set before the first thing is created
+        self.assertLess(check.find("trap cleanup EXIT"), check.find('judge_role_ensure "$ROLE"'))
