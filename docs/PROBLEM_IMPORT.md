@@ -100,7 +100,8 @@
   проверки: «imported as v3 (pending_check); check #12 queued …».
 * Версии неизменяемы: импорт никогда не меняет существующую.
 * Архивная задача (`problems.archived`) импорт отвергает с подсказкой `judgectl problem unarchive`.
-* Импорты одной задачи выполняются по очереди (`pg_advisory_xact_lock` по `slug`): номера версий и «уже есть»
+* Импорты одной задачи выполняются по очереди (`pg_advisory_xact_lock` по паре
+  `locks.PROBLEM_IMPORT`, `hashtext(slug)`; ключи — [`app/locks.py`](../backend/app/locks.py), D-075): номера версий и «уже есть»
   остаются верными при одновременных импортах.
 * Аудит `problem.import` (slug, версия, `content_sha256`, число файлов, источник, статус, `check_id`). Повтор («уже
   есть») ничего не пишет.

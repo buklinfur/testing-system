@@ -368,6 +368,14 @@ class BodyTests(unittest.TestCase):
         self.assertTrue(cr.rate_ok(10_000, 0))
         self.assertEqual((cr.RATE_WINDOW_S, cr.RATE_PER_WINDOW), (60, 10))
 
+    def test_the_rate_setting(self):
+        from app.settings import Settings
+        self.assertEqual(Settings.from_env({}).comment_rate_per_min, cr.RATE_PER_WINDOW)
+        self.assertEqual(Settings.from_env({"JUDGE_COMMENT_RATE_PER_MIN": "0"}).comment_rate_per_min, 0)
+        self.assertEqual(Settings.from_env({"JUDGE_COMMENT_RATE_PER_MIN": "3"}).comment_rate_per_min, 3)
+        with self.assertRaises(ValueError):
+            Settings.from_env({"JUDGE_COMMENT_RATE_PER_MIN": "-1"})
+
 
 if __name__ == "__main__":
     unittest.main()

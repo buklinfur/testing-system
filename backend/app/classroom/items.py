@@ -27,7 +27,7 @@ from . import grading as grading_rules
 
 TITLE_MAX = 200
 EDITABLE = ("title", "body_md", "available_from", "due_at", "after_due_statement", "after_due_submit", "grading",
-            "max_points", "answer_kind", "grades_release")
+            "max_points", "answer_kind", "grades_release", "comments_enabled")
 GRADING_FIELDS = ("grading", "max_points")
 
 
@@ -159,7 +159,8 @@ def _fields(item: Optional[FeedItem], kind: str, values: dict) -> dict:
     """The fields of the item after the change, as plain values, with the defaults of a new assignment."""
     current = {name: _v(getattr(item, name)) for name in EDITABLE} if item is not None else {
         "title": None, "body_md": "", "available_from": None, "due_at": None, "after_due_statement": "visible",
-        "after_due_submit": "late", "grading": None, "max_points": None, "answer_kind": None, "grades_release": None}
+        "after_due_submit": "late", "grading": None, "max_points": None, "answer_kind": None, "grades_release": None,
+        "comments_enabled": False}
     if item is None and kind == "assignment":
         current.update(answer_kind="text", grades_release="manual")
     current.update({k: _v(v) for k, v in values.items()})
@@ -181,6 +182,11 @@ def _validate(kind: str, f: dict) -> None:
         problems.append(("item_invalid", f"after_due_statement: {f['after_due_statement']!r}"))
     if f["after_due_submit"] not in {m.value for m in AfterDueSubmit}:
         problems.append(("item_invalid", f"after_due_submit: {f['after_due_submit']!r}"))
+    if not isinstance(f["comments_enabled"], bool):
+        problems.append(("item_invalid", "comments_enabled is true or false"))
+    elif f["comments_enabled"] and kind == "contest":
+        problems.append(("item_invalid", "students never write in the thread of a contest item "
+                                          "(comments_teacher_only): comments_enabled is for assignments"))
     if kind == "assignment":
         grading = f["grading"]
         if grading not in {m.value for m in GradingScale}:
@@ -480,6 +486,7 @@ def item_summary(db: Session, item: FeedItem) -> dict:
     return {"id": item.id, "kind": item.kind, "state": item.state, "title": item.title,
             "contest_id": item.contest_id, "available_from": item.available_from, "due_at": item.due_at,
             "published_at": item.published_at, "created_at": item.created_at,
+            "comments_enabled": item.comments_enabled,
             "audience": {"groups": [r.group_id for r in rows if r.group_id is not None],
                          "users": [r.user_id for r in rows if r.user_id is not None]},
             "works": {status.value: n for status, n in works}, "warning": contest_warning(db, item)}

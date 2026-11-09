@@ -248,7 +248,7 @@ D-059…D-063). Элемент — по `id`, группа и ученик — �
 
 | Метод и путь | Тело / параметры | Ответ |
 |---|---|---|
-| `GET /items` | `group_id` (адресован группе), `kind=assignment\|contest`, `state=draft\|published\|archived`, курсор | `{items: [{id, kind, state, title, contest_id, available_from, due_at, published_at, created_at, audience: {groups: [id], users: [id]}, works: {статус: число}, warning}], next_cursor}` |
+| `GET /items` | `group_id` (адресован группе), `kind=assignment\|contest`, `state=draft\|published\|archived`, курсор | `{items: [{id, kind, state, title, contest_id, available_from, due_at, published_at, created_at, comments_enabled, audience: {groups: [id], users: [id]}, works: {статус: число}, warning}], next_cursor}` |
 | `POST /items` | `{kind, title, body_md?, contest?: slug, available_from?, due_at?, after_due_statement?, after_due_submit?, grading?, max_points?, answer_kind?, grades_release?, group_ids?, user_ids?}` | 201: элемент (как `GET /items/{id}`), черновик; адресаты — в той же транзакции (отказ адресата — нет и элемента) |
 | `GET /items/{id}` | — | то же, что в списке, + `body_md`, `after_due_statement`, `after_due_submit`, `grading`, `max_points`, `answer_kind`, `grades_release`, `updated_at`, `created_by`, `contest: {slug, title, state} \| null`, `audience: {groups: [{id, name, archived}], users: [{id, login, display_name}]}`, `extensions` (число) |
 | `PUT /items/{id}` | только меняемые поля; меняются **присланные ключи**, `null` очищает (`due_at: null`); неизвестный ключ — 422 | `{item, changed: [поля]}`. Новая шкала `pass_fail` / `none` без `max_points` очищает его; с `max_points` не `null` — 422 `max_points_invalid`; `points` без `max_points` — тоже. После первой оценки шкала не меняется (`grading_locked`) |

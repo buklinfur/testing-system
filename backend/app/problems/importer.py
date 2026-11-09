@@ -22,12 +22,13 @@ from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from protocol import problem_package
 from protocol.problem_package import PackageError, content_digest, sha256_file
 
+from .. import locks
 from .. import problem_checks as checks
 from ..auth import audit
 from ..blobstore import BlobStore
@@ -122,7 +123,7 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
         statements = _statements(pkg)
 
         # one import of a slug at a time: version numbers and "exists" stay right under concurrency
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"problem-import:{pkg.slug}"})
+        locks.take_named(db, locks.PROBLEM_IMPORT, pkg.slug)
         problem = db.execute(select(Problem).where(Problem.slug == pkg.slug)).scalar_one_or_none()
         if problem is not None and problem.archived:
             raise ImportFailed([f"problem {pkg.slug} is archived: unarchive it first (judgectl problem unarchive "

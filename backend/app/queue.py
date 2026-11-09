@@ -26,13 +26,13 @@ from .models import (
     ContestProblem, Judgement, JudgementReason, JudgementStatus, QueueEvent, Submission, TestCase,
     TestGroup, TestResult, Verdict, VersionCheck, Worker, WorkerToken,
 )
+from . import locks
 from .models import CheckStatus
 from .settings import QueueSettings
 
 PRIORITY_URGENT = -10
 PRIORITY_NORMAL = 0
 PRIORITY_REJUDGE = 10
-CLAIM_LOCK_KEY = 7_340_001  # pg_advisory_xact_lock key: claims are serialized (milliseconds), see docs/QUEUE.md
 ACTIVE = (JudgementStatus.queued, JudgementStatus.compiling, JudgementStatus.running)
 IN_FLIGHT = (JudgementStatus.compiling, JudgementStatus.running)
 log = logging.getLogger("judge.queue")
@@ -271,7 +271,7 @@ def claim(session: Session, worker: Worker, settings: QueueSettings) -> Optional
     simultaneous claims would both pick the same student's jobs (fairness is computed from a snapshot).
     FOR UPDATE SKIP LOCKED stays as the safety net against any other writer holding a queued row.
     """
-    session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": CLAIM_LOCK_KEY})
+    locks.take(session, locks.CLAIM)  # claims are serialized (milliseconds), see docs/QUEUE.md
     row = session.execute(CLAIM_SQL, {"worker_id": worker.id, "caps": json.dumps(list(worker.capabilities)),
                                       "window": settings.recent_window_s}).first()
     if row is None:

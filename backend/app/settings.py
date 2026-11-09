@@ -65,12 +65,16 @@ class Settings:
     internal_port: int = 8001  # the internal worker API; must match --port of judge-api-internal.service
     timezone: str = "UTC"  # JUDGE_TIMEZONE: judgectl tables and contest.yaml times without an offset; the API is UTC
     assignment_text_max_bytes: int = 64 * 1024  # JUDGE_ASSIGNMENT_TEXT_MAX_KB: the text answer of a manual assignment
+    comment_rate_per_min: int = 10  # JUDGE_COMMENT_RATE_PER_MIN: comments of one student per minute; 0 = no limit
 
     @classmethod
     def from_env(cls, env: Optional[Mapping] = None) -> "Settings":
         env = os.environ if env is None else env
         d, q, a, i = cls(), QueueSettings(), AuthSettings(), ImportSettings()
         mib = 1024 * 1024
+        rate = int(env.get("JUDGE_COMMENT_RATE_PER_MIN", d.comment_rate_per_min))
+        if rate < 0:
+            raise ValueError("JUDGE_COMMENT_RATE_PER_MIN is 0 (no limit) or more")
         return cls(
             database_url=env.get("DATABASE_URL", d.database_url),
             blob_dir=env.get("JUDGE_BLOB_DIR", d.blob_dir),
@@ -81,6 +85,7 @@ class Settings:
             timezone=env.get("JUDGE_TIMEZONE") or d.timezone,
             assignment_text_max_bytes=int(env.get("JUDGE_ASSIGNMENT_TEXT_MAX_KB",
                                                   d.assignment_text_max_bytes // 1024)) * 1024,
+            comment_rate_per_min=rate,
             queue=QueueSettings(
                 heartbeat_timeout_s=float(env.get("JUDGE_HEARTBEAT_TIMEOUT_S", q.heartbeat_timeout_s)),
                 max_attempts=int(env.get("JUDGE_MAX_ATTEMPTS", q.max_attempts)),
