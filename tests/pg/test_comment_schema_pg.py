@@ -15,6 +15,7 @@ if URL and HAVE_SA:
     from sqlalchemy.exc import DataError, IntegrityError, StatementError
 
     from app.auth import audit, users as accounts
+    from app.classroom import comment_rules
     from app.models import COMMENT_MAX_CHARS, User
 
 ASSIGNMENT = dict(kind="assignment", state="published", title="Блок-схема", body_md="", grading="none",
@@ -135,12 +136,41 @@ class CommentSchemaTests(PgCase):
                 else:
                     self.refused("ck_comments_body_", self.comment, thread, body=body)
 
+    def test_whatever_check_body_accepts_the_database_takes(self):
+        """The rules are stricter than the CHECKs (D-074): on every edge string, accepted by check_body => accepted
+        by the database; and exactly these are refused by the rules but would pass the CHECKs."""
+        thread = self.thread()
+        extra = [("only control characters", "\x1b\x07"), ("only format characters", "\ufeff\u200e\u2066"),
+                 ("only line and paragraph separators", "\u2028\u2029"), ("3999 spaces and a letter", " " * 3999 + "x"),
+                 ("5000 line breaks", "\n" * 5000), ("4000 nbsp", "\u00a0" * 4000)]
+        stricter = []
+        for label, body in [(label, body) for label, body, _ok in BODY_CASES] + extra:
+            with self.subTest(label):
+                ruled = comment_rules.check_body(body)
+                try:
+                    with self.s.begin_nested():
+                        self.comment(thread, body=body)
+                    taken = True
+                except IntegrityError:
+                    taken = False
+                if ruled:
+                    self.assertTrue(taken, f"check_body accepts {label!r}, the database refuses it")
+                elif taken:
+                    stricter.append((label, ruled.reason))
+        self.assertEqual(sorted(stricter), sorted([
+            ("nbsp only", "comment_required"), ("ideographic space only", "comment_required"),
+            ("zero width space only", "comment_required"), ("only control characters", "comment_required"),
+            ("only format characters", "comment_required"), ("only line and paragraph separators", "comment_required"),
+            ("4000 nbsp", "comment_required"),
+        ]))
+
     def test_bodies_the_database_cannot_hold_at_all(self):
         """NUL and lone surrogates never reach a CHECK: the driver or the server refuses them (a 500 if the rules
         let them through - check_body refuses them as comment_invalid)."""
         thread = self.thread()
         for label, body in (("nul", "a\x00b"), ("lone surrogate", "a\ud800b")):
             with self.subTest(label):
+                self.assertEqual(comment_rules.check_body(body).reason, "comment_invalid")
                 with self.assertRaises((DataError, StatementError, UnicodeEncodeError, ValueError)):
                     with self.s.begin_nested():
                         self.comment(thread, body=body)
