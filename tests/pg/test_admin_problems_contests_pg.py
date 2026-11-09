@@ -219,6 +219,35 @@ class AdminProblemsContestsTests(ApiCase):
     def put(self, spec, slug="olymp", dry_run=False):
         return self.call("put", f"/contests/{slug}" + ("?dry_run=true" if dry_run else ""), json=spec)
 
+    def test_statement_pictures_cyrillic_names_and_the_import_warning(self):
+        """statement/images: a real picture under a Cyrillic name is shown inline with its name intact in
+        filename*; a substituted one (HTML in .png) is imported with a warning (D-071) and served as a download."""
+        root = self.copy()
+        images = root / "statement" / "images"
+        images.mkdir(parents=True, exist_ok=True)
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40
+        (images / "схема 1.png").write_bytes(png)
+        (images / "подмена.png").write_bytes(b"<html><script>alert(1)</script></html>")
+        (images / "ok.jpg").write_bytes(png)  # a PNG under .jpg: shown as image/png, no warning
+        created = self.ok(self.upload(zipped(root)), 201)
+        warned = [w for w in created["warnings"] if w.startswith("statement/images/")]
+        self.assertEqual(len(warned), 1)
+        self.assertTrue(warned[0].startswith("statement/images/подмена.png:") and "save it as PNG" in warned[0])
+        base = "/problems/sum-of-two/versions/1/files/statement/images/"
+        r = self.call("get", base + "%D1%81%D1%85%D0%B5%D0%BC%D0%B0%201.png")
+        self.assertEqual((r.status_code, r.headers["content-type"]), (200, "image/png"))
+        self.assertEqual(r.headers["content-disposition"],
+                         "inline; filename=\"skhema_1.png\"; "
+                         "filename*=UTF-8''%D1%81%D1%85%D0%B5%D0%BC%D0%B0%201.png")
+        self.assertEqual((r.headers["x-content-type-options"], r.headers["cache-control"]), ("nosniff", "private, no-cache"))
+        self.assertEqual(r.content, png)
+        r304 = self.call("get", base + "%D1%81%D1%85%D0%B5%D0%BC%D0%B0%201.png", headers={"If-None-Match": r.headers["etag"]})
+        self.assertEqual((r304.status_code, r304.headers["content-security-policy"]), (304, "sandbox; default-src 'none'"))
+        r = self.call("get", base + "%D0%BF%D0%BE%D0%B4%D0%BC%D0%B5%D0%BD%D0%B0.png")
+        self.assertEqual((r.headers["content-type"], r.headers["content-disposition"][:11]),
+                         ("application/octet-stream", "attachment;"))
+        self.assertEqual(self.call("get", base + "ok.jpg").headers["content-type"], "image/png")
+
     def test_recheck_history_and_failed_pin_warnings(self):
         self.ok(self.upload(zipped(EXAMPLES / "sum-of-two")), 201)
         quiz = self.ok(self.upload(zipped(EXAMPLES / "quiz-python-basics")), 201)

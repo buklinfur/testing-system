@@ -124,5 +124,62 @@ class PackageTests(unittest.TestCase):
         self.assertNotEqual(content_digest(renamed), content_digest(clean))  # the path is part of the identity
 
 
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40
+JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + b"\x00" * 40
+WEBP = b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 40
+
+
+class PictureWarningTests(unittest.TestCase):
+    """statement/images/* that are not PNG/JPEG/WebP by content: a warning with advice, never an error (В3, D-071)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "sum-of-two"
+        shutil.copytree(EXAMPLES / "sum-of-two", self.root)
+        images = self.root / "statement" / "images"
+        images.mkdir(parents=True, exist_ok=True)
+        for name, data in {"ok.png": PNG, "photo.jpg": JPEG, "pic.webp": WEBP, "схема.png": PNG,
+                           "fake.png": b"<html><script>alert(1)</script></html>",
+                           "logo.svg": b'<svg xmlns="http://www.w3.org/2000/svg"/>', "anim.gif": b"GIF89a....",
+                           "notes.txt": b"just text", "empty.png": b""}.items():
+            (images / name).write_bytes(data)
+
+    def test_only_non_pictures_warn_and_the_package_imports(self):
+        pkg = load(self.root)  # no PackageError: warnings only
+        warned = sorted(w.split(":")[0] for w in pkg.warnings if w.startswith("statement/images/"))
+        self.assertEqual(warned, sorted(f"statement/images/{n}" for n in
+                                        ("fake.png", "logo.svg", "anim.gif", "notes.txt", "empty.png")))
+        self.assertIn("statement/images/схема.png", pkg.files, "a Cyrillic name is a valid package file")
+        self.assertTrue(all("save it as PNG" in w for w in pkg.warnings if w.startswith("statement/images/")))
+
+    def test_the_warning_does_not_change_the_content_hash(self):
+        """The same package with the warning and with the check switched off: one content_sha256 (the warnings
+        never reach the files that are hashed)."""
+        def digest(pkg):
+            return content_digest({rel: sha256_file(self.root / rel) for rel in pkg.files})
+
+        with_warning = load(self.root)
+        with mock.patch("protocol.problem_package.picture_warnings", return_value=[]):
+            without = load(self.root)
+        self.assertTrue(any(w.startswith("statement/images/") for w in with_warning.warnings))
+        self.assertFalse(any(w.startswith("statement/images/") for w in without.warnings))
+        self.assertEqual(with_warning.files, without.files)
+        self.assertEqual(digest(with_warning), digest(without))
+
+    def test_the_package_rule_is_the_servers_rule(self):
+        """protocol cannot import the backend: picture_kind repeats content_files.sniff for pictures."""
+        sys.path.insert(0, str(ROOT / "backend"))
+        try:
+            from app.content_files import sniff
+        except ImportError:  # pragma: no cover - the backend's packages are not installed
+            self.skipTest("needs the backend")
+        from protocol.problem_package import picture_kind
+        for head in (PNG, JPEG, WEBP, b"GIF89a", b"PK\x03\x04", b"<html>", b"", b"RIFF\x00\x00\x00\x00WAVE"):
+            with self.subTest(head=head[:6]):
+                server = sniff(head)
+                self.assertEqual(picture_kind(head), server if server in ("png", "jpeg", "webp") else None)
+
+
 if __name__ == "__main__":
     unittest.main()

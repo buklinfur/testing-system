@@ -191,26 +191,32 @@ class ResponseTests(unittest.TestCase):
     def test_streamed_never_read_whole(self):
         data = b"1 2\n" * (3 * 1024 * 1024 // 4)  # 3 MB of text
         sha = self.put(data)
-        r = file_response(self.blobs, sha, "tests/big.in")
+        r = file_response(self.blobs, sha, "tests/big.in", request=FakeRequest())
         self.assertEqual(r.headers["content-type"], "text/plain; charset=utf-8")
         self.assertEqual(self.blobs.whole, 0)
         self.assertEqual(self.blobs.reads, [HEAD_BYTES, 1], "only the head (and one byte to know there is more)")
         self.assertEqual(body_of(r), data)
         self.assertEqual(self.blobs.whole, 0)
 
+    def test_request_is_required(self):
+        with self.assertRaises(TypeError):
+            file_response(self.blobs, self.put(PNG), "pic.png")  # noqa: the forgotten request is a TypeError
+
     def test_compatible_calls_and_a_missing_blob(self):
         src = self.put(b"print(1)\n")
-        r = file_response(self.blobs, src, "submission-1.py", text=True)  # the call of admin_api/submissions
+        r = file_response(self.blobs, src, "submission-1.py", text=True, request=FakeRequest())  # the call of admin_api/submissions
         self.assertEqual((r.headers["content-type"], r.headers["content-disposition"][:11]),
                          ("text/plain; charset=utf-8", "attachment;"))
         archive = self.put(ZIPPED)
-        r = file_response(self.blobs, archive, "submission-2.zip", media_type="application/zip", kind="attachment")
+        r = file_response(self.blobs, archive, "submission-2.zip", media_type="application/zip", kind="attachment",
+                          request=FakeRequest())
         self.assertEqual(r.headers["content-type"], "application/zip")
         fake = self.put(HTML)
-        r = file_response(self.blobs, fake, "submission-3.zip", media_type="application/zip", kind="attachment")
+        r = file_response(self.blobs, fake, "submission-3.zip", media_type="application/zip", kind="attachment",
+                          request=FakeRequest())
         self.assertEqual(r.headers["content-type"], "application/octet-stream")
         with self.assertRaises(ApiError) as caught:
-            file_response(self.blobs, "0" * 64, "x.txt")
+            file_response(self.blobs, "0" * 64, "x.txt", request=FakeRequest())
         self.assertEqual(caught.exception.code, "file_missing")
 
 

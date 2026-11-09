@@ -340,6 +340,48 @@ j .venv/bin/python -m app.judgectl group archive 'проверка 4в'         
 **Откат 4в.1** — только из дампа: `alembic downgrade` миграции `b32303b5df22` отказывает, пока есть элементы ленты или
 их продления. Порядок — общий шаблон ниже, с дампом `~/judge-before-4v1.dump` и кодом ветки `master`.
 
+**Обновление до 4б.0 (воркер, очередь, отдача файлов).** Миграций у 4б.0 нет; если на установке ещё не стоит 4в.1,
+те же команды поставят и его (`install-wsl.sh` применяет `alembic upgrade head`, то есть `b32303b5df22`, если её нет).
+Меняются воркер и юнит `judge-worker` (`RestartPreventExitStatus=78`, D-066), протокол воркера (409 `deregistered`,
+поле `reclaimed`; совместимо в обе стороны), отдача файлов (`FILES.md`).
+
+```bash
+(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4b0.dump)      # 0: резервная копия, вне репозитория
+sudo systemctl stop judge-worker judge-reaper judge-api-internal
+# публичное приложение (python -m app.public_main) — остановить в его терминале (Ctrl-C)
+sudo $P ./deploy/install-wsl.sh                    # код, юниты + systemctl daemon-reload, alembic upgrade head
+systemctl show judge-worker -p RestartPreventExitStatus      # RestartPreventExitStatus=78: юнит перечитан
+sudo grep -q '^JUDGE_ASSIGNMENT_TEXT_MAX_KB=' /etc/judge/backend.env || echo 'JUDGE_ASSIGNMENT_TEXT_MAX_KB=64' | sudo tee -a /etc/judge/backend.env
+sudo grep -E '^(JUDGE_BACKEND|JUDGE_ALLOW_UNSAFE_LOCAL|JUDGE_DEV)=' /etc/judge/worker.env   # только JUDGE_BACKEND=isolate
+sudo systemctl start judge-api-internal judge-reaper judge-worker
+j .venv/bin/python -m app.judgectl status          # migration b32303b5df22 = head, config без замечаний
+j .venv/bin/python -m app.public_main              # публичное приложение, в отдельном терминале
+SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>
+```
+
+Проверки 4б.0 вживую:
+* **Отказ после deregister (D-068).** Дать воркерам работу и остановить их посреди неё:
+  ```bash
+  tools/seed-as-judge.sh --count 10                 # 10 посылок в очередь (dev_seed от judge, D-047)
+  sudo systemctl stop judge-worker                  # сразу, пока они проверяются
+  journalctl -u judge-api-internal --since "-2 min" | grep -E 'heartbeat|deregister' | tail -5
+  j .venv/bin/python -m app.judgectl worker list    # STATE stopped у всех
+  j .venv/bin/python -m app.judgectl queue events --last 15   # released / worker_stopped, без requeued
+  j .venv/bin/python -m app.judgectl queue judgements --last 10   # недоделанные — queued, FAIL 0
+  sudo systemctl start judge-worker
+  ```
+  После строки `POST /internal/worker/v1/deregister … 200` у того же воркера нет `heartbeat … 200`: поздний heartbeat
+  получает `409`. Воркеры в `workers` — `stopped`, их задания вернулись в очередь без провала.
+* **Код 78 (D-066):** `systemctl status judge-worker` после ошибки конфигурации — `failed`, `status=78/CONFIG`
+  (§5); при нормальной работе — `active (running)`.
+* **Страховка «idle, но держит» (D-069)** вживую не воспроизводится (нужен воркер, потерявший задание); метрика должна
+  быть 0: `curl -s --noproxy '*' http://127.0.0.1:8001/internal/metrics | grep judge_orphan_reclaims`
+  (с `-H "Authorization: Bearer $JUDGE_METRICS_TOKEN"`, если он задан). Рост — повод смотреть
+  `journalctl -u judge-worker` на «could not be delivered».
+* **Картинки условия (D-070, D-071):** блок smoke «statement pictures» — заголовки, ETag, 304, предупреждение импорта.
+
+**Откат 4б.0** — по шаблону ниже с дампом `~/judge-before-4b0.dump` и прежним кодом (ветка `master` или коммит, что стоял).
+
 ### Откат обновления: пересоздание базы из дампа (D-064)
 
 Любое обновление начинается с дампа (шаг 0: `(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-<что>.dump)`,

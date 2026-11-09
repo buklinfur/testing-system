@@ -68,8 +68,8 @@ D-026 и правило «тип по расширению» из `MODULE_4A.md`
 | Эндпоинт | Вызов |
 |---|---|
 | `GET /api/admin/problems/{slug}/versions/{n}/files/{путь}` | `file_response(blobs, sha, путь, request=request)` |
-| `GET /api/admin/submissions/{id}/source` | исходник: `text=True`; архив: `media_type="application/zip"` (подтверждается сигнатурой) |
+| `GET /api/admin/submissions/{id}/source` | исходник: `text=True`; архив: `media_type="application/zip"` (подтверждается сигнатурой); оба с `request=request` |
 | 4б.1: картинки условия в API ученика | тот же `file_response` после проверки доступа ученика к задаче |
 | 4в.3: вложения | тот же `file_response`; квоты и белый список типов — при загрузке |
 
-Сигнатура `file_response` совместима с прежней: новый необязательный параметр `request` (для `If-None-Match`).
+`request` — **обязательный** именованный параметр `file_response` (для `If-None-Match`): забытый `request` — ошибка `TypeError` сразу, а не тихо пропавший 304. Остальные параметры прежние.

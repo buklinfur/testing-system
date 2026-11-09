@@ -152,10 +152,10 @@ def etag_matches(header: Optional[str], tag: str) -> bool:
 
 
 def file_response(blobs: BlobStore, sha256: str, name: str, text: bool = False, media_type: str | None = None,
-                  kind: str | None = None, request: Optional[Request] = None) -> Response:
+                  kind: str | None = None, *, request: Request) -> Response:
     """Stream a stored blob under the rules above. media_type="application/zip" asks for a submission's archive
-    (confirmed by the signature); `kind` may only make the answer stricter (attachment). With `request`,
-    If-None-Match is honoured (304 with the same headers). The caller has already checked access."""
+    (confirmed by the signature); `kind` may only make the answer stricter (attachment). `request` (required: every
+    caller passes it) - If-None-Match is honoured (304 with the same headers). The caller has already checked access."""
     head_file = blobs.open(sha256)
     if head_file is None:
         raise ApiError(404, "file_missing", "the file is recorded but missing from the blob store "
@@ -167,6 +167,6 @@ def file_response(blobs: BlobStore, sha256: str, name: str, text: bool = False, 
     if kind == "attachment":
         disp = "attachment"
     headers = {**SAFETY, "ETag": f'"{sha256}"', "Content-Disposition": disposition(disp, name)}
-    if request is not None and etag_matches(request.headers.get("if-none-match"), sha256):
+    if etag_matches(request.headers.get("if-none-match"), sha256):
         return Response(status_code=304, headers={**headers, "Content-Type": media})
     return StreamingResponse(blobs.iter_chunks(sha256), media_type=media, headers=headers)

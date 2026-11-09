@@ -8,6 +8,8 @@
 # and of session 4v.1b (the class feed, docs/ADMIN_API.md §5.8): an assignment for a group, hand-ins through SEED_CMD
 # (dev_seed --item), an extension, grades, a return, a hand-in again, a regrade, a release per student, the filters of
 # the review queue, archiving the group answers its feed items.
+# And of session 4b.0 (docs/FILES.md): a statement picture under a Cyrillic name, a PNG under .jpg and HTML under .png
+# are served by content and name together, with ETag and 304; the import warns about the fake picture.
 # A worker with the capability problem_check must be running (judgectl worker list: CAPS).
 #   tools/smoke-admin-api.sh [BASE_URL] [ORIGIN]       defaults: http://127.0.0.1:8000 and $JUDGE_PUBLIC_ORIGIN
 # It asks for an admin (login, password, a TOTP code from the phone); ADMIN_LOGIN, ADMIN_PASSWORD and TOTP_CODE
@@ -328,6 +330,44 @@ send "archive the assignment"                         200 POST "/api/admin/items
 send "archive $G3: answers its feed items"            200 POST "/api/admin/groups/$G3ID/archive"
 check "feed_items = [the assignment], no contests; the old fields stay" \
       "set(d) == {'group', 'contests', 'feed_items'} and d['contests'] == [] and [i['id'] for i in d['feed_items']] == [$ITEM]"
+
+echo "--- statement pictures and file headers (4b.0): content and name together, ETag, 304, the import warning"
+PIC="smoke-pic-$STAMP"
+PICDIR=$(mktemp -d); trap 'rm -rf "$D" "${TXT:-}" "$PICDIR"' EXIT
+cp -r "$ROOT/problems-examples/sum-of-two" "$PICDIR/pkg"
+sed -i "s/^slug: .*/slug: $PIC/" "$PICDIR/pkg/problem.yaml"
+mkdir -p "$PICDIR/pkg/statement/images"
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40)' \
+  "$PICDIR/pkg/statement/images/схема.png"
+cp "$PICDIR/pkg/statement/images/схема.png" "$PICDIR/pkg/statement/images/photo.jpg"   # a PNG under .jpg
+printf '<html><script>alert(1)</script></html>' > "$PICDIR/pkg/statement/images/fake.png"
+"$HERE/pack-problem.sh" "$PICDIR/pkg" > "$D/pic.zip" || fail "pack $PIC"
+c "upload $PIC (a fake picture inside)"              201 POST /api/admin/problems -H "$O" -H @"$D/cookie" -H @"$D/csrf" \
+                                                          -H 'Content-Type: application/zip' --data-binary @"$D/pic.zip"
+check "imported, one warning: fake.png, save it as PNG" \
+      "[w for w in d['warnings'] if w.startswith('statement/images/')] == [w for w in d['warnings'] if w.startswith('statement/images/fake.png') and 'save it as PNG' in w] and len([w for w in d['warnings'] if w.startswith('statement/images/')]) == 1"
+PV=$(val 'd["version"]' 2>/dev/null || echo 1)
+poll "$PIC v$PV is ready (its check, so that no check is left waiting)" "/api/admin/problems/$PIC/versions/$PV" "d['status'] == 'ready'"
+FILES="/api/admin/problems/$PIC/versions/$PV/files/statement/images"
+get "the Cyrillic picture"                            200 "$FILES/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png"
+hdr() { grep -i "^$1:" "$D/hdr" | tr -d '\r' | cut -d' ' -f2-; }
+[ "$(hdr content-type)" = image/png ] && echo "OK   image/png" || fail "content-type: $(hdr content-type)"
+[ "$(hdr content-disposition)" = "inline; filename=\"skhema.png\"; filename*=UTF-8''%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png" ] \
+  && echo "OK   inline, the Cyrillic name in filename*, a transliteration in filename" || fail "disposition: $(hdr content-disposition)"
+[ "$(hdr x-content-type-options)" = nosniff ] && [ "$(hdr content-security-policy)" = "sandbox; default-src 'none'" ] \
+  && [ "$(hdr cache-control)" = "private, no-cache" ] && echo "OK   nosniff, sandbox CSP, private no-cache" || fail "safety headers"
+ETAG=$(hdr etag)
+[[ $ETAG =~ ^\"[0-9a-f]{64}\"$ ]] && echo "OK   ETag \"<sha256>\"" || fail "etag: $ETAG"
+get "the same with If-None-Match"                     304 "$FILES/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png" -H "If-None-Match: $ETAG"
+[ "$(hdr x-content-type-options)" = nosniff ] && [ "$(hdr cache-control)" = "private, no-cache" ] && [ "$(hdr etag)" = "$ETAG" ] \
+  && echo "OK   304 carries the same headers" || fail "304 headers"
+get "a PNG under .jpg"                                200 "$FILES/photo.jpg"
+[ "$(hdr content-type)" = image/png ] && echo "OK   the type of the bytes" || fail "photo.jpg: $(hdr content-type)"
+get "HTML under .png"                                 200 "$FILES/fake.png"
+[ "$(hdr content-type)" = application/octet-stream ] && [[ $(hdr content-disposition) == attachment* ]] \
+  && echo "OK   not a picture: a download" || fail "fake.png: $(hdr content-type) $(hdr content-disposition)"
+c "no session: If-None-Match changes nothing"         401 GET "$FILES/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png" -H "If-None-Match: $ETAG"
+send "archive $PIC (test data)"                       200 POST "/api/admin/problems/$PIC/archive"
 
 echo "--- the rest: archive, profile, system, audit, languages"
 send "archive the contest"                            200 POST "/api/admin/contests/$SLUG/archive"
