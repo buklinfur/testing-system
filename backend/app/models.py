@@ -737,6 +737,9 @@ class FeedItem(Base):
     created_at: Mapped[datetime] = utcnow_column()
     updated_at: Mapped[datetime] = utcnow_column()
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # the first publication
+    # students may write in the shared comment thread (4v.2; never on a contest item); teachers always can
+    comments_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False,
+                                                   server_default=text("false"))
 
     __table_args__ = (
         CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
@@ -866,6 +869,69 @@ class AssignmentReview(Base):
         Index("uq_assignment_reviews_release_of", "release_of", unique=True,
               postgresql_where=text("release_of IS NOT NULL")),
     )
+
+
+# --------------------------------------------------------------------------- comments (module 4v.2, D-072)
+COMMENT_MAX_CHARS = 4000  # the CHECK below; the rules (classroom/comment_rules.py) refuse more, and more blank text
+
+
+class CommentThread(Base):
+    """A comment thread of a feed item: the shared one (student_id null, one per item) or the private one of a
+    student and the teachers (one per item and student; assignments only, the service checks the kind). Created by
+    its first comment, never deleted: a thread always has comments. Keyed by the pair (item, student), not by the
+    work: a question comes before the first hand-in, and a work exists only from then (docs/CLASSROOM.md §9)."""
+
+    __tablename__ = "comment_threads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="RESTRICT"), nullable=False)
+    student_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: shared
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        Index("uq_comment_threads_shared", "item_id", unique=True, postgresql_where=text("student_id IS NULL")),
+        Index("uq_comment_threads_private", "item_id", "student_id", unique=True,
+              postgresql_where=text("student_id IS NOT NULL")),
+        Index("ix_comment_threads_student", "student_id", postgresql_where=text("student_id IS NOT NULL")),
+    )
+
+
+class Comment(Base):
+    """One comment, never edited; rows are only added. Deletion is soft: deleted_at / deleted_by (null with
+    deleted_at: the console) and the reason; teachers still see the text, students do not see the comment at all.
+    The body is untrusted Markdown, stored as sent (rendered only through a sanitizer, without raw HTML)."""
+
+    __tablename__ = "comments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("comment_threads.id", ondelete="RESTRICT"), nullable=False)
+    author_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()  # the moment the request was received
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    deleted_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    delete_reason: Mapped[Optional[str]] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint(f"char_length(body) <= {COMMENT_MAX_CHARS}", name="body_length"),
+        CheckConstraint("btrim(body, E' \\t\\r\\n') <> ''", name="body_not_blank"),
+        CheckConstraint("deleted_at IS NOT NULL OR (deleted_by IS NULL AND delete_reason IS NULL)",
+                        name="deleted_fields"),
+        Index("ix_comments_thread", "thread_id", "id"),
+        Index("ix_comments_author_created", "author_id", "created_at", postgresql_where=text("author_id IS NOT NULL")),
+    )
+
+
+class ThreadRead(Base):
+    """How far a user has read a thread: the last comment read (only grows; the service keeps it in the thread).
+    Unread = comments of others, not deleted, after it. Per user, teachers included (each has their own)."""
+
+    __tablename__ = "thread_reads"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("comment_threads.id", ondelete="RESTRICT"), primary_key=True)
+    last_read_comment_id: Mapped[int] = mapped_column(ForeignKey("comments.id", ondelete="RESTRICT"), nullable=False)
+    updated_at: Mapped[datetime] = utcnow_column()
 
 
 # --------------------------------------------------------------------------- submissions

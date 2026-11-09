@@ -233,3 +233,41 @@ auth_failures, auth_lockouts — неудачные попытки входа и
 * Откат отказывает, ничего не меняя, пока есть хоть один элемент ленты или продление элемента; иначе удаляет таблицы
   и их типы, `deadline_extensions.contest_problem_id` снова `NOT NULL`.
 
+
+## Изменения 4в.2 (миграция `e73284028c20`)
+
+Решение — D-072 в [`DECISIONS.md`](DECISIONS.md), правила — [`CLASSROOM.md`](CLASSROOM.md) §9 (с этапа 3 сессии
+4в.2). Миграцию проверяет `tests/pg/test_migrations_pg.py`, ограничения и следы — `tests/pg/test_comment_schema_pg.py`.
+
+* `feed_items.comments_enabled` — `BOOLEAN NOT NULL DEFAULT false`: пишут ли ученики в общую ветку элемента.
+  Постоянное значение по умолчанию PostgreSQL хранит в каталоге, поэтому существующие элементы получают `false` без
+  перезаписи таблицы и без `UPDATE` строк.
+* `comment_threads` — ветка комментариев элемента ленты. `student_id` пуст — общая ветка (одна на элемент,
+  `uq_comment_threads_shared`), задан — личная ветка ученика и преподавателей (одна на пару «элемент — ученик»,
+  `uq_comment_threads_private`; только у задания — это проверяет сервис). Ветка создаётся первым комментарием и не
+  удаляется, поэтому ветки без комментариев не бывает. Ключ — пара «элемент — ученик», а не работа: вопрос задают до
+  первой сдачи, а работа появляется только с ней.
+* `comments` — комментарии, только добавление, без правок:
+  - `author_id` (пусто — консоль), `body` — исходный Markdown как данные, `created_at` (время приёма);
+  - мягкое удаление: `deleted_at`, `deleted_by` (пусто при `deleted_at` — консоль), `delete_reason` (до 200);
+  - `CHECK`:
+    - `body_length` — не больше 4000 символов (`char_length`: кодовые точки, как `len` в Python);
+    - `body_not_blank` — не пусто и не только пробелы, табуляции и переводы строк ASCII. Правила сервиса строже
+      (любые пробельные символы Unicode, NUL, одиночные суррогаты): всё, что они пропускают, база принимает;
+    - `deleted_fields` — `deleted_by` и `delete_reason` только у удалённого.
+  - индексы: `(thread_id, id)`; `(author_id, created_at)` для авторов-пользователей (частота, следы).
+* `thread_reads` — отметки прочтения: PK `(user_id, thread_id)`, `last_read_comment_id` (ссылка на комментарий),
+  `updated_at`. Своя у каждого пользователя, у каждого админа тоже; отметка только растёт (держит сервис).
+* **`ondelete` у внешних ключей новых таблиц** — все `RESTRICT`, каскадов нет:
+  - `comment_threads.item_id` → `feed_items`, `.student_id` → `users`;
+  - `comments.thread_id` → `comment_threads`, `.author_id`, `.deleted_by` → `users`;
+  - `thread_reads.user_id` → `users`, `.thread_id` → `comment_threads`, `.last_read_comment_id` → `comments`.
+
+  Комментарии и ветки не удаляются; пользователи и элементы архивируются (элемент удаляется только черновиком, а
+  в черновике комментариев нет). `TRUNCATE feed_items CASCADE` (`deploy/dev/reset-production.sh`) от `RESTRICT` не
+  зависит и очищает ветки, комментарии и отметки вместе с лентой.
+* **Следы пользователя** (`users.traces`): «comments written» (`author_id`), «comments deleted» (`deleted_by`),
+  «private comment threads» (`student_id`). Отметки прочтения — не след: удаление пользователя стирает их
+  (`thread_reads_deleted` в аудите `user.delete`), как сессии.
+* Откат отказывает, ничего не меняя, пока есть хоть одна ветка или комментарий; иначе удаляет три таблицы и столбец
+  `comments_enabled` — теряются только значения этого флага у элементов.

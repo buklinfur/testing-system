@@ -618,7 +618,7 @@ class MigrationTests(PgCase):
             self.run_sql(conn, self.BEFORE_FEED)
             before = self.extensions(conn)
             self.assertEqual(len(before), 2)
-            self.alembic(conn, "upgrade", "b32303b5df22")
+            self.alembic(conn, "upgrade", "head")  # through the feed; compare_metadata needs the head
             self.assertEqual(self.extensions(conn), before)
             self.assertEqual(conn.execute(text("SELECT count(*) FROM deadline_extensions WHERE feed_item_id IS NULL")
                                           ).scalar_one(), 2, "existing extensions pass one_target as they are")
@@ -679,3 +679,90 @@ class MigrationTests(PgCase):
         with engine.begin() as conn:
             self.alembic(conn, "downgrade", "b7e3d91a4c62")
             self.assertEqual(len(self.extensions(conn)), 2)
+
+    # ---------------------------------------------------------------- e73284028c20: comment threads (4v.2, D-072)
+    BEFORE_COMMENTS = BEFORE_FEED + """;
+        INSERT INTO feed_items (id, kind, state, title, body_md, contest_id) VALUES (1, 'contest', 'draft', 'L', '', 1);
+        INSERT INTO feed_items (id, kind, state, title, body_md, grading, answer_kind, grades_release, published_at)
+          VALUES (2, 'assignment', 'published', 'H', '', 'none', 'mark', 'manual', '2026-11-05 10:00+00');
+        INSERT INTO feed_item_audience (item_id, user_id) VALUES (2, 2)
+    """
+    COMMENTS = ["INSERT INTO comment_threads (id, item_id, student_id) VALUES (1, 2, 2)",
+                "INSERT INTO comments (id, thread_id, author_id, body) VALUES (1, 1, 2, 'вопрос')",
+                "INSERT INTO thread_reads (user_id, thread_id, last_read_comment_id) VALUES (2, 1, 1)"]
+
+    def feed_rows(self, conn):
+        return [tuple(r) for r in conn.execute(text("SELECT id, kind::text, state::text, title FROM feed_items "
+                                                    "ORDER BY id"))]
+
+    def test_comments_migration_up_down_up_keeps_the_feed(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "b32303b5df22")
+            self.run_sql(conn, self.BEFORE_COMMENTS)
+            before = self.feed_rows(conn)
+            self.alembic(conn, "upgrade", "e73284028c20")
+            self.assertEqual(self.feed_rows(conn), before)
+            self.assertEqual(conn.execute(text("SELECT array_agg(comments_enabled ORDER BY id) FROM feed_items")
+                                          ).scalar_one(), [False, False], "existing items get false")
+            diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+            self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
+            conn.execute(text("UPDATE feed_items SET comments_enabled = true WHERE id = 2"))
+
+            self.alembic(conn, "downgrade", "b32303b5df22")  # no threads: allowed, only the flags are lost
+            self.assertEqual(self.feed_rows(conn), before)
+            for table in ("comment_threads", "comments", "thread_reads"):
+                self.assertIsNone(conn.execute(text("SELECT to_regclass(:t)"), {"t": table}).scalar_one(), table)
+            self.assertEqual(conn.execute(text(
+                "SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() "
+                "AND table_name = 'feed_items' AND column_name = 'comments_enabled'")).scalar_one(), 0)
+
+            self.alembic(conn, "upgrade", "e73284028c20")
+            self.assertEqual(self.feed_rows(conn), before)
+            self.assertEqual(conn.execute(text("SELECT bool_or(comments_enabled) FROM feed_items")).scalar_one(),
+                             False, "the flag set before the downgrade is gone: false again")
+
+    def test_comments_downgrade_refuses_while_threads_exist(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "b32303b5df22")
+            self.run_sql(conn, self.BEFORE_COMMENTS)
+            self.alembic(conn, "upgrade", "e73284028c20")
+            for change in self.COMMENTS:
+                conn.execute(text(change))
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "downgrade", "b32303b5df22")
+        self.assertIn("comment threads: 1, comments: 1", str(caught.exception))
+        self.assertIn("nothing was changed", str(caught.exception))
+        with engine.begin() as conn:
+            self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "e73284028c20")
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM thread_reads")).scalar_one(), 1)
+
+    def test_reset_production_empties_comments_and_reaches_base(self):
+        """deploy/dev/reset-production.sh: its TRUNCATE (taken from the script) empties the feed with the comment
+        threads, comments and read marks, and then `downgrade base` passes the refusals of 4v.1 and 4v.2."""
+        script = (ROOT / "deploy/dev/reset-production.sh").read_text(encoding="utf-8")
+        statements = re.findall(r'sa\.text\("(TRUNCATE [^"]+)"\)', script)
+        self.assertEqual(statements, ["TRUNCATE feed_items CASCADE"])
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:  # no groups and no contest deadlines: their downgrade (4a.3) refuses them
+            self.alembic(conn, "upgrade", "head")
+            self.run_sql(conn, """
+                INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
+                  (2, 'pupil', '!', 'P', 'student', true);
+                INSERT INTO feed_items (id, kind, state, title, body_md, grading, answer_kind, grades_release,
+                                        published_at, comments_enabled)
+                  VALUES (2, 'assignment', 'published', 'H', '', 'none', 'mark', 'manual', '2026-11-05 10:00+00', true);
+                INSERT INTO feed_item_audience (item_id, user_id) VALUES (2, 2)""")
+            for change in self.COMMENTS:
+                conn.execute(text(change))
+        with engine.begin() as conn:
+            conn.execute(text(statements[0]))
+            counts = {t: conn.execute(text(f"SELECT count(*) FROM {t}")).scalar_one()
+                      for t in ("feed_items", "feed_item_audience", "comment_threads", "comments", "thread_reads")}
+            self.assertEqual(counts, dict.fromkeys(counts, 0))
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM users WHERE id = 2")).scalar_one(), 1)
+            self.alembic(conn, "downgrade", "base")
+            left = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")).scalars()
+            self.assertEqual(list(left), ["alembic_version"])
