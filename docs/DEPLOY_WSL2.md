@@ -461,7 +461,7 @@ sudo install -o root -g root -m 0440 deploy/dev/sudoers-judge-dev /etc/sudoers.d
 set -a; . ~/.config/judge/test.env; set +a                       # JUDGE_TEST_DATABASE_URL от setup-postgres.sh
 python -m unittest discover -s tests -t .                        # всё, что не требует базы
 python -m unittest discover -s tests/pg -t . -v                  # очередь, API, миграции, dev_seed (каждый класс в своей схеме)
-export DATABASE_URL=$JUDGE_TEST_DATABASE_URL JUDGE_BLOB_DIR=/tmp/judge-blobs PYTHONPATH=.:backend
+export DATABASE_URL=$JUDGE_TEST_DATABASE_URL JUDGE_BLOB_DIR=$HOME/.cache/judge-blobs PYTHONPATH=.:backend
 alembic upgrade head && alembic check                            # схема public базы judge_test
 uvicorn app.internal_main:app --host 127.0.0.1 --port 8002 --timeout-keep-alive 75 &   # 8001 занят сервисом
 JUDGE_DEV=1 python -m app.dev_seed --count 3                     # посылки в очередь без публичного API
@@ -473,6 +473,14 @@ tools/smoke-internal-api.sh /tmp/judge-token http://127.0.0.1:8002   # прот�
 Воркер на dev-бэкенде (`JUDGE_BACKEND=local`, без песочницы) для такой проверки запускается вручную, с
 `JUDGE_ALLOW_UNSAFE_LOCAL=1 JUDGE_DEV=1`; под systemd он не стартует никогда, даже с этими флагами в
 `/etc/judge/worker.env` (D-065).
+
+**Хранилище блобов разработчика** — `~/.cache/judge-blobs` (каталог создаётся сам при первой записи), не `/tmp`:
+`/tmp` очищается при перезапуске WSL, а `judge_test` продолжает ссылаться на блобы, и после перезапуска версии задач и
+ответы ручных заданий оставались без файлов. Блобы из прежнего `/tmp/judge-blobs`, если он ещё есть, можно перенести
+(`cp -an /tmp/judge-blobs/. ~/.cache/judge-blobs/`: имена — хеши, совпадающие файлы одинаковы); если его уже нет —
+заново положить файлы пакетов-примеров (`dev_seed --package …`, адресация по содержимому) или перепроверить версии.
+Рабочая установка этим не затрагивается: её хранилище — `/var/lib/judge/blobs` (`/etc/judge/backend.env`).
+
 `dev_seed` и smoke-скрипт меняют данные: только для `judge_test`. Ручные `runner.cli` (box 100–101) можно запускать
 при работающих сервисах; два ручных запуска одновременно конфликтуют между собой.
 
