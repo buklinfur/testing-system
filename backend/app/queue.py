@@ -37,8 +37,19 @@ ACTIVE = (JudgementStatus.queued, JudgementStatus.compiling, JudgementStatus.run
 IN_FLIGHT = (JudgementStatus.compiling, JudgementStatus.running)
 log = logging.getLogger("judge.queue")
 # judgements.error of a judgement the server ended itself (gave up after max_attempts): a late result of its last
-# holder is refused (409), like a check whose report says by=server (D-069)
+# holder is refused (409), like a check whose report says by=server (D-069). A temporary mark in a text column: the
+# next migration of the queue replaces it with a column of its own (ROADMAP). Never compare it directly: only
+# server_gave_up() / _carries_server_mark() look at it (a test checks the code).
 SERVER_GAVE_UP = "the server gave up after "
+
+
+def _carries_server_mark(error: Optional[str]) -> bool:
+    return (error or "").startswith(SERVER_GAVE_UP)
+
+
+def server_gave_up(j: "Judgement") -> bool:
+    """The server ended this judgement itself (gave up after max_attempts), not a result of a worker (D-069)."""
+    return j.status == JudgementStatus.internal_error and _carries_server_mark(j.error)
 DONE = (JudgementStatus.finished, JudgementStatus.internal_error)
 
 
@@ -431,7 +442,7 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
         raise LeaseLost("the judgement belongs to another worker or attempt")
     _free(worker)  # rolled back with everything else if the result turns out to be malformed
     if j.status in DONE:
-        if j.status == JudgementStatus.internal_error and (j.error or "").startswith(SERVER_GAVE_UP):
+        if server_gave_up(j):
             raise LeaseLost("the server already ended this judgement (gave up after max_attempts)")
         return "already_recorded"  # the same result delivered twice (network retry)
     if j.status not in IN_FLIGHT:
@@ -444,7 +455,7 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
 
     if verdict == Verdict.IE:
         j.error = payload.get("error")
-        if (j.error or "").startswith(SERVER_GAVE_UP):  # the server's mark is only ever the server's (D-069)
+        if _carries_server_mark(j.error):  # the server's mark is only ever the server's (D-069)
             j.error = "worker: " + j.error
         if j.failures + 1 < settings.max_attempts:
             _fail_attempt(session, j, f"internal error: {payload.get('error')}", settings)

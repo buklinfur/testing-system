@@ -188,7 +188,7 @@ class OrphanTests(PgCase):
         got = self.judgement(j.id)
         self.assertEqual((got.status, got.verdict.value, got.failures, got.worker_id, got.attempt),
                          (JudgementStatus.internal_error, "IE", 3, w.id, 3))
-        self.assertTrue(got.error.startswith(q.SERVER_GAVE_UP), got.error)  # the mark: judgements.error
+        self.assertTrue(q.server_gave_up(got), got.error)  # the mark: judgements.error
         # the last holder, same worker and attempt, delivers late: 409, not already_recorded
         with self.assertRaises(q.LeaseLost):
             q.finish(self.s, self.s.get(Worker, w.id), j.id, dict(self.ok_payload(got), attempt=3), self.settings)
@@ -207,7 +207,9 @@ class OrphanTests(PgCase):
         payload = {"attempt": j.attempt, "verdict": "IE", "score": "0", "error": q.SERVER_GAVE_UP + "3 (worker text)"}
         self.assertEqual(q.finish(self.s, self.s.get(Worker, w.id), j.id, payload, settings), "recorded")
         self.s.commit()
-        self.assertTrue(self.judgement(j.id).error.startswith("worker: "))
+        recorded = self.judgement(j.id)
+        self.assertTrue(recorded.error.startswith("worker: "))
+        self.assertFalse(q.server_gave_up(recorded))
         self.assertEqual(q.finish(self.s, self.s.get(Worker, w.id), j.id, payload, settings), "already_recorded",
                          "the same result again is a network retry, not a late result")
 
