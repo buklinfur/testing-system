@@ -61,16 +61,19 @@ OpenAPI не отдаёт (`openapi_url=None`); файл пишет `python tool
 ## 4. Файлы из загруженного контента
 
 Файлы версии задачи и исходники посылок приходят от людей, поэтому отдаются так, чтобы браузер не исполнил их как
-страницу (XSS):
+страницу (XSS). Правила — [`FILES.md`](FILES.md) (D-070), кратко:
 
-* всегда `X-Content-Type-Options: nosniff` и `Content-Security-Policy: sandbox; default-src 'none'`;
-* показываются в браузере (`inline`) **только картинки** `png`, `jpeg`, `webp` (D-026; GIF — вложением), тип — по расширению из списка
-  файлов версии, не по содержимому;
-* всё остальное, включая SVG и HTML, — `Content-Disposition: attachment` и `application/octet-stream`; исходники и
-  тесты — `text/plain; charset=utf-8` и `attachment`;
+* тип решают **имя и первые 8 КБ содержимого вместе**: показываются (`inline`) только картинки, у которых и байты, и
+  имя — PNG, JPEG или WebP (тип — по байтам); HTML в `pic.png`, SVG, GIF и всё прочее — `application/octet-stream`
+  вложением (D-026);
+* тексты (тесты, исходники) — `text/plain; charset=utf-8` вложением, только если это UTF-8 без NUL; cp1251 и двоичное —
+  `application/octet-stream`; архив посылки — `application/zip` только с сигнатурой zip;
+* на каждом ответе, 200 и 304: `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox; default-src 'none'`,
+  `Cache-Control: private, no-cache`, `ETag: "<sha256>"`, `Content-Disposition` с очищенным именем; `If-None-Match`
+  даёт 304 только после проверки доступа;
 * путь файла ищется только среди файлов версии (`files`), к файловой системе по пути из URL обращения нет.
 
-То же правило обязательно для картинок условия в API ученика (4б).
+То же правило обязательно для картинок условия в API ученика (4б.1) и вложений (4в.3): тот же `file_response`.
 
 ### 4.1. Недоверенный текст
 

@@ -166,6 +166,14 @@ class AdminSubmissionsTests(ApiCase):
                 self.assertEqual(r.headers["content-security-policy"], "sandbox; default-src 'none'")
                 self.assertEqual(r.content, self.blobs.get(sub.source_sha256))
         self.refused(self.get(f"/submissions/{self.answers.id}/source"), 404, "no_source")
+        # D-070: a source that is not UTF-8 (cp1251) is not served as text; ETag and 304 like every file
+        cp = self.add(self.a, "print('привет')\n".encode("cp1251"))
+        r = self.get(f"/submissions/{cp.id}/source")
+        self.assertEqual((r.status_code, r.headers["content-type"]), (200, "application/octet-stream"))
+        self.assertEqual(r.headers["cache-control"], "private, no-cache")
+        r304 = self.get(f"/submissions/{self.py.id}/source",
+                        headers={"If-None-Match": f'W/"{self.py.source_sha256}"'})
+        self.assertEqual((r304.status_code, r304.content, r304.headers["x-content-type-options"]), (304, b"", "nosniff"))
         self.refused(self.get("/submissions/9999/source"), 404, "submission_not_found")
 
     # ---------------------------------------------------------------- rejudges

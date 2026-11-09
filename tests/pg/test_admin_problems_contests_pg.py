@@ -145,6 +145,10 @@ class AdminProblemsContestsTests(ApiCase):
         (root / "evil.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>')
         (root / "statement" / "evil.html").write_text("<script>alert(1)</script>")
         (root / "statement" / "pic.png").write_text("<html><script>alert(1)</script></html>")  # a lie inside
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40
+        (root / "statement" / "real.png").write_bytes(png)
+        (root / "statement" / "photo.jpg").write_bytes(png)  # a PNG under a .jpg name
+        (root / "statement" / "old.txt").write_bytes("Старое условие".encode("cp1251"))
         self.ok(self.upload(zipped(root)), 201)
         base = "/problems/sum-of-two/versions/1/files/"
 
@@ -159,10 +163,37 @@ class AdminProblemsContestsTests(ApiCase):
                 self.assertTrue(r.headers["content-disposition"].startswith("attachment;"))
                 self.assertEqual(r.headers["x-content-type-options"], "nosniff")
                 self.assertEqual(r.headers["content-security-policy"], "sandbox; default-src 'none'")
-        r = fetch("statement/pic.png")  # the type comes from the name, never from the content
+        # D-070: the bytes and the name together. HTML under a picture name is no picture at all
+        r = fetch("statement/pic.png")
+        self.assertEqual(r.headers["content-type"], "application/octet-stream")
+        self.assertTrue(r.headers["content-disposition"].startswith('attachment; filename="pic.png"'))
+        r = fetch("statement/real.png")
         self.assertEqual((r.headers["content-type"], r.headers["x-content-type-options"]), ("image/png", "nosniff"))
         self.assertTrue(r.headers["content-disposition"].startswith("inline;"))
         self.assertEqual(r.headers["content-security-policy"], "sandbox; default-src 'none'")
+        self.assertEqual(r.headers["cache-control"], "private, no-cache")
+        self.assertEqual(r.content, png)
+        tag = r.headers["etag"]
+        self.assertRegex(tag, r'^"[0-9a-f]{64}"$')
+        self.assertEqual(fetch("statement/photo.jpg").headers["content-type"], "image/png")  # the type of the bytes
+        r = fetch("statement/old.txt")  # cp1251: not shown as text
+        self.assertEqual((r.headers["content-type"], r.headers["content-disposition"][:11]),
+                         ("application/octet-stream", "attachment;"))
+        # If-None-Match: 304 with the same headers, an empty body
+        r = self.call("get", base + "statement/real.png", headers={"If-None-Match": tag})
+        self.assertEqual((r.status_code, r.content), (304, b""))
+        for name in ("x-content-type-options", "content-security-policy", "cache-control", "etag",
+                     "content-disposition"):
+            self.assertIn(name, r.headers)
+        self.assertEqual(self.call("get", base + "statement/real.png", headers={"If-None-Match": '"old"'}).status_code,
+                         200)
+        # without access the answer does not depend on If-None-Match: the file is never even looked at
+        stranger = self.browser()
+        for headers in ({}, {"If-None-Match": tag}, {"If-None-Match": "*"}):
+            with self.subTest(headers=headers):
+                r = stranger.get("/api/admin" + base + "statement/real.png", headers=headers)
+                self.assertEqual((r.status_code, r.json()["detail"]), (401, "not_authenticated"))
+                self.assertNotIn("etag", r.headers)
         for path in ("tests/small01.in", "problem.yaml", "solutions/ok.py"):
             with self.subTest(path=path):
                 r = fetch(path)
