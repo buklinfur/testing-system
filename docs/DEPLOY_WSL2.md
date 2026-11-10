@@ -381,6 +381,58 @@ SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 h
 
 **Откат 4б.0** — по шаблону ниже с дампом `~/judge-before-4b0.dump` и прежним кодом (ветка `master` или коммит, что стоял).
 
+**Обновление до 4в.2 (комментарии).** Одна новая миграция `e73284028c20` (ветки комментариев, комментарии, отметки
+прочтения; у элементов ленты поле `comments_enabled`, по умолчанию выключено). Воркер, очередь и протокол воркера не
+менялись (ключ advisory-блокировки выдачи переехал в `app/locks.py` с тем же значением). Если на установке ещё не
+стоят 4в.1 и 4б.0, те же команды поставят и их: `install-wsl.sh` применяет все миграции до head и ставит юниты;
+проверки 4б.0 — строки `systemctl show` и `grep` ниже. Из репозитория на ветке `module-4v` (или на `master` после
+слияния):
+
+```bash
+(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4v2.dump)      # 0: резервная копия, вне репозитория
+sudo systemctl stop judge-worker judge-reaper judge-api-internal
+# публичное приложение (python -m app.public_main) — остановить в его терминале (Ctrl-C)
+sudo $P ./deploy/install-wsl.sh                    # код, юниты, alembic upgrade head (e73284028c20)
+systemctl show judge-worker -p RestartPreventExitStatus      # RestartPreventExitStatus=78 (4б.0)
+sudo grep -E '^(JUDGE_BACKEND|JUDGE_ALLOW_UNSAFE_LOCAL|JUDGE_DEV)=' /etc/judge/worker.env   # только JUDGE_BACKEND=isolate
+# частота комментариев ученика (по умолчанию 10 в минуту, 0 — без лимита; строку можно не добавлять):
+sudo grep -q '^JUDGE_COMMENT_RATE_PER_MIN=' /etc/judge/backend.env || echo 'JUDGE_COMMENT_RATE_PER_MIN=10' | sudo tee -a /etc/judge/backend.env
+sudo systemctl start judge-api-internal judge-reaper judge-worker
+j .venv/bin/python -m app.judgectl status          # migration e73284028c20 = head, config без замечаний
+j .venv/bin/python -m app.public_main              # публичное приложение, в отдельном терминале
+SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>
+```
+
+Блок smoke «comments (4v.2)» (`ADMIN_API.md` §6) пишет от имени `dev-student-1` и `-2` через `dev_seed --item …
+--comment` и проверяет ветки, входящие, отметку прочтения и удаление; `rate_limited` не проверяется (зависит от
+`JUDGE_COMMENT_RATE_PER_MIN`). Без `SEED_CMD` сообщения учеников пропускаются (`SKIP`), а ручная проверка через
+консоль:
+
+```bash
+j .venv/bin/python -m app.judgectl group create 'проверка 4в.2'
+j .venv/bin/python -m app.judgectl item create --kind assignment --title 'Вопросы' --group 'проверка 4в.2' \
+    --grading none --comments on                                               # печатает id элемента
+j .venv/bin/python -m app.judgectl item publish <id>
+j .venv/bin/python -m app.judgectl comment post <id> --text 'Пишите вопросы сюда'
+j .venv/bin/python -m app.judgectl comment show <id>                          # комментарий консоли
+j .venv/bin/python -m app.judgectl comment list --item <id>                   # одна ветка, AWAITING no
+j .venv/bin/python -m app.judgectl comment delete <comment-id> --reason 'проверка'
+j .venv/bin/python -m app.judgectl comment delete <comment-id>                # already_deleted, выход 1
+j .venv/bin/python -m app.judgectl item archive <id>
+j .venv/bin/python -m app.judgectl group archive 'проверка 4в.2'
+```
+
+**Данные, которые остаются в рабочей базе** после smoke 4в.2: группа `smoke <время> comments` (архивная), задание
+`Вопросы <время>` (архивное) с общей веткой (комментарий `dev-student-1`) и личной веткой `dev-student-2` (его
+комментарий с `<script>` и ESC и удалённый ответ админа с причиной), отметка прочтения админа, черновик контест-элемента
+создаётся и удаляется; записи аудита `item.*`, `comment.post`, `comment.delete`; `dev-student-1` и `-2` становятся
+членами этой группы. Плюс всё, что оставляют блоки 4а, 4в.1 и 4б.0. Всё это убирает `deploy/dev/reset-production.sh`
+перед учениками (§6 «Сброс тестовых данных», D-073).
+
+**Откат 4в.2** — только из дампа (D-064): по шаблону ниже с дампом `~/judge-before-4v2.dump` и прежним кодом
+(ветка `master` или коммит, что стоял). `alembic downgrade` миграции `e73284028c20` отказывает, ничего не меняя,
+пока в базе есть ветки комментариев или комментарии (а после smoke они есть).
+
 ### Откат обновления: пересоздание базы из дампа (D-064)
 
 Любое обновление начинается с дампа (шаг 0: `(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-<что>.dump)`,
