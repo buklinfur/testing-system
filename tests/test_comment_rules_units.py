@@ -192,7 +192,7 @@ class SharedThreadTests(unittest.TestCase):
 
     def test_teachers_have_no_rate_limit_but_the_same_body_rules(self):
         self.assertTrue(shared(ADMIN, assignment(), recent=10_000))
-        self.assertEqual(shared(ADMIN, assignment(), body=" ").reason, "comment_required")
+        self.assertEqual(shared(ADMIN, assignment(), body="\u00a0").reason, "comment_required")
         self.assertEqual(shared(ADMIN, assignment(), body="я" * 4001).reason, "comment_too_long")
 
 
@@ -263,7 +263,7 @@ class PrivateThreadTests(unittest.TestCase):
             ("the student is an admin", assignment(), dict(student=NS(id=9, role="admin")), "not_a_student"),
             ("draft", assignment(state="draft"), {}, "not_published"),
             ("contest item", contest_item(), {}, "not_an_assignment"),
-            ("blank body", assignment(), dict(body="​ \n"), "comment_required"),
+            ("blank body", assignment(), dict(body="\u200b\u00a0\n"), "comment_required"),
             ("no rate limit", assignment(), dict(recent=10_000), "ok"),
         ]
         for name, item, kw, code in cases:
@@ -344,14 +344,14 @@ class BodyTests(unittest.TestCase):
     def test_codes(self):
         cases = [
             (None, "comment_required"), ("", "comment_required"), (" \t\r\n", "comment_required"),
-            ("  ", "comment_required"), ("　", "comment_required"), ("​", "comment_required"),
-            ("﻿‎⁦", "comment_required"), ("\x1b\x07", "comment_required"),
-            ("  ", "comment_required"),
+            ("\u00a0\u00a0", "comment_required"), ("\u3000", "comment_required"), ("\u200b", "comment_required"),
+            ("\ufeff\u200e\u2066", "comment_required"), ("\x1b\x07", "comment_required"),
+            ("\u2028\u2029", "comment_required"),
             ("a\x00b", "comment_invalid"), ("\x00", "comment_invalid"), ("a\ud800", "comment_invalid"),
             ("\udfff", "comment_invalid"), (b"bytes", "comment_invalid"),
             ("я" * 4000, "ok"), ("я" * 4001, "comment_too_long"), ("😀" * 4000, "ok"), ("😀" * 4001, "comment_too_long"),
             ("е́" * 2000, "ok"), (" " * 3999 + "x", "ok"), ("\n" * 5000, "comment_required"),
-            ("<script>alert(1)</script>", "ok"), ("`a < b`", "ok"), ("\x1b[31mкрасный", "ok"), (" да", "ok"),
+            ("<script>alert(1)</script>", "ok"), ("`a < b`", "ok"), ("\x1b[31mкрасный", "ok"), ("\u00a0да", "ok"),
         ]
         for text, code in cases:
             with self.subTest(text=repr(text)[:40]):
@@ -359,7 +359,7 @@ class BodyTests(unittest.TestCase):
 
     def test_invalid_comes_before_blank_and_long(self):
         self.assertEqual(cr.check_body("\x00" + " " * 5000).reason, "comment_invalid")
-        self.assertEqual(cr.check_body(" " * 5000).reason, "comment_required")
+        self.assertEqual(cr.check_body("\u00a0" * 5000).reason, "comment_required")
 
     def test_rate(self):
         self.assertTrue(cr.rate_ok(9, 10))

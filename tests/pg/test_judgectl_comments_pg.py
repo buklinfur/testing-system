@@ -17,7 +17,7 @@ from tests.pg.pgbase import HAVE_SA, URL, PgCase, requires_pg
 
 T0 = datetime(2026, 11, 10, 3, 0, tzinfo=timezone.utc)  # 10:00 in Novosibirsk
 DUE = datetime(2026, 11, 12, 18, 0, tzinfo=timezone.utc)
-HOSTILE = "вопрос\x1b[2J\x1b]0;pwned\x07 abc\rXYZ ‮txt.exe\x9b\n<script>alert(1)</script>"
+HOSTILE = "вопрос\x1b[2J\x1b]0;pwned\x07 abc\rXYZ \u202etxt.exe\x9b\n<script>alert(1)</script>"
 
 if URL and HAVE_SA:
     from sqlalchemy import func, select
@@ -195,7 +195,7 @@ class JudgectlCommentTests(PgCase):
         item = self.assignment()
         self.refused("not_addressed", "comment", "post", item, "--student", self.c.login, "--text", "привет")
         self.refused("thread_not_found", "comment", "show", item, "--student", self.c.login)
-        self.refused("comment_required", "comment", "post", item, "--text", "  ​ ")
+        self.refused("comment_required", "comment", "post", item, "--text", " \u00a0\u200b ")
         self.refused("comment_too_long", "comment", "post", item, "--text", "я" * 4001)
         self.refused("comment_invalid", "comment", "post", item, "--file", "-", stdin=b"a\x00b")
         err = self.refused(None, "comment", "post", item, "--file", "-", stdin=b"\xff\xfe")

@@ -75,8 +75,6 @@ class FeedSchemaTests(PgCase):
             ("ck_feed_items_max_points", dict(grading="pass_fail", max_points=5), dict(grading="pass_fail",
                                                                                        max_points=None)),
             ("ck_feed_items_max_points_positive", dict(max_points=0), dict(max_points="0.5")),
-            ("ck_feed_items_answer_kind_before_4v3", dict(answer_kind="files"), dict(answer_kind="text")),
-            ("ck_feed_items_answer_kind_before_4v3", dict(answer_kind="text_or_files"), dict(answer_kind="mark")),
             ("ck_feed_items_deadline", dict(available_from="2026-11-10 10:00+00", due_at="2026-11-10 10:00+00"),
              dict(available_from="2026-11-10 10:00+00", due_at="2026-11-10 10:00:00.000001+00")),
             ("ck_feed_items_published_at", dict(state="published"),
@@ -117,14 +115,17 @@ class FeedSchemaTests(PgCase):
     def test_submission_file_checks(self):
         sub = self.hand_in(self.work())
         f = lambda **kw: self.insert("assignment_submission_files", **{  # noqa: E731
-            "submission_id": sub, "path": "answer.md", "blob_sha256": "a" * 64, "size": 1, "position": 0, **kw})
-        self.refused("ck_assignment_submission_files_path_not_blank", f, path=" ")
+            "submission_id": sub, "kind": "text", "path": "answer.md", "blob_sha256": "a" * 64, "size": 1,
+            "position": 0, **kw})
+        self.refused("ck_assignment_submission_files_path_not_blank", f, kind="file", path=" ")
         self.refused("ck_assignment_submission_files_non_negative", f, size=-1)
         self.refused("ck_assignment_submission_files_non_negative", f, position=-1)
         self.accepted(f, size=0)
-        self.refused("uq_assignment_submission_files_submission_path", f, blob_sha256="b" * 64)
-        self.accepted(f, path="scheme.png", position=1)
-        self.refused("fk_assignment_submission_files_blob_sha256_blobs", f, path="x.txt", blob_sha256="d" * 64)
+        # 4v.3: one text answer per hand-in (the UNIQUE(submission_id, path) of 4v.1 became partial indexes, D-079)
+        self.refused("uq_assignment_submission_files_text", f, blob_sha256="b" * 64)
+        self.accepted(f, kind="file", path="scheme.png", position=1)
+        self.refused("fk_assignment_submission_files_blob_sha256_blobs", f, kind="file", path="x.txt",
+                     blob_sha256="d" * 64)
 
     # ---------------------------------------------------------------- reviews
     def test_review_checks(self):
@@ -180,8 +181,8 @@ class FeedSchemaTests(PgCase):
         assignment = self.item(due_at="2026-11-10 10:00+00")
         work = self.work(assignment)
         sub = self.hand_in(work)
-        self.insert("assignment_submission_files", submission_id=sub, path="answer.md", blob_sha256="c" * 64, size=1,
-                    position=0)
+        self.insert("assignment_submission_files", submission_id=sub, kind="text", path="answer.md",
+                    blob_sha256="c" * 64, size=1, position=0)
         review = self.insert("assignment_reviews", work_id=work, action="graded", score=5, reviewer_id=teacher)
         extended = self.item(due_at="2026-11-10 10:00+00")
         self.insert("deadline_extensions", feed_item_id=extended, user_id=late, due_at="2026-11-11 10:00+00")

@@ -140,11 +140,14 @@ def check_content(name: str, head: bytes) -> Decision:
 
 
 def check_file(name, size: int, head: bytes, max_bytes: int) -> Decision:
-    """One file, in this order: file_name_invalid, file_type_not_allowed, file_too_large (more than max_bytes),
+    """One file, in this order: file_name_invalid, file_type_not_allowed, file_empty (0 bytes, of any type: an empty
+    file would satisfy files_required while handing nothing in), file_too_large (more than max_bytes),
     file_content_mismatch."""
     named = check_name(name)
     if not named:
         return named
+    if size <= 0:
+        return _no("file_empty")
     if size > max_bytes:
         return _no("file_too_large")
     return check_content(name, head)
@@ -161,9 +164,9 @@ def check_link(url, title=None) -> Decision:
     """A link as data (the server never opens it). `url` is taken after stripping the whitespace around it (the
     service stores it so). link_invalid: not http or https (any case), no host, user:pass@ in it, a backslash,
     whitespace or a control / format character inside, longer than LINK_URL_MAX. An @ in the path is fine
-    (youtube.com/@channel); in the host part it is user:pass@ (https://good.ru@evil.example goes to evil.example). link_title_invalid: a title (it
-    may be None or blank) longer than LINK_TITLE_MAX characters or with control characters, format characters other
-    than the zero width joiner of emoji, or a lone surrogate."""
+    (youtube.com/@channel); in the host part it is user:pass@ (https://good.ru@evil.example goes to evil.example).
+    link_title_invalid: a title (it may be None or blank) longer than LINK_TITLE_MAX characters or with control
+    characters, format characters other than the zero width joiner of emoji, or a lone surrogate."""
     if not isinstance(url, str):
         return _no("link_invalid")
     url = url.strip()
@@ -199,7 +202,7 @@ def check_hand_in(files: Sequence, links: Sequence = (), limits: Limits = Limits
     """The files (objects with name, size, head) and links (url, title) of one hand-in, in this order - the first
     failure wins:
     1. too_many_files - more than limits.files_max files and links together;
-    2. every file in its order: check_file (file_name_invalid, file_type_not_allowed, file_too_large,
+    2. every file in its order: check_file (file_name_invalid, file_type_not_allowed, file_empty, file_too_large,
        file_content_mismatch);
     3. duplicate_name - a later file with the name of an earlier one (case ignored);
     4. submission_too_large - the sizes together exceed limits.total_max_bytes;

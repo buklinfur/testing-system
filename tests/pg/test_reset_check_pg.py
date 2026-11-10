@@ -54,12 +54,18 @@ class ResetCheckTests(unittest.TestCase):
             rows = reset_check.snapshot(conn, schema)["rows"]
         for table in ("users", "sessions", "audit_log", "worker_tokens", "groups", "contest_problems",
                       "deadline_extensions", "version_checks", "feed_items", "assignment_works", "comment_threads",
-                      "comments", "thread_reads"):
+                      "comments", "thread_reads", "attachments", "assignment_submission_links"):
             self.assertIn(table, rows)
+        self.assertEqual(rows["attachments"], 2, "a file and a link of a teacher")
+        with engine.connect() as conn:
+            kinds = conn.execute(text("SELECT kind::text, count(*) FROM assignment_submission_files GROUP BY kind"))
+            self.assertEqual(dict(kinds.all()), {"text": 1, "file": 1})
         with self.assertRaises(RuntimeError) as caught:
             with engine.begin() as conn:
                 self.alembic(conn, "downgrade", "base")
         self.assertIn("nothing was changed", str(caught.exception))
+        self.assertIn("uploaded files of hand-ins: 1, links of hand-ins: 1, attachments: 2, items answered with "
+                      "files: 1", str(caught.exception), "the first downgrade on the way down is the one of 4v.3")
 
     def test_reset_check_snapshot_tells_a_reset_from_a_fresh_one(self):
         schema, engine = self.migrated()

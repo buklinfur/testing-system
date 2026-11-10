@@ -3,7 +3,8 @@
 #   sudo ./deploy/dev/check-reset-db.sh
 # 1. a role judge_reset_check and its database, made by judge_role_ensure / judge_db_create (as setup-postgres.sh);
 # 2. alembic upgrade head, then data that refuses `downgrade base`: groups, contest deadlines, a version check, the
-#    feed, works, comments, read marks, sessions, audit, a worker token (tools/reset_check.py seed);
+#    feed, works, comments, read marks, uploaded files and links of hand-ins, attachments of items, sessions,
+#    audit, a worker token (tools/reset_check.py seed);
 # 3. judge_db_recreate + alembic upgrade head - what reset-production.sh does to `judge`;
 # 4. a second database judge_reset_check_fresh made the fresh way, migrated, and compared with the reset one by the
 #    catalog: owner and privileges of the database and of the schema public, table owners, rows, models ==

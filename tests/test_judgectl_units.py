@@ -17,7 +17,7 @@ try:
 except ImportError:  # pragma: no cover - the backend's packages are not installed
     HAVE_APP = False
 
-HOSTILE = "ok\x1b[2J\x1b]0;pwned\x07abc\rXYZ‮txt.exe\x00\x7f\x9b31m⁦‏\tend\nnext"
+HOSTILE = "ok\x1b[2J\x1b]0;pwned\x07abc\rXYZ\u202etxt.exe\x00\x7f\x9b31m\u2066\u200f\tend\nnext"
 
 
 @unittest.skipUnless(HAVE_APP, "needs the backend's packages")
@@ -26,7 +26,7 @@ class TerminalTextTests(unittest.TestCase):
         bad = [hex(ord(ch)) for ch in text if ch not in allowed and (ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
                                                                      or 0x202A <= ord(ch) <= 0x202E
                                                                      or 0x2066 <= ord(ch) <= 0x2069
-                                                                     or ch in "‎‏؜  ")]
+                                                                     or ch in "\u200e\u200f\u061c\u2028\u2029")]
         self.assertEqual(bad, [])
 
     def test_escapes_every_control(self):

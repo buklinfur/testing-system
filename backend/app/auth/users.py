@@ -12,10 +12,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from ..models import (AssignmentReview, AssignmentWork, AuditLog, AuthLockout, Comment, CommentThread, Contest,
-                      ContestGroup, DeadlineExtension, FeedItem, FeedItemAudience, Group, GroupMember, Judgement,
-                      LoginToken, Participation, Problem, ProblemVersion, Role, Submission, ThreadRead, User,
-                      UserSession, VersionCheck)
+from ..models import (AssignmentReview, AssignmentWork, Attachment, AuditLog, AuthLockout, Comment, CommentThread,
+                      Contest, ContestGroup, DeadlineExtension, FeedItem, FeedItemAudience, Group, GroupMember,
+                      Judgement, LoginToken, Participation, Problem, ProblemVersion, Role, Submission, ThreadRead,
+                      User, UserSession, VersionCheck)
 from ..timeutil import iso_utc
 from . import audit, login_tokens, ratelimit, sessions
 from .logins import LoginError, checked_login, default_display_name, default_login, unique_login
@@ -277,7 +277,13 @@ TRACES = (
     ("comments written", Comment.author_id),
     ("comments deleted", Comment.deleted_by),
     ("private comment threads", CommentThread.student_id),
+    # attachments (4v.3): the files and links a teacher put on feed items
+    ("feed attachments added", Attachment.created_by),
 )
+
+# Rows that reference the user and are deleted with it (_erase): no trace. tests/pg/test_attachment_schema_pg.py
+# checks that every foreign key to users is in TRACES or here.
+ERASED = (UserSession.user_id, LoginToken.user_id, GroupMember.user_id, ThreadRead.user_id)
 
 
 def traces(db: Session, user: User) -> dict:

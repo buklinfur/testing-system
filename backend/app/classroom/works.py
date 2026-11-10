@@ -29,8 +29,8 @@ from sqlalchemy.orm import Session
 from ..auth import audit
 from ..blobstore import BlobStore
 from ..models import (AssignmentReview, AssignmentSubmission, AssignmentSubmissionFile, AssignmentWork, FeedItem,
-                      FeedItemAudience, FeedItemKind, FeedItemState, Group, GroupMember, ReviewAction, Role, User,
-                      WorkStatus)
+                      FeedItemAudience, FeedItemKind, FeedItemState, Group, GroupMember, ReviewAction, Role,
+                      SubmissionFileKind, User, WorkStatus)
 from ..problems.importer import store_blob
 from . import access, grading
 from . import items as feed
@@ -129,8 +129,8 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
         data = text.encode("utf-8")
         sha = store_blob(db, blobs, data)
         db.flush()  # the blobs row first: no relationship tells the unit of work the order
-        db.add(AssignmentSubmissionFile(submission_id=sub.id, path=ANSWER_FILE, blob_sha256=sha, size=len(data),
-                                        position=0))
+        db.add(AssignmentSubmissionFile(submission_id=sub.id, kind=SubmissionFileKind.text, path=ANSWER_FILE,
+                                        blob_sha256=sha, size=len(data), position=0))
     _set_status(work, prior, "submit", now)
     db.flush()
     return sub, decision

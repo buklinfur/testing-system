@@ -106,6 +106,18 @@ class PurityTests(unittest.TestCase):
 class InStepTests(unittest.TestCase):
     """The signatures and sizes the rules use are the ones the server serves by (docs/FILES.md, D-070)."""
 
+    def test_the_checks_of_the_tables_hold_the_same_limits(self):
+        """The CHECKs of attachments and assignment_submission_links (models.py) keep these numbers; the rules refuse
+        more, the database only makes sure nothing longer is ever stored."""
+        try:
+            from app import models
+        except ImportError:  # pragma: no cover - sqlalchemy is not installed
+            self.skipTest("needs sqlalchemy")
+        self.assertEqual(models.ATTACHMENT_NAME_MAX_CHARS, ar.NAME_MAX)
+        self.assertEqual(models.LINK_URL_MAX_CHARS, ar.LINK_URL_MAX)
+        self.assertEqual(models.LINK_TITLE_MAX_CHARS, ar.LINK_TITLE_MAX)
+        self.assertLessEqual(ar.NAME_MAX, models.AssignmentSubmissionFile.__table__.c.path.type.length)
+
     def test_signatures_agree_with_content_files_and_the_package_check(self):
         try:
             from app import content_files
@@ -202,11 +214,14 @@ class ContentTests(unittest.TestCase):
             ("pic.jpg", PNG, "file_content_mismatch"),  # PNG under .jpg: stricter than serving (D-070)
             ("pic.png", JPEG, "file_content_mismatch"),
             ("pic.webp", PNG, "file_content_mismatch"),
-            ("pic.png", b"", "file_content_mismatch"),
+            ("pic.png", b"", "file_empty"),
             ("main.py", CP1251, "ok"),  # a cp1251 source from Windows
             ("notes.txt", b"\x00\x01\x02", "ok"),  # text kinds are not checked
             ("data.json", SVG, "ok"),
-            ("empty.py", b"", "ok"),
+            ("empty.py", b"", "file_empty"),  # an empty file of any type: it would satisfy files_required
+            ("empty.txt", b"", "file_empty"),
+            ("empty.zip", b"", "file_empty"),
+            ("one.txt", b"\n", "ok"),
             ("project.zip", ZIP, "ok"),
             ("project.zip", EMPTY_ZIP, "file_content_mismatch"),
             ("report.docx", ZIP, "ok"),
@@ -232,8 +247,15 @@ class ContentTests(unittest.TestCase):
         big = 21 * MIB
         self.assertEqual(code(ar.check_file("a/b.png", big, SVG, 20 * MIB)), "file_name_invalid")
         self.assertEqual(code(ar.check_file("b.svg", big, SVG, 20 * MIB)), "file_type_not_allowed")
+        self.assertEqual(code(ar.check_file("b.svg", 0, b"", 20 * MIB)), "file_type_not_allowed")
+        self.assertEqual(code(ar.check_file("b.png", 0, b"", 20 * MIB)), "file_empty")
         self.assertEqual(code(ar.check_file("b.png", big, SVG, 20 * MIB)), "file_too_large")
         self.assertEqual(code(ar.check_file("b.png", 10, SVG, 20 * MIB)), "file_content_mismatch")
+
+    def test_an_empty_file_does_not_hand_anything_in(self):
+        """A hand-in of only an empty .txt is refused before files_required could be satisfied by it."""
+        self.assertEqual(ar.check_hand_in([f("a.py"), f("empty.txt", b"")], [], ar.Limits(10, MIB, None)),
+                         ar.Refusal("file_empty", 1))
 
     def test_whitelist_is_the_agreed_one(self):
         self.assertEqual(set(ar.ALLOWED), {

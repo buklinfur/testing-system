@@ -178,12 +178,27 @@ class GradingScale(str, enum.Enum):
 
 
 class AnswerKind(str, enum.Enum):
-    """What a student hands in. Until session 4v.3 (files) a CHECK allows only mark and text."""
+    """What a student hands in (docs/CLASSROOM.md §10: the matrix of answer kind, text, files and links)."""
 
     mark = "mark"  # just "done" (work in a notebook)
     text = "text"  # a text answer, stored as the file answer.md
-    files = "files"
-    text_or_files = "text_or_files"
+    files = "files"  # at least one file or link, no text (4v.3)
+    text_or_files = "text_or_files"  # text, files and links, at least one of them (4v.3)
+
+
+class SubmissionFileKind(str, enum.Enum):
+    """A file of a hand-in: the text answer or an upload (4v.3). A student's upload named answer.md is a `file` and
+    does not meet the text answer."""
+
+    text = "text"  # the text answer, the file answer.md; at most one per hand-in
+    file = "file"  # a file the student uploaded
+
+
+class AttachmentKind(str, enum.Enum):
+    """A teacher's attachment of a feed item (4v.3): a file (a blob) or a link (data, never opened by the server)."""
+
+    file = "file"
+    link = "link"
 
 
 class GradesRelease(str, enum.Enum):
@@ -750,8 +765,6 @@ class FeedItem(Base):
         CheckConstraint("kind = 'assignment' OR due_at IS NULL", name="due_only_assignment"),
         CheckConstraint("COALESCE(grading = 'points', false) = (max_points IS NOT NULL)", name="max_points"),
         CheckConstraint("max_points IS NULL OR max_points > 0", name="max_points_positive"),
-        CheckConstraint("answer_kind IS NULL OR answer_kind IN ('mark', 'text')",
-                        name="answer_kind_before_4v3"),  # files come with session 4v.3
         CheckConstraint("available_from IS NULL OR due_at IS NULL OR available_from < due_at", name="deadline"),
         CheckConstraint("state = 'draft' OR published_at IS NOT NULL", name="published_at"),
         Index("ix_feed_items_state_available", "state", "available_from"),
@@ -820,8 +833,18 @@ class AssignmentSubmission(Base):
     __table_args__ = (Index("ix_assignment_submissions_work_created", "work_id", "created_at"),)
 
 
+# The limits the CHECKs below keep, the same numbers as the rules (classroom/attachment_rules.py; a unit test compares
+# them): the rules refuse more, these only make sure nothing longer is ever stored.
+ATTACHMENT_NAME_MAX_CHARS = 150  # content_files.NAME_MAX
+LINK_URL_MAX_CHARS = 2000
+LINK_TITLE_MAX_CHARS = 200
+_LINK_URL_CHECK = f"char_length(url) <= {LINK_URL_MAX_CHARS} AND url ~* '^https?://'"
+_LINK_TITLE_CHECK = f"title IS NULL OR char_length(title) <= {LINK_TITLE_MAX_CHARS}"
+
+
 class AssignmentSubmissionFile(Base):
-    """A file of a hand-in, by content (blobs). Until 4v.3 only answer.md (the text answer); 4v.3 adds uploads."""
+    """A file of a hand-in, by content (blobs): the text answer (kind text, answer.md, at most one) and the files the
+    student uploaded (kind file, 4v.3; names unique in the hand-in ignoring case, never empty)."""
 
     __tablename__ = "assignment_submission_files"
 
@@ -830,15 +853,45 @@ class AssignmentSubmissionFile(Base):
     submission_id: Mapped[int] = mapped_column(ForeignKey("assignment_submissions.id", ondelete="CASCADE",
                                                           name="fk_assignment_submission_files_submission"),
                                                nullable=False)
+    kind: Mapped[SubmissionFileKind] = mapped_column(pg_enum(SubmissionFileKind, "submission_file_kind"),
+                                                     nullable=False)
     path: Mapped[str] = mapped_column(String(255), nullable=False)
     blob_sha256: Mapped[str] = mapped_column(ForeignKey("blobs.sha256", ondelete="RESTRICT"), nullable=False)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     __table_args__ = (
-        UniqueConstraint("submission_id", "path", name="uq_assignment_submission_files_submission_path"),
         CheckConstraint("btrim(path) <> ''", name="path_not_blank"),
         CheckConstraint("size >= 0 AND position >= 0", name="non_negative"),
+        CheckConstraint("kind <> 'text' OR path = 'answer.md'", name="text_is_answer_md"),
+        CheckConstraint("kind <> 'file' OR size > 0", name="file_not_empty"),
+        Index("ix_assignment_submission_files_submission", "submission_id", "position", "id"),
+        Index("uq_assignment_submission_files_text", "submission_id", unique=True,
+              postgresql_where=text("kind = 'text'")),
+        # lower() folds Cyrillic in the C.UTF-8 databases of the installation; the rules compare by casefold first
+        Index("uq_assignment_submission_files_name", "submission_id", text("lower(path)"), unique=True,
+              postgresql_where=text("kind = 'file'")),
+    )
+
+
+class AssignmentSubmissionLink(Base):
+    """A link of a hand-in (4v.3): data, stored as sent after strip; the server never opens it."""
+
+    __tablename__ = "assignment_submission_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    submission_id: Mapped[int] = mapped_column(ForeignKey("assignment_submissions.id", ondelete="CASCADE",
+                                                          name="fk_assignment_submission_links_submission"),
+                                               nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint(_LINK_URL_CHECK, name="url_valid"),
+        CheckConstraint(_LINK_TITLE_CHECK, name="title_length"),
+        CheckConstraint("position >= 0", name="position_non_negative"),
+        Index("ix_assignment_submission_links_submission", "submission_id", "position", "id"),
     )
 
 
@@ -868,6 +921,43 @@ class AssignmentReview(Base):
         Index("ix_assignment_reviews_work", "work_id", "id"),
         Index("uq_assignment_reviews_release_of", "release_of", unique=True,
               postgresql_where=text("release_of IS NOT NULL")),
+    )
+
+
+# --------------------------------------------------------------------------- attachments (module 4v.3, D-078)
+class Attachment(Base):
+    """A teacher's file or link on a feed item (an assignment or a contest item), in the item's order. A file is a
+    blob with its name and size; a link is data (the server never opens it). Removed by deleting the row (the blob
+    stays; the audit keeps name, sha and size); deleted with its item, which happens only to a draft. A material of
+    4v.4 will be a second owner: item_id becomes nullable with num_nonnulls(...) = 1, as for comment threads."""
+
+    __tablename__ = "attachments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[AttachmentKind] = mapped_column(pg_enum(AttachmentKind, "attachment_kind"), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(Text)  # file
+    blob_sha256: Mapped[Optional[str]] = mapped_column(ForeignKey("blobs.sha256", ondelete="RESTRICT"))  # file
+    size: Mapped[Optional[int]] = mapped_column(BigInteger)  # file
+    url: Mapped[Optional[str]] = mapped_column(Text)  # link
+    title: Mapped[Optional[str]] = mapped_column(Text)  # link, optional
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint("(kind = 'file') = (blob_sha256 IS NOT NULL) AND (kind = 'file') = (name IS NOT NULL) "
+                        "AND (kind = 'file') = (size IS NOT NULL) AND (kind = 'link') = (url IS NOT NULL) "
+                        "AND (kind = 'link' OR title IS NULL)", name="kind_shape"),
+        CheckConstraint(f"name IS NULL OR (btrim(name, E' \\t\\r\\n') <> '' "
+                        f"AND char_length(name) <= {ATTACHMENT_NAME_MAX_CHARS})", name="name_valid"),
+        CheckConstraint("size IS NULL OR size > 0", name="size_positive"),
+        CheckConstraint(f"url IS NULL OR ({_LINK_URL_CHECK})", name="url_valid"),
+        CheckConstraint(_LINK_TITLE_CHECK, name="title_length"),
+        CheckConstraint("position >= 0", name="position_non_negative"),
+        Index("ix_attachments_item", "item_id", "position", "id"),
+        Index("uq_attachments_item_name", "item_id", text("lower(name)"), unique=True,
+              postgresql_where=text("kind = 'file'")),
     )
 
 

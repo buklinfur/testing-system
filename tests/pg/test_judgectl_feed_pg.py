@@ -14,7 +14,7 @@ from pathlib import Path
 from tests.pg.pgbase import HAVE_SA, URL, PgCase, requires_pg
 
 T0 = datetime(2026, 11, 10, 3, 0, tzinfo=timezone.utc)  # 10:00 in Novosibirsk
-HOSTILE = "ответ\x1b[2J\x1b]0;pwned\x07 abc\rXYZ ‮txt.exe\x9b"
+HOSTILE = "ответ\x1b[2J\x1b]0;pwned\x07 abc\rXYZ \u202etxt.exe\x9b"
 
 if URL and HAVE_SA:
     from sqlalchemy import func, select

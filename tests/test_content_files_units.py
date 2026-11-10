@@ -84,7 +84,7 @@ class NameTests(unittest.TestCase):
         cases = {
             "задача.png": "задача.png", "../../etc/passwd": "passwd", "a\\b\\c.txt": "c.txt",
             'he said "hi".txt': "he said hi.txt", "a;b.txt": "ab.txt", "line\r\nbreak.txt": "linebreak.txt",
-            "evil‮gnp.exe": "evilgnp.exe",  # direction marks are format characters: gone
+            "evil\u202egnp.exe": "evilgnp.exe",  # direction marks are format characters: gone
             "100%.txt": "100%.txt", "smile 🙂.png": "smile 🙂.png", "": "file", "..": "file", "/": "file",
             "\x00\x07": "file",
         }

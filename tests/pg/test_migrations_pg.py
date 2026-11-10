@@ -705,8 +705,10 @@ class MigrationTests(PgCase):
             self.assertEqual(self.feed_rows(conn), before)
             self.assertEqual(conn.execute(text("SELECT array_agg(comments_enabled ORDER BY id) FROM feed_items")
                                           ).scalar_one(), [False, False], "existing items get false")
+            self.alembic(conn, "upgrade", "head")  # compare_metadata needs the head; nothing later refuses the way back
             diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
-            self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
+            self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migrations differ")
+            self.alembic(conn, "downgrade", "e73284028c20")
             conn.execute(text("UPDATE feed_items SET comments_enabled = true WHERE id = 2"))
 
             self.alembic(conn, "downgrade", "b32303b5df22")  # no threads: allowed, only the flags are lost
@@ -738,3 +740,114 @@ class MigrationTests(PgCase):
         with engine.begin() as conn:
             self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "e73284028c20")
             self.assertEqual(conn.execute(text("SELECT count(*) FROM thread_reads")).scalar_one(), 1)
+
+    # ---------------------------------------------------------------- 32cd8723a2bc: attachments and links (4v.3, D-079)
+    BEFORE_ATTACHMENTS = BEFORE_COMMENTS + """;
+        INSERT INTO blobs (sha256, size_bytes) VALUES (repeat('d', 64), 6), (repeat('e', 64), 7);
+        INSERT INTO assignment_works (id, item_id, user_id, status, status_at)
+          VALUES (1, 2, 2, 'submitted', '2026-11-06 10:00+00');
+        INSERT INTO assignment_submissions (id, work_id, created_at)
+          VALUES (1, 1, '2026-11-06 10:00+00'), (2, 1, '2026-11-06 11:00+00');
+        INSERT INTO assignment_submission_files (submission_id, path, blob_sha256, size, position)
+          VALUES (1, 'answer.md', repeat('d', 64), 6, 0), (2, 'answer.md', repeat('e', 64), 7, 0)
+    """
+    FILES_TABLE_SQL = ("SELECT relfilenode FROM pg_class WHERE oid = 'assignment_submission_files'::regclass")
+
+    def answers(self, conn):
+        return [tuple(r) for r in conn.execute(text(
+            "SELECT id, submission_id, path, blob_sha256, size, position FROM assignment_submission_files ORDER BY id"))]
+
+    def test_attachments_migration_up_down_up_keeps_the_answers_of_4v1(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "e73284028c20")
+            self.run_sql(conn, self.BEFORE_ATTACHMENTS)
+            before = self.answers(conn)
+            table_file = conn.execute(text(self.FILES_TABLE_SQL)).scalar_one()
+            self.alembic(conn, "upgrade", "32cd8723a2bc")
+            self.assertEqual(self.answers(conn), before)
+            self.assertEqual(conn.execute(text("SELECT array_agg(kind::text ORDER BY id) FROM assignment_submission_files"
+                                               )).scalar_one(), ["text", "text"])
+            # no rewrite and no UPDATE: the same file of the table, the kind of the old rows read from the catalog
+            self.assertEqual(conn.execute(text(self.FILES_TABLE_SQL)).scalar_one(), table_file)
+            missing = conn.execute(text("SELECT atthasmissing, attmissingval::text FROM pg_attribute WHERE attrelid = "
+                                        "'assignment_submission_files'::regclass AND attname = 'kind'")).one()
+            self.assertEqual(tuple(missing), (True, "{text}"))
+            diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+            self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
+            # what 4v.3 allows now and the old schema did not: a file named answer.md next to the text answer
+            conn.execute(text("INSERT INTO assignment_submission_files (submission_id, kind, path, blob_sha256, size, position) "
+                              "VALUES (1, 'file', 'answer.md', repeat('e', 64), 7, 1)"))
+            conn.execute(text("DELETE FROM assignment_submission_files WHERE kind = 'file'"))
+
+            self.alembic(conn, "downgrade", "e73284028c20")  # nothing of 4v.3: allowed, nothing is lost
+            self.assertEqual(self.answers(conn), before)
+            for table in ("attachments", "assignment_submission_links"):
+                self.assertIsNone(conn.execute(text("SELECT to_regclass(:t)"), {"t": table}).scalar_one(), table)
+            for name in ("submission_file_kind", "attachment_kind"):
+                self.assertIsNone(conn.execute(text("SELECT to_regtype(:n)"), {"n": name}).scalar_one(), name)
+            with self.assertRaises(Exception) as caught, conn.begin_nested():
+                conn.execute(text("INSERT INTO assignment_submission_files (submission_id, path, blob_sha256, size, position) "
+                                  "VALUES (1, 'answer.md', repeat('e', 64), 7, 1)"))
+            self.assertIn("uq_assignment_submission_files_submission_path", str(caught.exception))
+            with self.assertRaises(Exception) as caught, conn.begin_nested():
+                conn.execute(text("UPDATE feed_items SET answer_kind = 'files' WHERE id = 2"))
+            self.assertIn("ck_feed_items_answer_kind_before_4v3", str(caught.exception))
+
+            self.alembic(conn, "upgrade", "32cd8723a2bc")
+            self.assertEqual(self.answers(conn), before)
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM assignment_submission_files WHERE kind = 'text'")
+                                          ).scalar_one(), 2)
+
+    def test_attachments_downgrade_refuses_what_the_old_schema_cannot_hold(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "e73284028c20")
+            self.run_sql(conn, self.BEFORE_ATTACHMENTS)
+            self.alembic(conn, "upgrade", "32cd8723a2bc")
+        cases = {
+            "uploaded files of hand-ins: 1": (
+                "INSERT INTO assignment_submission_files (submission_id, kind, path, blob_sha256, size, position) "
+                "VALUES (2, 'file', 'main.py', repeat('d', 64), 6, 1)",
+                "DELETE FROM assignment_submission_files WHERE kind = 'file'"),
+            "links of hand-ins: 1": (
+                "INSERT INTO assignment_submission_links (submission_id, url, position) VALUES (2, 'https://e.ru/', 0)",
+                "DELETE FROM assignment_submission_links"),
+            "attachments: 1": (
+                "INSERT INTO attachments (item_id, kind, url, position) VALUES (1, 'link', 'https://e.ru/', 0)",
+                "DELETE FROM attachments"),
+            "items answered with files: 1": (
+                "UPDATE feed_items SET answer_kind = 'text_or_files' WHERE id = 2",
+                "UPDATE feed_items SET answer_kind = 'mark' WHERE id = 2"),
+        }
+        for expected, (change, undo) in cases.items():
+            with self.subTest(expected):
+                with engine.begin() as conn:
+                    conn.execute(text(change))
+                with self.assertRaises(RuntimeError) as caught:
+                    with engine.begin() as conn:
+                        self.alembic(conn, "downgrade", "e73284028c20")
+                self.assertIn(expected, str(caught.exception))
+                self.assertIn("nothing was changed", str(caught.exception))
+                with engine.begin() as conn:
+                    self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(),
+                                     "32cd8723a2bc")
+                    conn.execute(text(undo))
+        with engine.begin() as conn:
+            self.alembic(conn, "downgrade", "e73284028c20")
+
+    def test_attachments_upgrade_refuses_a_file_that_is_not_the_text_answer(self):
+        """4v.1 writes only answer.md; another row would get a kind nobody knows, so the upgrade stops first."""
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "e73284028c20")
+            self.run_sql(conn, self.BEFORE_ATTACHMENTS + """;
+                INSERT INTO assignment_submission_files (submission_id, path, blob_sha256, size, position)
+                  VALUES (1, 'main.py', repeat('e', 64), 7, 1)""")
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "upgrade", "32cd8723a2bc")
+        self.assertIn("files of hand-ins that are not answer.md: 1", str(caught.exception))
+        self.assertIn("nothing was changed", str(caught.exception))
+        with engine.begin() as conn:
+            self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "e73284028c20")

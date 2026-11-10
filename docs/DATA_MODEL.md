@@ -18,8 +18,10 @@ groups ──< group_members ──> users   (классы; состав с ис
 feed_items ──> contests?                     (лента класса, 4в: контест / ручное задание / материал)
    ├──< feed_item_audience ──> groups | users  (адресаты)
    ├──< deadline_extensions                    (продления ручного задания)
+   ├──< attachments ──> blobs?                 (файлы и ссылки преподавателя, 4в.3)
    └──< assignment_works ──> users             (работа ученика по заданию)
-          ├──< assignment_submissions ──< assignment_submission_files ──> blobs
+          ├──< assignment_submissions ──< assignment_submission_files ──> blobs   (текст ответа и файлы)
+          │                         └──< assignment_submission_links            (ссылки сдачи, 4в.3)
           └──< assignment_reviews              (оценки, возвраты, публикации — история)
 blobs (sha256)   — файлы: тесты, исходники, архивы, пакеты
 languages        — профили языков (конфиг, не код)
@@ -271,3 +273,62 @@ auth_failures, auth_lockouts — неудачные попытки входа и
   (`thread_reads_deleted` в аудите `user.delete`), как сессии.
 * Откат отказывает, ничего не меняя, пока есть хоть одна ветка или комментарий; иначе удаляет три таблицы и столбец
   `comments_enabled` — теряются только значения этого флага у элементов.
+
+
+## Изменения 4в.3 (миграция `32cd8723a2bc`)
+
+Решения — D-078 (правила) и D-079 (схема) в [`DECISIONS.md`](DECISIONS.md), правила — [`CLASSROOM.md`](CLASSROOM.md)
+§10. Миграцию проверяет `tests/pg/test_migrations_pg.py`, ограничения и следы — `tests/pg/test_attachment_schema_pg.py`
+(каждая `CHECK` и каждый частичный уникальный индекс: отказ по имени и успешный вариант).
+
+* `feed_items`: снят `CHECK answer_kind_before_4v3`. Метки `files` и `text_or_files` были в типе `answer_kind` с 4в.1,
+  тип не меняется.
+* `assignment_submission_files.kind` — новый тип `submission_file_kind`: `text` (текст ответа, `answer.md`) или `file`
+  (файл, загруженный учеником). Столбец добавлен `NOT NULL` с постоянным значением по умолчанию `'text'`: PostgreSQL
+  хранит его в каталоге, поэтому строки 4в.1 (все — `answer.md`) читаются как `text` без перезаписи таблицы и без
+  `UPDATE` строк (на judge_test — 24 строки, файл таблицы тот же). Сразу после этого значение по умолчанию снято:
+  каждая новая строка называет свой вид. Если до миграции в таблице есть файл не `answer.md`, миграция отказывает,
+  ничего не меняя (4в.1 таких не пишет).
+  * Вместо `UNIQUE(submission_id, path)` — частичные уникальные индексы:
+    - `uq_assignment_submission_files_text` — не больше одного `text` на сдачу;
+    - `uq_assignment_submission_files_name` — `(submission_id, lower(path))` среди `file`: `A.py` и `a.py` в одной
+      сдаче база отвергает. `lower()` сворачивает и кириллицу (`Отчёт.pdf` / `отчёт.PDF`): базы установки созданы с
+      `C.UTF-8`. Правила сравнивают через `casefold` раньше базы (D-078), индекс — последняя защита;
+    - файл ученика с именем `answer.md` (`file`) не сталкивается с текстовым ответом (`text`).
+  * Индекс `(submission_id, position, id)` — файлы сдачи по порядку (раньше эту роль играла уникальность).
+  * `CHECK`: `text_is_answer_md` — `text` только с путём `answer.md`; `file_not_empty` — у `file` размер > 0
+    (`file_empty`).
+* `assignment_submission_links` — ссылки сдачи: `submission_id`, `url`, `title` (необязателен), `position`. Хранится
+  как прислано после `strip`; сервер ссылки не открывает. `CHECK`: `url_valid` — не длиннее 2000 символов и начинается
+  с `http://` или `https://` (любой регистр); `title_length` — до 200; `position_non_negative`. Индекс
+  `(submission_id, position, id)`.
+* `attachments` — файлы и ссылки преподавателя у элемента ленты (задание или контест-элемент), в порядке `position`.
+  - Новый тип `attachment_kind`: `file` | `link`. У файла — `name`, `blob_sha256`, `size`; у ссылки — `url` и
+    необязательный `title`. `created_by` (пусто — консоль), `created_at`.
+  - `CHECK`:
+    - `kind_shape` — у файла есть блоб, имя и размер и нет `url` и `title`; у ссылки наоборот;
+    - `name_valid` — имя не пустое (и не только пробелы, табуляции, переводы строк ASCII), до 150 символов;
+    - `size_positive` — размер > 0;
+    - `url_valid` и `title_length` — как у ссылок сдачи;
+    - `position_non_negative`.
+  - Индексы: `(item_id, position, id)`; `uq_attachments_item_name` — `(item_id, lower(name))` среди файлов. Одинаковые
+    ссылки база не запрещает.
+  - Удаление вложения — удаление строки; блоб остаётся (`RESTRICT`), в аудите — имя, sha и размер (этап 3).
+  - В 4в.4 у материала появится второй владелец: `item_id` станет nullable с `CHECK num_nonnulls(...) = 1`, как у веток
+    комментариев.
+* **`ondelete` у новых внешних ключей** (проверяет каталог, `test_the_new_foreign_keys_say_their_on_delete`):
+  - `assignment_submission_links.submission_id` → `assignment_submissions` — `CASCADE`, как у файлов сдачи (сдачи
+    сервисы не удаляют);
+  - `attachments.item_id` → `feed_items` — `CASCADE`, как у адресатов: элемент удаляется только черновиком, и его
+    вложения уходят с ним;
+  - `attachments.blob_sha256` → `blobs` — `RESTRICT`;
+  - `attachments.created_by` → `users` — `RESTRICT`.
+* **Следы пользователя** (`users.traces`): «feed attachments added» (`attachments.created_by`). Тест проверяет, что
+  каждый внешний ключ на `users` либо след (`users.TRACES`), либо стирается вместе с пользователем (`users.ERASED`:
+  сессии, QR-токены, членство в группах, отметки прочтения).
+* Ключ блокировки `locks.STUDENT_FILES` (пара с id ученика): сдачи с файлами одного ученика идут по одной, и квота
+  (различные блобы всех его сдач) видит каждую прежнюю (этап 3).
+* Откат отказывает, ничего не меняя, пока есть хоть один загруженный файл сдачи (`file`), ссылка сдачи, вложение или
+  элемент с `answer_kind` `files` / `text_or_files`; сообщение называет число каждого. Иначе он **ничего не теряет**:
+  все оставшиеся строки файлов — текст ответа, а их вид следующий `upgrade` восстанавливает. Откат возвращает
+  `UNIQUE(submission_id, path)` и `CHECK answer_kind_before_4v3`, удаляет обе таблицы и оба типа.
