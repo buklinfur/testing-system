@@ -377,7 +377,8 @@ def add_parsers(groups, command) -> None:
         p.add_argument("--after-due-submit", choices=["no", "late", "yes"])
         p.add_argument("--grading", choices=["points", "pass_fail", "none"])
         p.add_argument("--max-points", help="with --grading points, e.g. 5 or 10.5")
-        p.add_argument("--answer", choices=["mark", "text"], help="mark: just «handed in»; text: a text answer")
+        p.add_argument("--answer", choices=["mark", "text", "files", "text_or_files"],
+                       help="mark: just «handed in»; text: a text answer; files: files or links; text_or_files: either")
         p.add_argument("--release", choices=["immediate", "manual"], help="when students see grades")
         p.add_argument("--comments", choices=["on", "off"],
                        help="students may write in the shared thread of an assignment (off by default)")

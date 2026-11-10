@@ -19,12 +19,20 @@ SELECT format('ALTER ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICA
 SQL
 }
 
-# judge_db_create DB [OWNER]: the database (if missing) owned by OWNER (default: the role named DB), CONNECT and
-# TEMP taken from PUBLIC (each role reaches only its own database), the schema public owned by OWNER. Idempotent.
+# The locale of every judge database, given explicitly rather than taken from the cluster: lower() and upper() of
+# the database follow LC_CTYPE, and the unique names of 4v.3 (lower(path), lower(name)) need it to fold Cyrillic
+# (lower('Ё') = 'ё'); C.UTF-8 sorts by code point, the same on every machine. tools/reset_check.py checks it.
+JUDGE_DB_LOCALE=C.UTF-8
+
+# judge_db_create DB [OWNER]: the database (if missing) owned by OWNER (default: the role named DB), UTF8 with the
+# locale JUDGE_DB_LOCALE (from template0, so it never depends on the cluster's template1), CONNECT and TEMP taken
+# from PUBLIC (each role reaches only its own database), the schema public owned by OWNER. Idempotent: an existing
+# database keeps its locale (docs/DEPLOY_WSL2.md says how to check it).
 judge_db_create() {
   local db=$1 owner=${2:-$1}
-  judge_psql_admin -v db="$db" -v owner="$owner" <<'SQL'
-SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'owner')
+  judge_psql_admin -v db="$db" -v owner="$owner" -v locale="$JUDGE_DB_LOCALE" <<'SQL'
+SELECT format('CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L LC_COLLATE %L LC_CTYPE %L',
+              :'db', :'owner', 'UTF8', :'locale', :'locale')
  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db') \gexec
 SELECT format('ALTER DATABASE %I OWNER TO %I', :'db', :'owner') \gexec
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'db') \gexec

@@ -7,8 +7,8 @@
 #    audit, a worker token (tools/reset_check.py seed);
 # 3. judge_db_recreate + alembic upgrade head - what reset-production.sh does to `judge`;
 # 4. a second database judge_reset_check_fresh made the fresh way, migrated, and compared with the reset one by the
-#    catalog: owner and privileges of the database and of the schema public, table owners, rows, models ==
-#    migrations (tools/reset_check.py compare). Exit 0: the same; 1: the differences are printed.
+#    catalog: owner, privileges, encoding and locale of the database (C.UTF-8, lower('Ё') = 'ё' in both), the schema
+#    public, table owners, rows, models == migrations (tools/reset_check.py compare). Exit 0: the same; 1: the differences are printed.
 # Both databases and the role are dropped at the end, on any failure and on Ctrl-C (and at the start, if a killed
 # run left them); the names are checked against a fixed list first, so `judge` can never be dropped here. Python and
 # alembic run as you ($SUDO_USER) from this repository's .venv; the URLs (a random password) go through the

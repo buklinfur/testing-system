@@ -20,7 +20,7 @@ if URL and HAVE_SA and HAVE_API:
     from sqlalchemy import func, select
 
     from app import groups as g
-    from app.admin_api.feed import COMMENT_STUDENT_ONLY, DEFENSIVE, HAND_IN_ONLY, RESULT_ONLY, STATUS
+    from app.admin_api.feed import COMMENT_STUDENT_ONLY, DEFENSIVE, HAND_IN_ONLY, NO_ROUTE_YET, RESULT_ONLY, STATUS
     from app.blobstore import BlobStore
     from app.classroom import works
     from app.models import AssignmentReview, AuditLog, Contest, FeedItem, User
@@ -314,7 +314,7 @@ class AdminFeedTests(ApiCase):
         create("item_invalid", kind="lesson")
         create("grading_invalid")
         create("max_points_invalid", grading="points")
-        create("answer_kind_invalid", grading="none", answer_kind="files")
+        create("answer_kind_invalid", grading="none", answer_kind="photo")
         create("deadline_invalid", grading="none", available_from="2026-10-29 10:00", due_at="2026-10-29 10:00")
         create("due_at_invalid", grading="none", due_at="потом")
         create("available_from_invalid", grading="none", available_from="потом")
@@ -389,6 +389,6 @@ class AdminFeedTests(ApiCase):
         self.ok(P(f"/comments/{posted['id']}/delete", json={}))
         self.refused(P(f"/comments/{posted['id']}/delete", json={}), "already_deleted")
 
-        expected = set(STATUS) - HAND_IN_ONLY - COMMENT_STUDENT_ONLY - DEFENSIVE
+        expected = set(STATUS) - HAND_IN_ONLY - COMMENT_STUDENT_ONLY - DEFENSIVE - NO_ROUTE_YET
         self.assertEqual(sorted(expected - self.reached), [])
         self.assertLessEqual(RESULT_ONLY, self.reached)

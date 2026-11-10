@@ -133,7 +133,7 @@ class ClassroomServiceTests(PgCase):
             ("grading_invalid", dict(kind="assignment", title="З")),
             ("max_points_invalid", dict(kind="assignment", title="З", grading="points")),
             ("max_points_invalid", dict(kind="assignment", title="З", grading="pass_fail", max_points=5)),
-            ("answer_kind_invalid", dict(kind="assignment", title="З", grading="none", answer_kind="files")),
+            ("answer_kind_invalid", dict(kind="assignment", title="З", grading="none", answer_kind="photo")),
             ("deadline_invalid", dict(kind="assignment", title="З", grading="none", available_from=DUE, due_at=DUE)),
             ("item_invalid", dict(kind="contest", title="К", contest=contest, due_at=DUE)),
             ("item_invalid", dict(kind="contest", title="К", contest=contest, grading="none")),

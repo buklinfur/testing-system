@@ -3,8 +3,10 @@ docs/CLASSROOM.md §4, §5, §7).
 
 Locking. Every change of a work - a hand-in, a grade, a return, a release - locks its row of assignment_works
 (SELECT ... FOR UPDATE) and decides on the status read under that lock, so concurrent changes go one after
-another. The first change of a pair (item, student) creates the row with INSERT ... ON CONFLICT (item_id, user_id)
-DO NOTHING and then locks it: two first hand-ins at once make one work. A release of many works locks them in the
+another. A hand-in first takes the advisory lock (locks.STUDENT_FILES, student id) and then the row: the hand-ins
+of one student (on any item) go one at a time, so the quota - the distinct blobs of all their hand-ins - counts
+every earlier one (4v.3). The first change of a pair (item, student) creates the row with INSERT ... ON CONFLICT
+(item_id, user_id) DO NOTHING and then locks it: two first hand-ins at once make one work. A release of many works locks them in the
 order of their ids (no deadlock between two releases).
 
 The status of a work is a cache of its history, written in the same transaction as the event (grading.next_status
@@ -18,21 +20,24 @@ Functions flush but never commit; a refusal raises FeedError and the caller roll
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from decimal import Decimal
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 from sqlalchemy import false, func, literal, select, union_all
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from .. import locks
 from ..auth import audit
-from ..blobstore import BlobStore
-from ..models import (AssignmentReview, AssignmentSubmission, AssignmentSubmissionFile, AssignmentWork, FeedItem,
-                      FeedItemAudience, FeedItemKind, FeedItemState, Group, GroupMember, ReviewAction, Role,
-                      SubmissionFileKind, User, WorkStatus)
-from ..problems.importer import store_blob
+from ..blobstore import BlobStore, Incoming
+from ..models import (AssignmentReview, AssignmentSubmission, AssignmentSubmissionFile, AssignmentSubmissionLink,
+                      AssignmentWork, FeedItem, FeedItemAudience, FeedItemKind, FeedItemState, Group, GroupMember,
+                      ReviewAction, Role, SubmissionFileKind, User, WorkStatus)
 from . import access, grading
+from . import attachment_rules
+from . import attachments as files_service
 from . import items as feed
 from .items import FeedError
 
@@ -104,36 +109,76 @@ def _comment(text: Optional[str]) -> Optional[str]:
 # ----------------------------------------------------------------------------- a hand-in (the student)
 def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs: BlobStore,
                 text: Optional[str] = None, text_limit: int = access.ANSWER_TEXT_MAX_BYTES,
-                ip: Optional[str] = None) -> tuple[AssignmentSubmission, object]:
-    """A hand-in of the student of the session, received at `now`. The rules (classroom/access.can_submit_work)
-    are checked before anything is written - the text limit before the blob is stored - and again on the status
-    read under the lock. Returns (the hand-in, the decision: late or not)."""
+                ip: Optional[str] = None, files: Sequence[Incoming] = (), links: Sequence = (),
+                limits: attachment_rules.Limits = attachment_rules.Limits(),
+                quota: Optional[int] = attachment_rules.STUDENT_QUOTA_BYTES) -> tuple[AssignmentSubmission, object]:
+    """A hand-in of the student of the session, received at `now`: a text answer, files (finished
+    blobstore.Incoming, in their order) and links (url, title). Returns (the hand-in, the decision: late or not).
+
+    Order: access.can_submit_work (with the number of files and links) -> attachment_rules.check_hand_in (names,
+    types, sizes, links) -> the advisory lock of the student, the lock of the work, can_submit_work again on the
+    status read under it -> the quota (attachment_rules.quota_ok: sizes of the blobs this hand-in adds that the
+    student does not have yet, answer.md included) -> only then the files go into the store. A refusal raises
+    FeedError before anything is stored; the caller closes the uploads either way."""
+    files = [f.finish() for f in files]
+    links = [files_service.rules_link(getattr(link, "url", link), getattr(link, "title", None)) for link in links]
+    views = [files_service.file_view(f) for f in files]
     in_audience = feed.in_audience(db, item, user)
     extensions = feed.due_moments(db, item, user)
     current = work_of(db, item, user)
 
     def decide(status):
         d = access.can_submit_work(user, item, now, in_audience=in_audience, extensions=extensions,
-                                   work_status=status, text=text, text_limit=text_limit)
+                                   work_status=status, text=text, text_limit=text_limit,
+                                   attachments=len(files) + len(links))
         if not d:
             raise FeedError(d.reason, d.reason)
         return d
 
     decide(_v(current.status) if current is not None else None)
+    if files or links:
+        files_service.refuse(attachment_rules.check_hand_in(views, links, limits))
+    answer = text.encode("utf-8") if text is not None and text.strip() else None
+    locks.take_pair(db, locks.STUDENT_FILES, user.id)
     work, prior = _lock_or_create(db, item, user, now)
     decision = decide(prior)
+    new = {f.sha256: f.size for f in files}
+    if answer is not None:
+        new[hashlib.sha256(answer).hexdigest()] = len(answer)
+    used, owned = quota_used(db, user, new)
+    adding = sum(size for sha, size in new.items() if sha not in owned)
+    if not attachment_rules.quota_ok(used, adding, quota):
+        raise FeedError("there is no more space for your files: ask the teacher", "quota_exceeded", used=used,
+                        adding=adding, quota=quota)
     sub = AssignmentSubmission(work_id=work.id, created_at=now, late=decision.late, ip=ip)
     db.add(sub)
     db.flush()
-    if text is not None and text.strip():
-        data = text.encode("utf-8")
-        sha = store_blob(db, blobs, data)
-        db.flush()  # the blobs row first: no relationship tells the unit of work the order
+    if answer is not None:
+        sha = blobs.put(answer)
+        files_service.ensure_blob(db, sha, len(answer))
         db.add(AssignmentSubmissionFile(submission_id=sub.id, kind=SubmissionFileKind.text, path=ANSWER_FILE,
-                                        blob_sha256=sha, size=len(data), position=0))
+                                        blob_sha256=sha, size=len(answer), position=0))
+    for position, (upload, view) in enumerate(zip(files, views), 1):
+        sha = files_service.adopt(db, upload)
+        db.add(AssignmentSubmissionFile(submission_id=sub.id, kind=SubmissionFileKind.file, path=view.name,
+                                        blob_sha256=sha, size=view.size, position=position))
+    for position, link in enumerate(links):
+        db.add(AssignmentSubmissionLink(submission_id=sub.id, url=link.url, title=link.title, position=position))
     _set_status(work, prior, "submit", now)
     db.flush()
     return sub, decision
+
+
+def quota_used(db: Session, user: User, shas: Iterable[str] = ()) -> tuple[int, set]:
+    """(the sizes of the distinct blobs in all the student's hand-ins, which of `shas` they already have)."""
+    mine = (select(AssignmentSubmissionFile.blob_sha256, func.max(AssignmentSubmissionFile.size).label("size"))
+            .join(AssignmentSubmission, AssignmentSubmission.id == AssignmentSubmissionFile.submission_id)
+            .join(AssignmentWork, AssignmentWork.id == AssignmentSubmission.work_id)
+            .where(AssignmentWork.user_id == user.id).group_by(AssignmentSubmissionFile.blob_sha256).subquery())
+    used = db.execute(select(func.coalesce(func.sum(mine.c.size), 0))).scalar_one()
+    shas = list(shas)
+    owned = set(db.execute(select(mine.c.blob_sha256).where(mine.c.blob_sha256.in_(shas))).scalars()) if shas else set()
+    return int(used), owned
 
 
 # ----------------------------------------------------------------------------- the teacher
@@ -281,14 +326,44 @@ def student_work(db: Session, user: User, item: FeedItem, now: datetime) -> Opti
 
 
 def answer_text(db: Session, blobs: BlobStore, submission: AssignmentSubmission) -> Optional[str]:
-    """The text answer of a hand-in (answer.md), as a string (bytes that are not UTF-8 replaced)."""
+    """The text answer of a hand-in (answer.md, kind text: a student's file of that name is not it), as a string
+    (bytes that are not UTF-8 replaced)."""
     row = db.execute(select(AssignmentSubmissionFile).where(AssignmentSubmissionFile.submission_id == submission.id,
-                                                            AssignmentSubmissionFile.path == ANSWER_FILE)
+                                                            AssignmentSubmissionFile.kind == SubmissionFileKind.text)
                      ).scalar_one_or_none()
     if row is None:
         return None
     data = blobs.get(row.blob_sha256)
     return None if data is None else data.decode("utf-8", errors="replace")
+
+
+def submission_files(db: Session, submission: AssignmentSubmission) -> dict:
+    """The files (the text answer among them, kind text) and links of a hand-in, in their order: what the teacher's
+    card lists - names, sizes and hashes, never the content (a file is fetched by work_file)."""
+    files = db.execute(select(AssignmentSubmissionFile).where(AssignmentSubmissionFile.submission_id == submission.id)
+                       .order_by(AssignmentSubmissionFile.position, AssignmentSubmissionFile.id)).scalars()
+    links = db.execute(select(AssignmentSubmissionLink).where(AssignmentSubmissionLink.submission_id == submission.id)
+                       .order_by(AssignmentSubmissionLink.position, AssignmentSubmissionLink.id)).scalars()
+    return {"files": [{"id": f.id, "kind": f.kind.value, "name": f.path, "size": f.size, "sha256": f.blob_sha256}
+                      for f in files],
+            "links": [{"id": link.id, "url": link.url, "title": link.title} for link in links]}
+
+
+def work_file(db: Session, viewer, item: FeedItem, student: User, file_id: int) -> AssignmentSubmissionFile:
+    """One file of the work of (item, student), by its id, to be served by content_files.file_response after this
+    check: the text answer (answer.md) or an upload. A teacher reads any work; a student only their own, once it
+    exists and the item is not a draft (access.can_see_own_work). file_not_found otherwise - a file of another
+    work (another student or item) included: the pair of the path decides, never the id alone."""
+    if not access.is_admin(viewer) and (viewer.id != student.id or not access.can_see_own_work(viewer, item, True)):
+        raise FeedError(f"no file {file_id} here", "file_not_found")
+    row = db.execute(select(AssignmentSubmissionFile)
+                     .join(AssignmentSubmission, AssignmentSubmission.id == AssignmentSubmissionFile.submission_id)
+                     .join(AssignmentWork, AssignmentWork.id == AssignmentSubmission.work_id)
+                     .where(AssignmentSubmissionFile.id == file_id, AssignmentWork.item_id == item.id,
+                            AssignmentWork.user_id == student.id)).scalar_one_or_none()
+    if row is None:
+        raise FeedError(f"no file {file_id} in the work of {student.login} on item {item.id}", "file_not_found")
+    return row
 
 
 def work_detail(db: Session, blobs: BlobStore, item: FeedItem, student: User, now: datetime) -> Optional[dict]:
@@ -302,7 +377,7 @@ def work_detail(db: Session, blobs: BlobStore, item: FeedItem, student: User, no
     for kind, row in found:
         if kind == "submission":
             out_events.append({"kind": "submission", "id": row.id, "at": row.created_at, "late": row.late,
-                               "text": answer_text(db, blobs, row)})
+                               "text": answer_text(db, blobs, row), **submission_files(db, row)})
         else:
             out_events.append({"kind": "review", "id": row.id, "at": row.at, "action": row.action.value,
                                "score": row.score, "passed": row.passed, "comment": row.comment,

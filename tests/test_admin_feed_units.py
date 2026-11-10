@@ -22,7 +22,7 @@ API_ONLY = {"work_not_found", "confirmation_mismatch", "due_at_invalid", "availa
             "group_not_found", "contest_not_found"}
 
 try:
-    from app.admin_api.feed import COMMENT_STUDENT_ONLY, HAND_IN_ONLY, RESULT_ONLY, STATUS
+    from app.admin_api.feed import COMMENT_STUDENT_ONLY, HAND_IN_ONLY, NO_ROUTE_YET, RESULT_ONLY, STATUS
     from app.classroom import grading
     HAVE_APP = True
 except ImportError:  # pragma: no cover - fastapi is not installed
@@ -86,7 +86,7 @@ class FeedStatusTests(unittest.TestCase):
                     self.assertEqual(status, 404)
                 if code.endswith("_invalid"):
                     self.assertEqual(status, 422)
-        self.assertLessEqual(HAND_IN_ONLY | RESULT_ONLY | COMMENT_STUDENT_ONLY, set(STATUS))
+        self.assertLessEqual(HAND_IN_ONLY | RESULT_ONLY | COMMENT_STUDENT_ONLY | NO_ROUTE_YET, set(STATUS))
         self.assertEqual(HAND_IN_ONLY & RESULT_ONLY, set())
         self.assertEqual(COMMENT_STUDENT_ONLY & (HAND_IN_ONLY | RESULT_ONLY), set())
 

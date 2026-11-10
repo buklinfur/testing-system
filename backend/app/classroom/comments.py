@@ -38,9 +38,8 @@ from sqlalchemy.orm import Session, aliased
 
 from .. import locks
 from ..auth import audit
-from ..contests import service as contests
-from ..models import (AssignmentWork, Comment, CommentThread, Contest, FeedItem, FeedItemAudience, FeedItemKind,
-                      Group, GroupMember, Role, ThreadRead, User)
+from ..models import (AssignmentWork, Comment, CommentThread, FeedItem, FeedItemAudience, FeedItemKind, Group,
+                      GroupMember, Role, ThreadRead, User)
 from . import access
 from . import comment_rules as rules
 from . import items as feed
@@ -115,14 +114,7 @@ def _thread_for_write(db: Session, item: FeedItem, student_id: Optional[int], no
 
 def _shared_inputs(db: Session, item: FeedItem, user: User) -> dict:
     """What comment_rules needs about a student and the shared thread of the item."""
-    out = {"in_audience": feed.in_audience(db, item, user)}
-    if item.kind == FeedItemKind.assignment:
-        out["extensions"] = feed.due_moments(db, item, user)
-    elif item.kind == FeedItemKind.contest:
-        contest = db.get(Contest, item.contest_id)
-        participation, in_group = contests.access_inputs(db, contest, user)
-        out.update(contest=contest, participation=participation, in_contest_group=in_group)
-    return out
+    return feed.view_inputs(db, item, user)
 
 
 def _has_work(db: Session, item: FeedItem, student: User) -> bool:

@@ -86,5 +86,13 @@ class ResetCheckTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("tables:") for line in found), found)
         self.assertTrue(any(line.startswith("rows:") for line in found), found)
         self.assertTrue(any("models.py and the migrated schema differ" in line for line in found), found)
+        self.assertEqual(reset_check.locale_problems(reset), [], "judge_test: UTF8, C.UTF-8, lower('Ё') = 'ё'")
+        self.assertEqual({k: reset["database"][k] for k in ("encoding", "collate", "ctype", "lower_yo")},
+                         {"encoding": "UTF8", "collate": "C.UTF-8", "ctype": "C.UTF-8", "lower_yo": "ё"})
+        c_locale = dict(fresh, database=dict(fresh["database"], collate="C", ctype="C", lower_yo="Ё"))
+        self.assertEqual(reset_check.locale_problems(c_locale),
+                         ["collate is 'C', not 'C.UTF-8'", "ctype is 'C', not 'C.UTF-8'",
+                          "lower('Ё') is 'Ё', not 'ё'"])
+        self.assertTrue(any(line.startswith("fresh: locale:") for line in reset_check.differences(fresh, c_locale)))
         self.assertEqual(reset_check.differences(fresh, dict(fresh, schema={"owner": "x", "acl": None})),
                          [f"schema: reset {fresh['schema']!r}, fresh {{'owner': 'x', 'acl': None}}"])

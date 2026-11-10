@@ -4,8 +4,9 @@ a fresh installation?
 
     DATABASE_URL=... python tools/reset_check.py seed       # rows of every kind that used to block the reset
     DATABASE_URL=... FRESH_DATABASE_URL=... python tools/reset_check.py compare
-        # the reset database against a freshly created one: owner and privileges of the database and of the schema
-        # public, table owners, the same rows as after the migrations (none of the old data), models == migrations; exit 1 and the differences otherwise
+        # the reset database against a freshly created one: owner, privileges, encoding and locale of the database
+        # (C.UTF-8, lower('Ё') = 'ё'), the schema public, table owners, the same rows as after the migrations (none
+        # of the old data), models == migrations; exit 1 and the differences otherwise
 
 URLs come from the environment, never from the command line (it is visible in ps). Dev only: run by the check
 script against throw-away databases; tests/pg/test_reset_check_pg.py runs seed and snapshot in a scratch schema.
@@ -100,7 +101,8 @@ def snapshot(conn, schema: str = "public") -> dict:
 
     from app.models import Base
 
-    database = conn.execute(text("SELECT pg_get_userbyid(datdba), datacl::text FROM pg_database "
+    database = conn.execute(text("SELECT pg_get_userbyid(datdba), datacl::text, pg_encoding_to_char(encoding), "
+                                 "datcollate, datctype, lower('Ё') FROM pg_database "
                                  "WHERE datname = current_database()")).one()
     namespace = conn.execute(text("SELECT pg_get_userbyid(nspowner), nspacl::text FROM pg_namespace "
                                   "WHERE nspname = :s"), {"s": schema}).one()
@@ -109,10 +111,25 @@ def snapshot(conn, schema: str = "public") -> dict:
     rows = {t: conn.execute(text(f'SELECT count(*) FROM "{schema}"."{t}"')).scalar_one()
             for t in sorted(tables) if t != "alembic_version"}
     diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
-    return {"database": {"owner": database[0], "acl": database[1]},
+    return {"database": {"owner": database[0], "acl": database[1], "encoding": database[2],
+                         "collate": database[3], "ctype": database[4], "lower_yo": database[5]},
             "schema": {"owner": namespace[0], "acl": namespace[1]},
             "tables": tables, "rows": {t: n for t, n in rows.items() if n},
             "migrations_vs_models": [str(d) for d in diff]}
+
+
+LOCALE = "C.UTF-8"  # JUDGE_DB_LOCALE of deploy/lib/pg-database.sh
+
+
+def locale_problems(snap: dict) -> list:
+    """What is wrong with the encoding and locale of one database: UTF8, LC_COLLATE and LC_CTYPE C.UTF-8, and lower()
+    folding Cyrillic (the unique names of 4v.3 rely on it)."""
+    db = snap["database"]
+    found = [f"{key} is {db[key]!r}, not {want!r}" for key, want in (("encoding", "UTF8"), ("collate", LOCALE),
+                                                                       ("ctype", LOCALE)) if db[key] != want]
+    if db["lower_yo"] != "ё":
+        found.append(f"lower('Ё') is {db['lower_yo']!r}, not 'ё'")
+    return found
 
 
 def differences(reset: dict, fresh: dict) -> list:
@@ -121,6 +138,7 @@ def differences(reset: dict, fresh: dict) -> list:
     if reset["rows"] != fresh["rows"]:  # the migrations fill a few tables themselves (languages)
         found.append(f"rows: reset {reset['rows']}, fresh {fresh['rows']}")
     for name, snap in (("reset", reset), ("fresh", fresh)):
+        found += [f"{name}: locale: {problem}" for problem in locale_problems(snap)]
         if snap["migrations_vs_models"]:
             found.append(f"{name}: models.py and the migrated schema differ: {snap['migrations_vs_models']}")
     return found

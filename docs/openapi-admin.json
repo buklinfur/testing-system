@@ -148,7 +148,7 @@
                 "type": "null"
               }
             ],
-            "description": "mark | text",
+            "description": "mark | text | files | text_or_files",
             "title": "Answer Kind"
           },
           "available_from": {
@@ -528,7 +528,7 @@
                 "type": "null"
               }
             ],
-            "description": "mark | text",
+            "description": "mark | text | files | text_or_files",
             "title": "Answer Kind"
           },
           "available_from": {

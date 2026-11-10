@@ -89,6 +89,27 @@ def due_moments(db: Session, item: FeedItem, user: User) -> list[datetime]:
     return ext.due_moments(db, DeadlineExtension.feed_item_id, item.id, user)
 
 
+def view_inputs(db: Session, item: FeedItem, user: User) -> dict:
+    """What the visibility rules need about a student and the item (access.item_listed / can_view_assignment and
+    the rules built on them): in_audience; extensions for an assignment; the contest, the participation and the
+    contest group for a contest item."""
+    out = {"in_audience": in_audience(db, item, user)}
+    if item.kind == FeedItemKind.assignment:
+        out["extensions"] = due_moments(db, item, user)
+    elif item.kind == FeedItemKind.contest:
+        contest = db.get(Contest, item.contest_id)
+        participation, in_group = contests.access_inputs(db, contest, user)
+        out.update(contest=contest, participation=participation, in_contest_group=in_group)
+    return out
+
+
+def lock_item(db: Session, item: FeedItem) -> FeedItem:
+    """The row of the item, locked (SELECT ... FOR UPDATE) and read again: changes of its attachments go one after
+    another."""
+    return db.execute(select(FeedItem).where(FeedItem.id == item.id).with_for_update()
+                      .execution_options(populate_existing=True)).scalar_one()
+
+
 def feed_order():
     """Newest first: available_from, else published_at, else created_at."""
     return (func.coalesce(FeedItem.available_from, FeedItem.published_at, FeedItem.created_at).desc(),
@@ -200,10 +221,8 @@ def _validate(kind: str, f: dict) -> None:
                 f["max_points"] = points
         elif f["max_points"] is not None:
             problems.append(("max_points_invalid", f"max_points is only for grading points, not {grading}"))
-        if f["answer_kind"] in ("files", "text_or_files"):
-            problems.append(("answer_kind_invalid", "file answers come with session 4v.3: answer_kind mark or text"))
-        elif f["answer_kind"] not in ("mark", "text"):
-            problems.append(("answer_kind_invalid", "answer_kind is mark or text"))
+        if f["answer_kind"] not in {m.value for m in AnswerKind}:
+            problems.append(("answer_kind_invalid", "answer_kind is mark, text, files or text_or_files"))
         if f["grades_release"] not in {m.value for m in GradesRelease}:
             problems.append(("item_invalid", "grades_release is immediate or manual"))
     else:

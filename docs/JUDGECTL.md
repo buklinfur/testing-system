@@ -62,7 +62,7 @@ judgectl group  create <название> | rename <группа> <назван�
 judgectl item   create --kind assignment|contest --title <название> [--body-file <файл> | -] [--contest <slug>]
                        [--group <группа>]... [--student <логин>]... [--available-from <время>] [--due <время>]
                        [--after-due-statement visible|hidden] [--after-due-submit no|late|yes]
-                       [--grading points|pass_fail|none] [--max-points N] [--answer mark|text]
+                       [--grading points|pass_fail|none] [--max-points N] [--answer mark|text|files|text_or_files]
                        [--release immediate|manual] [--comments on|off]
                 | edit <id> [поля create] [--no-due] [--no-available-from]
                 | publish <id> | archive <id> | unarchive <id> | delete <id> [--yes]

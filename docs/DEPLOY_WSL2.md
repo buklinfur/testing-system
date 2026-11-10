@@ -173,6 +173,18 @@ j .venv/bin/python -m app.judgectl admin list                              # 2FA
 * Пароли `openssl rand -hex 24`; в psql через stdin, в файлы через окружение (не видны в `ps` и истории):
   `DATABASE_URL` → `/etc/judge/backend.env` (640 root:judge), `JUDGE_TEST_DATABASE_URL` → `~/.config/judge/test.env` (600).
 * В конце проверяет: слушает только `127.0.0.1`, вход по паролю работает, неверный отвергается, пароли хранятся как SCRAM.
+* Базы создаются в `UTF8` с локалью `C.UTF-8` (`LC_COLLATE` и `LC_CTYPE`, из `template0`; `JUDGE_DB_LOCALE` в
+  `deploy/lib/pg-database.sh`), а не с той, что у кластера. От `LC_CTYPE` зависит `lower()`: уникальность имён файлов
+  4в.3 (`lower(path)`, `lower(name)`) должна сворачивать и кириллицу. Уже созданная база при повторном запуске свою
+  локаль сохраняет. Проверить локаль рабочей базы (ничего не меняет):
+
+  ```bash
+  sudo -u postgres psql -X -d judge -c "SELECT pg_encoding_to_char(encoding) AS encoding, datcollate, datctype, lower('Ё') AS lower_yo FROM pg_database WHERE datname = current_database()"
+  ```
+
+  Ожидается `UTF8 | C.UTF-8 | C.UTF-8 | ё`. Если `lower_yo` — `Ё` (локаль `C` или `POSIX`), имена `Отчёт.pdf` и
+  `отчёт.pdf` база различает: тогда повтор ловят только правила сервиса (`casefold`). Сменить локаль готовой базы
+  нельзя — только пересоздать (`reset-production.sh` до учеников делает именно это).
 
 ## 3. Проверка до запуска сервисов
 

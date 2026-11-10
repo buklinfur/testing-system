@@ -38,6 +38,7 @@ STATUS = {
     # 404
     "item_not_found": 404, "user_not_found": 404, "group_not_found": 404, "contest_not_found": 404,
     "extension_not_found": 404, "work_not_found": 404, "thread_not_found": 404, "comment_not_found": 404,
+    "file_not_found": 404,
     # 422: the input
     "title_invalid": 422, "kind_not_available": 422, "contest_required": 422, "item_invalid": 422,
     "grading_invalid": 422, "max_points_invalid": 422, "answer_kind_invalid": 422, "deadline_invalid": 422,
@@ -57,7 +58,7 @@ STATUS = {
     # a student's hand-in only: no admin endpoint hands work in (the student endpoints of 4b.2 use these)
     "already_graded": 409, "deadline_passed": 409, "not_available_yet": 409, "no_access": 403,
     "answer_required": 422, "text_not_expected": 422, "text_too_long": 422, "files_required": 422,
-    "files_not_expected": 422,
+    "files_not_expected": 422, "quota_exceeded": 409,
     # a student's comment only (4b.2; D-077): teachers write with comments off and in contest items, delete any
     # comment and have no rate
     "comments_disabled": 409, "comments_teacher_only": 409, "not_your_comment": 403, "rate_limited": 429,
@@ -69,7 +70,10 @@ DEFENSIVE = frozenset({"extension_before_available", "item_has_works"})
 RESULT_ONLY = frozenset({"nothing_to_release", "already_released"})
 # codes no admin request can produce: only a student's hand-in (D-063; the test of 4b.2, ROADMAP)
 HAND_IN_ONLY = frozenset({"already_graded", "deadline_passed", "not_available_yet", "no_access", "answer_required",
-                          "text_not_expected", "text_too_long", "files_required", "files_not_expected"})
+                          "text_not_expected", "text_too_long", "files_required", "files_not_expected",
+                          "quota_exceeded"})
+# codes of services whose admin routes come at stage 5 of 4v.3 (the files of a work): emptied then
+NO_ROUTE_YET = frozenset({"file_not_found"})
 # codes no admin request can produce: only a student's comment (D-077; the test of 4b.2, ROADMAP)
 COMMENT_STUDENT_ONLY = frozenset({"comments_disabled", "comments_teacher_only", "not_your_comment", "rate_limited"})
 
@@ -133,7 +137,7 @@ class ItemFields(Body):
     after_due_submit: Optional[str] = Field(None, max_length=20, description="no | late | yes")
     grading: Optional[str] = Field(None, max_length=20, description="points | pass_fail | none")
     max_points: Optional[POINTS] = Field(None, description="with grading points: like 10 or 4.5 (two decimals)")
-    answer_kind: Optional[str] = Field(None, max_length=20, description="mark | text")
+    answer_kind: Optional[str] = Field(None, max_length=20, description="mark | text | files | text_or_files")
     grades_release: Optional[str] = Field(None, max_length=20, description="manual | immediate")
     comments_enabled: Optional[StrictBool] = Field(None, description="students write in the shared thread "
                                                                      "(assignments only)")
