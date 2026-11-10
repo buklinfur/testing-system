@@ -80,10 +80,11 @@ def can_see_own_work(user, item, has_work: bool) -> bool:
 
 def can_submit_work(user, item, now: datetime, *, in_audience: bool, extensions: Iterable[datetime] = (),
                     work_status: Optional[str] = None, text: Optional[str] = None,
-                    text_limit: int = ANSWER_TEXT_MAX_BYTES) -> Decision:
+                    text_limit: int = ANSWER_TEXT_MAX_BYTES, attachments: int = 0) -> Decision:
     """Whether a hand-in received at `now` is accepted, and whether it is late. `work_status`: the cached status of
-    the student's work (None: no work yet); `text`: the text answer (None or blank: none). The order of the checks
-    is fixed (docs/CLASSROOM.md): the first that fails gives the code."""
+    the student's work (None: no work yet); `text`: the text answer (None or blank: none); `attachments`: how many
+    files and links come with it (4v.3; what they are is checked by attachment_rules.check_hand_in after this). The
+    order of the checks is fixed (docs/CLASSROOM.md §6): the first that fails gives the code."""
     if is_admin(user):
         return Decision(False, "not_a_student")
     if _v(item.kind) != "assignment":
@@ -104,10 +105,14 @@ def can_submit_work(user, item, now: datetime, *, in_audience: bool, extensions:
         return Decision(False, "already_graded")
     answer = _v(item.answer_kind)
     blank = text is None or not text.strip()
-    if answer == "text" and blank:
+    if blank and (answer == "text" or (answer == "text_or_files" and not attachments)):
         return Decision(False, "answer_required")
-    if answer == "mark" and not blank:
+    if not blank and answer in ("mark", "files"):
         return Decision(False, "text_not_expected")
+    if attachments and answer in ("mark", "text"):
+        return Decision(False, "files_not_expected")
+    if not attachments and answer == "files":
+        return Decision(False, "files_required")
     if not blank and len(text.encode("utf-8")) > text_limit:
         return Decision(False, "text_too_long")
     return Decision(True, "late" if deadline.late else "ok", late=deadline.late)

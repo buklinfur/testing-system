@@ -56,7 +56,8 @@ STATUS = {
     "nothing_to_release": 409, "already_released": 409,
     # a student's hand-in only: no admin endpoint hands work in (the student endpoints of 4b.2 use these)
     "already_graded": 409, "deadline_passed": 409, "not_available_yet": 409, "no_access": 403,
-    "answer_required": 422, "text_not_expected": 422, "text_too_long": 422,
+    "answer_required": 422, "text_not_expected": 422, "text_too_long": 422, "files_required": 422,
+    "files_not_expected": 422,
     # a student's comment only (4b.2; D-077): teachers write with comments off and in contest items, delete any
     # comment and have no rate
     "comments_disabled": 409, "comments_teacher_only": 409, "not_your_comment": 403, "rate_limited": 429,
@@ -68,7 +69,7 @@ DEFENSIVE = frozenset({"extension_before_available", "item_has_works"})
 RESULT_ONLY = frozenset({"nothing_to_release", "already_released"})
 # codes no admin request can produce: only a student's hand-in (D-063; the test of 4b.2, ROADMAP)
 HAND_IN_ONLY = frozenset({"already_graded", "deadline_passed", "not_available_yet", "no_access", "answer_required",
-                          "text_not_expected", "text_too_long"})
+                          "text_not_expected", "text_too_long", "files_required", "files_not_expected"})
 # codes no admin request can produce: only a student's comment (D-077; the test of 4b.2, ROADMAP)
 COMMENT_STUDENT_ONLY = frozenset({"comments_disabled", "comments_teacher_only", "not_your_comment", "rate_limited"})
 
