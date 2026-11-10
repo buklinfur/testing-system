@@ -20,7 +20,7 @@ if URL and HAVE_SA and HAVE_API:
     from sqlalchemy import func, select
 
     from app import groups as g
-    from app.admin_api.feed import DEFENSIVE, HAND_IN_ONLY, RESULT_ONLY, STATUS
+    from app.admin_api.feed import COMMENT_STUDENT_ONLY, DEFENSIVE, HAND_IN_ONLY, RESULT_ONLY, STATUS
     from app.blobstore import BlobStore
     from app.classroom import works
     from app.models import AssignmentReview, AuditLog, Contest, FeedItem, User
@@ -296,8 +296,8 @@ class AdminFeedTests(ApiCase):
 
     # ---------------------------------------------------------------- every code
     def test_every_code_with_an_http_status_is_reached(self):
-        """Each code of STATUS but those only a student's hand-in produces (4b.2), the per-student results of a
-        release and the defensive ones is the answer of at least one request here."""
+        """Each code of STATUS but those only a student's hand-in or comment produces (4b.2), the per-student results
+        of a release and the defensive ones is the answer of at least one request here."""
         contest = self.s.get(Contest, self.seed["cp"].contest_id)
         archived = g.create(self.s, self.cli, "6А", self.now)
         g.archive(self.s, self.cli, archived, self.now)
@@ -379,6 +379,16 @@ class AdminFeedTests(ApiCase):
         results = self.ok(P(f"/items/{d['id']}/release", json={"user_ids": [self.ivanov.id]}))
         self.reached |= {r["result"] for r in results["results"]}
 
-        expected = set(STATUS) - HAND_IN_ONLY - DEFENSIVE
+        # comments (§5.9)
+        c = f"/items/{d['id']}/comments"
+        self.refused(self.get(f"/items/{d['id']}/students/{self.sidorov.id}/comments"), "thread_not_found")
+        self.refused(P(c, json={"body": "a\x00"}), "comment_invalid")
+        posted = self.ok(P(c, json={"body": "Объявление"}), 201)
+        self.refused(P(f"{c}/read", json={"up_to": 999999}), "comment_not_found")
+        self.refused(P(f"/comments/{posted['id']}/delete", json={"reason": "я" * 201}), "reason_too_long")
+        self.ok(P(f"/comments/{posted['id']}/delete", json={}))
+        self.refused(P(f"/comments/{posted['id']}/delete", json={}), "already_deleted")
+
+        expected = set(STATUS) - HAND_IN_ONLY - COMMENT_STUDENT_ONLY - DEFENSIVE
         self.assertEqual(sorted(expected - self.reached), [])
         self.assertLessEqual(RESULT_ONLY, self.reached)

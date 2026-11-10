@@ -10,6 +10,10 @@
 # the review queue, archiving the group answers its feed items.
 # And of session 4b.0 (docs/FILES.md): a statement picture under a Cyrillic name, a PNG under .jpg and HTML under .png
 # are served by content and name together, with ETag and 304; the import warns about the fake picture.
+# And of session 4v.2b (comments, docs/ADMIN_API.md §5.9): a student refused while comments are off, then a shared and
+# a private comment through SEED_CMD (dev_seed --comment), the inbox awaiting reply, untrusted text byte for byte,
+# a teacher's answer, the read mark, soft deletion and again; NUL and a lone surrogate are 422. rate_limited is not
+# checked (it depends on JUDGE_COMMENT_RATE_PER_MIN of the installation).
 # A worker with the capability problem_check must be running (judgectl worker list: CAPS).
 #   tools/smoke-admin-api.sh [BASE_URL] [ORIGIN]       defaults: http://127.0.0.1:8000 and $JUDGE_PUBLIC_ORIGIN
 # It asks for an admin (login, password, a TOTP code from the phone); ADMIN_LOGIN, ADMIN_PASSWORD and TOTP_CODE
@@ -368,6 +372,80 @@ get "HTML under .png"                                 200 "$FILES/fake.png"
   && echo "OK   not a picture: a download" || fail "fake.png: $(hdr content-type) $(hdr content-disposition)"
 c "no session: If-None-Match changes nothing"         401 GET "$FILES/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png" -H "If-None-Match: $ETAG"
 send "archive $PIC (test data)"                       200 POST "/api/admin/problems/$PIC/archive"
+
+echo "--- comments (4v.2): comments off and on, a shared and a private thread, read marks, deletion, the inbox"
+seed_comment() {  # seed_comment <label> <want exit> <grep or -> dev_seed args...: a student's comment on $CITEM
+  local label=$1 want=$2 needle=$3; shift 3
+  if [ -z "${SEED_CMD:-}" ]; then
+    echo "SKIP $label   ->  dev_seed --item $CITEM $*   (expect exit $want${needle:+, \"$needle\"})"
+    SKIPS=$((SKIPS + 1)); return 1
+  fi
+  local code
+  $SEED_CMD --item "$CITEM" "$@" > "$D/seed.out" 2> "$D/seed.err"; code=$?
+  if [ "$code" = "$want" ] && { [ "$needle" = - ] || grep -q -- "$needle" "$D/seed.out" "$D/seed.err"; }; then
+    echo "OK   $label (exit $code)"
+  else
+    fail "$label: exit $code, want $want $needle: $(tail -c 200 "$D/seed.err" | tr '\n' ' ')"
+  fi
+}
+get "who am I"                                        200 /api/admin/me
+ME=$(val 'd["user"]["id"]' 2>/dev/null || echo 0)
+G4="smoke $STAMP comments"
+send "a group for the comments"                       201 POST /api/admin/groups "{'name': '$G4'}"
+G4ID=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "an assignment for $G4, comments off"            201 POST /api/admin/items \
+     "{'kind': 'assignment', 'title': 'Вопросы $STAMP', 'grading': 'none', 'group_ids': [$G4ID]}"
+CITEM=$(val 'd["id"]' 2>/dev/null || echo 0)
+check "comments_enabled false by default"             "d['comments_enabled'] is False"
+send "a comment in a draft: refused"                  409 POST "/api/admin/items/$CITEM/comments" "{'body': 'рано'}"
+send "publish it"                                     200 POST "/api/admin/items/$CITEM/publish"
+get "an admin in the path of a private thread"        404 "/api/admin/items/$CITEM/students/$ME/comments"
+check "thread_not_found"                              "d['detail'] == 'thread_not_found'"
+send "delete a comment that does not exist"           404 POST /api/admin/comments/999999999/delete "{}"
+send "a body with NUL"                                422 POST "/api/admin/items/$CITEM/comments" "{'body': 'a\\x00'}"
+check "comment_invalid"                               "d['detail'] == 'comment_invalid'"
+c "a lone surrogate in the JSON body"                 422 POST "/api/admin/items/$CITEM/comments" -H "$O" -H @"$D/cookie" \
+                                                          -H @"$D/csrf" -H "$J" --data-binary '{"body": "a\ud800"}'
+check "invalid_request, not a 500"                    "d['detail'] == 'invalid_request'"
+send "a contest item (a draft) for the contest"       201 POST /api/admin/items "{'kind': 'contest', 'title': 'К', 'contest': '$SLUG'}"
+CLINK=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a private thread of a contest item"             409 POST "/api/admin/items/$CLINK/students/$ME/comments" "{'body': 'x'}"
+check "not_an_assignment"                             "d['detail'] == 'not_an_assignment'"
+send "delete that draft"                              204 POST "/api/admin/items/$CLINK/delete" "{'confirm_id': $CLINK}"
+if [ "$U1" != 0 ] && [ "$U2" != 0 ]; then
+  HOSTILE_C=$(printf '<script>alert(1)</script> \033[2J ответ %s' "$STAMP")
+  send "dev-student-1 and -2 into $G4"                200 POST "/api/admin/groups/$G4ID/members" "{'user_ids': [$U1, $U2]}"
+  seed_comment "dev-student-1, comments off: refused" 1 comments_disabled --user 1 --comment "можно?"
+  send "turn comments on"                             200 PUT "/api/admin/items/$CITEM" "{'comments_enabled': True}"
+  check "changed: comments_enabled"                   "d['changed'] == ['comments_enabled'] and d['item']['comments_enabled']"
+  seed_comment "dev-student-1 in the shared thread"   0 '"kind": "shared"' --user 1 --comment "вопрос $STAMP"
+  seed_comment "dev-student-2 privately: <script> and ESC" 0 '"kind": "private"' --user 2 --private --comment "$HOSTILE_C"
+  get "the inbox: awaiting reply"                     200 "/api/admin/comments/threads?awaiting=true&item_id=$CITEM"
+  check "both threads await, newest first"            "[(t['kind'], t['awaiting_reply']) for t in d['items']] == [('private', True), ('shared', True)] and all(t['last']['at'].endswith('Z') for t in d['items'])"
+  get "the private thread of dev-student-2"           200 "/api/admin/items/$CITEM/students/$U2/comments"
+  grep -qF '<script>alert(1)</script>' "$D/body" && echo "OK   <script> in the JSON as it is" || fail "<script> changed in the JSON"
+  check "the body byte for byte (ESC in it), unread 1" "d['comments'][0]['body'] == '<script>alert(1)</script> \\x1b[2J ответ $STAMP' and d['unread'] == 1 and d['comments'][0]['at'].endswith('Z')"
+  get "the same again: GET sets no mark"              200 "/api/admin/items/$CITEM/students/$U2/comments"
+  check "still unread 1"                              "d['unread'] == 1"
+  send "the teacher answers dev-student-2"            201 POST "/api/admin/items/$CITEM/students/$U2/comments" "{'body': 'Отвечаю <b>тут</b>'}"
+  REPLY=$(val 'd["id"]' 2>/dev/null || echo 0)
+  check "a private comment of the item"               "d['kind'] == 'private' and d['item'] == $CITEM and not d['deleted']"
+  get "the inbox: awaiting reply"                     200 "/api/admin/comments/threads?awaiting=true&item_id=$CITEM"
+  check "only the shared thread waits"                "[t['kind'] for t in d['items']] == ['shared']"
+  send "mark the private thread read"                 200 POST "/api/admin/items/$CITEM/students/$U2/comments/read" "{}"
+  check "unread 0"                                    "d == {'unread': 0}"
+  send "delete the answer, with a reason"             200 POST "/api/admin/comments/$REPLY/delete" "{'reason': 'не туда'}"
+  check "deleted, the reason and the text kept"       "d['deleted'] and d['delete_reason'] == 'не туда' and d['body'] == 'Отвечаю <b>тут</b>' and d['deleted_at'].endswith('Z')"
+  send "delete it again"                              409 POST "/api/admin/comments/$REPLY/delete" "{}"
+  check "already_deleted"                             "d['detail'] == 'already_deleted'"
+  get "the inbox: awaiting reply"                     200 "/api/admin/comments/threads?awaiting=true&item_id=$CITEM"
+  check "the private thread waits again"              "[t['kind'] for t in d['items']] == ['private', 'shared']"
+else
+  echo "SKIP the students' comments (dev-student-1/-2 do not exist yet: run with SEED_CMD twice)"
+  SKIPS=$((SKIPS + 1))
+fi
+send "archive the assignment"                         200 POST "/api/admin/items/$CITEM/archive"
+send "archive $G4"                                    200 POST "/api/admin/groups/$G4ID/archive"
 
 echo "--- the rest: archive, profile, system, audit, languages"
 send "archive the contest"                            200 POST "/api/admin/contests/$SLUG/archive"

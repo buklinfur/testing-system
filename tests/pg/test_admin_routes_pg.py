@@ -27,7 +27,11 @@ class AdminRoutesTests(ApiCase):
         paths = {path for _m, path in out}
         for path in ("/api/admin/items", "/api/admin/items/{item_id}", "/api/admin/works",
                      "/api/admin/items/{item_id}/works/{user_id}/grade", "/api/admin/items/{item_id}/release",
-                     "/api/admin/groups/{group_id}/feed"):  # the class feed of 4v.1b is in the sweep
+                     "/api/admin/groups/{group_id}/feed",  # the class feed of 4v.1b is in the sweep
+                     "/api/admin/items/{item_id}/comments", "/api/admin/items/{item_id}/students/{user_id}/comments",
+                     "/api/admin/items/{item_id}/comments/read", "/api/admin/comments/{comment_id}/delete",
+                     "/api/admin/items/{item_id}/students/{user_id}/comments/read",
+                     "/api/admin/comments/threads"):  # and the comments of 4v.2
             self.assertIn(path, paths)
         return out
 

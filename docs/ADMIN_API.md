@@ -9,7 +9,7 @@ OpenAPI не отдаёт (`openapi_url=None`); файл пишет `python tool
 падает, если файл разошёлся с приложением. Этот документ — описание для людей: смысл, правила и коды ошибок.
 
 Разделы: пользователи (§5.1), задачи (§5.2), контесты (§5.3), группы (§5.4), продления (§5.5), посылки (§5.6),
-система, аудит и языки (§5.7), лента класса и ручные задания (§5.8).
+система, аудит и языки (§5.7), лента класса и ручные задания (§5.8), комментарии (§5.9).
 
 ## 1. Доступ
 
@@ -249,7 +249,7 @@ D-059…D-063). Элемент — по `id`, группа и ученик — �
 | Метод и путь | Тело / параметры | Ответ |
 |---|---|---|
 | `GET /items` | `group_id` (адресован группе), `kind=assignment\|contest`, `state=draft\|published\|archived`, курсор | `{items: [{id, kind, state, title, contest_id, available_from, due_at, published_at, created_at, comments_enabled, audience: {groups: [id], users: [id]}, works: {статус: число}, warning}], next_cursor}` |
-| `POST /items` | `{kind, title, body_md?, contest?: slug, available_from?, due_at?, after_due_statement?, after_due_submit?, grading?, max_points?, answer_kind?, grades_release?, group_ids?, user_ids?}` | 201: элемент (как `GET /items/{id}`), черновик; адресаты — в той же транзакции (отказ адресата — нет и элемента) |
+| `POST /items` | `{kind, title, body_md?, contest?: slug, available_from?, due_at?, after_due_statement?, after_due_submit?, grading?, max_points?, answer_kind?, grades_release?, comments_enabled?, group_ids?, user_ids?}` | 201: элемент (как `GET /items/{id}`), черновик; адресаты — в той же транзакции (отказ адресата — нет и элемента) |
 | `GET /items/{id}` | — | то же, что в списке, + `body_md`, `after_due_statement`, `after_due_submit`, `grading`, `max_points`, `answer_kind`, `grades_release`, `updated_at`, `created_by`, `contest: {slug, title, state} \| null`, `audience: {groups: [{id, name, archived}], users: [{id, login, display_name}]}`, `extensions` (число) |
 | `PUT /items/{id}` | только меняемые поля; меняются **присланные ключи**, `null` очищает (`due_at: null`); неизвестный ключ — 422 | `{item, changed: [поля]}`. Новая шкала `pass_fail` / `none` без `max_points` очищает его; с `max_points` не `null` — 422 `max_points_invalid`; `points` без `max_points` — тоже. После первой оценки шкала не меняется (`grading_locked`) |
 | `POST /items/{id}/publish` · `archive` · `unarchive` | — | `{item, changed}` |
@@ -293,6 +293,67 @@ D-059…D-063). Элемент — по `id`, группа и ученик — �
 Аудит: `item.*` и `work.*` ([`CLASSROOM.md`](CLASSROOM.md) §7) от имени админа сессии. Сдачи учеников в аудит не
 пишутся.
 
+### 5.9. Комментарии
+
+Тот же сервис, что `judgectl comment` (`app/classroom/comments.py`, правила `comment_rules.py`;
+[`CLASSROOM.md`](CLASSROOM.md) §9, D-072…D-077). Общая ветка — у элемента; личная — у пары «задание — ученик» и
+находится **только по этой паре из пути** (`/items/{id}/students/{user_id}/…`): id ветки API не принимает, `up_to`
+из другой ветки — 404 `comment_not_found` (отметка не меняется). Ученика в пути называет только преподаватель:
+у эндпоинтов ученика (4б.2) `user_id` в пути не будет, ученик берётся из сессии. Читатель — **админ этой сессии**:
+непрочитанное (`unread`) и отметки прочтения у каждого админа свои, отметки другого не меняются. Консоль
+(`judgectl`) отметок не имеет. Комментарии — недоверенный текст (§4.1): уходят как есть; время — UTC с `Z`.
+
+| Метод и путь | Тело / параметры | Ответ |
+|---|---|---|
+| `GET /items/{id}/comments` | `after` (id, ≥ 0), `limit` (1–200, по умолчанию 50) | `{thread_id \| null, item, kind: shared, student: null, comments_enabled, can_post, cannot_post, comments: [...], next_after, unread}` — старые сверху; удалённые — с текстом и причиной |
+| `POST /items/{id}/comments` | `{body}` | 201: комментарий (ниже) |
+| `POST /items/{id}/comments/read` | `{up_to?}` или без тела | `{unread}` — оставшееся непрочитанным у этого админа |
+| `GET /items/{id}/students/{user_id}/comments` | `after`, `limit` | то же, `kind: private`, `student: {id, login, display_name}` |
+| `POST /items/{id}/students/{user_id}/comments` | `{body}` | 201: комментарий — ответ ученику или первое сообщение (ветка создаётся им) |
+| `POST /items/{id}/students/{user_id}/comments/read` | `{up_to?}` или без тела | `{unread}` |
+| `POST /comments/{comment_id}/delete` | `{reason?}` или без тела | 200: удалённый комментарий |
+| `GET /comments/threads` | `item_id`, `group_id`, `awaiting`, `unread` (`true\|false`), `cursor`, `limit` | `{items: [{thread_id, kind, item: {id, title, kind, state}, student, comments, deleted, last_id, last: {id, at, by_student} \| null, awaiting_reply, unread}], next_cursor}` |
+
+Комментарий: `{id, at, body, author: {id, login, display_name, teacher, console}, deleted, deleted_at, deleted_by:
+{id, login, console} | null, delete_reason, thread_id, item, kind, student}` (в ветке — без последних четырёх полей).
+Комментарий консоли — `author.console: true`, `id`/`login` — `null`.
+
+* **Курсоры.** Ветка читается по возрастанию id, поэтому её курсор — `after` / `next_after` (id последнего
+  комментария страницы); входящие — новые сверху, как все списки, `cursor` / `next_cursor` (id самого нового
+  комментария последней ветки страницы).
+* **Отметки.** `GET` отметку не ставит, только явный `…/read`. Отметка только растёт: `up_to` старше прежней ничего
+  не меняет. Свой комментарий админа непрочитанным для него не бывает; удалённые не считаются.
+* **Кто пишет.** Преподаватель пишет в общую ветку и при выключенных комментариях, и в контест-элементе
+  (объявления), но не в черновике (`not_published`); личная ветка — только у задания (`not_an_assignment`), только
+  ученику (`not_a_student`), который адресат сейчас или имеет работу или ветку (`not_addressed`; читать чужую —
+  404 `thread_not_found`). У архивного элемента писать можно. Частоты у преподавателя нет.
+* **Удаление мягкое**: ученики комментарий больше не видят (даже заглушки), преподаватели видят текст, кто удалил и
+  причину (≤ 200 символов после схлопывания пробелов). Повтор — 409 `already_deleted`. Удаление ответа
+  преподавателя возвращает ветку в «ждёт ответа».
+* **`comments_enabled`** — поле элемента в `POST /items` и `PUT /items/{id}` (`true`/`false`; `null` или у
+  контест-элемента — 422 `item_invalid`); включает запись учеников в общую ветку задания.
+* **Тело, которое база не может хранить.** NUL (`"\u0000"`) доходит до правил — 422 `comment_invalid`. Одиночный
+  суррогат (`"\ud800"`) отвергает уже разбор тела (Pydantic, `string_unicode`) — **422 `invalid_request`** с
+  проблемой `body: …`, никогда не 500 (проверено тестом для общей и личной ветки и в smoke; так же для `reason`).
+  Пустое или только невидимое (пробелы любого вида, нулевой ширины, BOM) — `comment_required`; больше 4000
+  символов — `comment_too_long` (предел тела в схеме — 100 000, чтобы до правила доходило).
+
+**Коды отказов** (та же таблица `STATUS`, тот же тест полноты: сканер видит и отказы `_no("…")` правил комментариев):
+
+| Статус | Коды |
+|---|---|
+| 404 | `thread_not_found` (ветка не читается: личная — ученик не адресат, без работы и ветки; не задание; не ученик), `comment_not_found` (нет такого; `up_to` не из этой ветки), `item_not_found`, `user_not_found`, `group_not_found` |
+| 422 | `comment_invalid`, `comment_required`, `comment_too_long`, `reason_too_long`, `not_a_student`, `invalid_request` |
+| 409 | `not_published`, `not_an_assignment`, `not_addressed`, `already_deleted` |
+
+Не достигаются админским запросом (D-077, множество `COMMENT_STUDENT_ONLY`; статусы — для 4б.2):
+`comments_disabled` (409), `comments_teacher_only` (409), `not_your_comment` (403), `rate_limited` (429; частота —
+`JUDGE_COMMENT_RATE_PER_MIN`, по умолчанию 10 в минуту, `Retry-After` — в 4б.2). Тест достижимости 4б.2 должен
+получить их запросами ученика.
+
+Аудит: `comment.post` и `comment.delete` (без текста; у удаления — автор, ветка и причина) от имени админа сессии.
+Комментарии учеников в аудит не пишутся.
+
 ## 6. Проверка на работающем приложении
 
 `tools/smoke-admin-api.sh [BASE_URL] ORIGIN` — curl-сценарий проверки 4а.3 и 4а.4 через этот API (для 4а.4: загруженные задачи ждут `ready` до 120 с, пакет `tests/problems/check-broken-checker` получает `failed` с логом компиляции, закрепить его нельзя, `recheck` создаёт одну проверку и заканчивается `ready`; нужен работающий воркер с `problem_check`): класс из CSV со столбцом
@@ -306,7 +367,14 @@ D-059…D-063). Элемент — по `id`, группа и ученик — �
 архивация группы с `feed_items`. Блок картинок 4б.0 (отдельно, после ленты): пакет с картинкой под кириллическим именем, PNG под `.jpg`
 и HTML под `.png` — предупреждение импорта о подделке, `inline` и `image/png` для настоящей картинки (имя целиком в
 `filename*`, транслит в `filename`), `nosniff`, CSP, `private, no-cache`, `ETag`, 304 с теми же заголовками, подделка —
-вложением, без сессии `If-None-Match` ничего не меняет (401). Спрашивает админа и код
+вложением, без сессии `If-None-Match` ничего не меняет (401). Блок комментариев 4в.2 (§5.9, после картинок):
+комментарий в черновике — 409, админ в пути личной ветки — 404 `thread_not_found`, удаление несуществующего — 404,
+NUL — `comment_invalid`, одиночный суррогат — 422 `invalid_request`, личная ветка контест-элемента —
+`not_an_assignment`; с `SEED_CMD` (`dev_seed --item … --comment`): ученик при выключенных комментариях —
+`comments_disabled`, после `comments_enabled: true` — общий комментарий и личный с `<script>` и ESC, входящие «ждёт
+ответа» (обе ветки), тело байт в байт, `GET` отметку не ставит, ответ преподавателя убирает ветку из «ждёт ответа»,
+`…/read` — `unread 0`, удаление с причиной, повтор — 409, ветка снова ждёт ответа. `rate_limited` не проверяется (он
+зависит от `JUDGE_COMMENT_RATE_PER_MIN` установки). Спрашивает админа и код
 TOTP (или `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `TOTP_CODE` из окружения); секреты передаются curl только через файлы во
 временном каталоге 700 и не печатаются. Всё создаётся с именами `smoke-<время>`, повторный запуск не мешает
 прежнему. Код выхода — число провалов.

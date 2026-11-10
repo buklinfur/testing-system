@@ -502,8 +502,25 @@ uvicorn app.internal_main:app --host 127.0.0.1 --port 8002 --timeout-keep-alive 
 JUDGE_DEV=1 python -m app.dev_seed --count 3                     # посылки в очередь без публичного API
 JUDGE_DEV=1 python -m app.dev_seed --package problems-examples/sum-of-two --source sol.cpp --language cpp --user 2
 python -m app.judgectl queue judgements --last 20
-(umask 077; python -m app.judgectl worker token create smoke | tail -1 > /tmp/judge-token)
-tools/smoke-internal-api.sh /tmp/judge-token http://127.0.0.1:8002   # протокол воркера curl-ом, код выхода = число провалов
+(umask 077; python -m app.judgectl worker token create smoke | tail -1 > ~/.config/judge/smoke-worker-token)
+tools/smoke-internal-api.sh ~/.config/judge/smoke-worker-token http://127.0.0.1:8002   # протокол воркера curl-ом, код выхода = число провалов
+```
+Токен воркера для проверок — в `~/.config/judge/smoke-worker-token` (каталог 700, файл 600), не в `/tmp`.
+
+**Уборка после smoke** (приватный стек разработчика: публичное приложение, внутреннее API, воркер, админ smoke).
+Остановить процессы стека по их PID (не `pkill -f` по шаблону: он находит и собственную оболочку команды). Отзыв токена
+воркера и отключение админа smoke — **только с явно загруженным тестовым окружением**, никогда из окружения по
+умолчанию (там может оказаться `DATABASE_URL` рабочей базы); первой строкой печатается URL базы без пароля — его
+и записать в отчёт:
+
+```bash
+unset DATABASE_URL JUDGE_TEST_DATABASE_URL
+set -a; . ~/.config/judge/test.env; set +a
+export DATABASE_URL=$JUDGE_TEST_DATABASE_URL PYTHONPATH=.:backend
+python -c "import os; from sqlalchemy.engine import make_url; print('database:', make_url(os.environ['DATABASE_URL']).render_as_string(hide_password=True))"
+python -m app.judgectl worker token revoke <имя-токена>
+python -m app.judgectl admin disable <логин-smoke>
+shred -u ~/.config/judge/smoke-worker-token <файлы пароля и секрета TOTP админа smoke>
 ```
 Воркер на dev-бэкенде (`JUDGE_BACKEND=local`, без песочницы) для такой проверки запускается вручную, с
 `JUDGE_ALLOW_UNSAFE_LOCAL=1 JUDGE_DEV=1`; под systemd он не стартует никогда, даже с этими флагами в
