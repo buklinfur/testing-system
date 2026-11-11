@@ -445,6 +445,71 @@ j .venv/bin/python -m app.judgectl group archive 'проверка 4в.2'
 (ветка `master` или коммит, что стоял). `alembic downgrade` миграции `e73284028c20` отказывает, ничего не меняя,
 пока в базе есть ветки комментариев или комментарии (а после smoke они есть).
 
+**Обновление до 4в.3 (вложения и ссылки).** Одна новая миграция `32cd8723a2bc`:
+- у файлов сдачи появляется вид `text` / `file` — строки 4в.1 получают `text` из каталога, без перезаписи таблицы;
+- новые таблицы: ссылки сдачи и вложения элементов ленты;
+- снимается запрет `answer_kind` `files` / `text_or_files`.
+
+Воркер, очередь и протокол воркера не менялись. Ставится разом с 4в.4 (если 4в.1, 4б.0 или 4в.2 ещё не стоят,
+`install-wsl.sh` применит и их миграции). Новые env — шесть лимитов, все необязательные: без строк действуют значения
+по умолчанию, неверное значение (не число, 0 там, где нужен минимум 1) останавливает запуск. Приём файлов пишет в
+`<JUDGE_BLOB_DIR>/tmp` — каталог создаётся сам, владелец `judge`, как у хранилища. Из репозитория:
+
+```bash
+(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4v3.dump)      # 0: резервная копия, вне репозитория
+# локаль рабочей базы (ничего не меняет): ожидается UTF8 | C.UTF-8 | C.UTF-8 | ё (§2 «PostgreSQL»)
+sudo -u postgres psql -X -d judge -c "SELECT pg_encoding_to_char(encoding) AS encoding, datcollate, datctype, lower('Ё') AS lower_yo FROM pg_database WHERE datname = current_database()"
+sudo systemctl stop judge-worker judge-reaper judge-api-internal
+# публичное приложение (python -m app.public_main) — остановить в его терминале (Ctrl-C)
+sudo $P ./deploy/install-wsl.sh                    # код, юниты, alembic upgrade head (32cd8723a2bc)
+# лимиты файлов (D-078; строки можно не добавлять — это значения по умолчанию):
+for kv in JUDGE_SUBMISSION_FILES_MAX=10 JUDGE_SUBMISSION_FILE_MAX_MB=20 JUDGE_SUBMISSION_TOTAL_MAX_MB=50 \
+          JUDGE_STUDENT_QUOTA_MB=200 JUDGE_ITEM_ATTACHMENTS_MAX=20 JUDGE_ATTACHMENT_MAX_MB=50; do
+  sudo grep -q "^${kv%%=*}=" /etc/judge/backend.env || echo "$kv" | sudo tee -a /etc/judge/backend.env
+done
+sudo systemctl start judge-api-internal judge-reaper judge-worker
+j .venv/bin/python -m app.judgectl status          # migration 32cd8723a2bc = head, config без замечаний
+j .venv/bin/python -m app.public_main              # публичное приложение, в отдельном терминале
+SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>
+```
+
+Что нового проверяет smoke — блок «files and links (4v.3)», `ADMIN_API.md` §6:
+- вложение-PDF под кириллическим именем и картинка;
+- SVG, HTML под `.png`, `.exe`, имя не в UTF-8, повтор имени — 422; другой `Content-Type` — 415;
+- скачивание с `nosniff`, CSP `sandbox` и 304, порядок и удаление;
+- сдача текста, файлов и ссылки через `dev_seed --file / --link`, скачивание файлов работы, файл чужой работы — 404;
+- архивный элемент — 409.
+
+Файлы для `dev_seed` скрипт кладёт в отдельный каталог 755, их читает `judge`. Ручная проверка через консоль:
+
+```bash
+j .venv/bin/python -m app.judgectl group create 'проверка 4в.3'
+j .venv/bin/python -m app.judgectl item create --kind assignment --title 'Проект' --group 'проверка 4в.3' \
+    --grading pass_fail --answer text_or_files                                 # печатает id элемента
+j .venv/bin/python -m app.judgectl item attach <id> - --name 'условие.pdf' < ~/условие.pdf   # stdin: judge не читает ~
+j .venv/bin/python -m app.judgectl item link <id> https://example.org --title 'Пример'
+j .venv/bin/python -m app.judgectl item show <id>                              # блок attachments
+j .venv/bin/python -m app.judgectl item attach <id> - --name x.svg < /dev/null # file_type_not_allowed, выход 1
+j .venv/bin/python -m app.judgectl item archive <id>
+j .venv/bin/python -m app.judgectl group archive 'проверка 4в.3'
+```
+
+Файл работы — `judgectl work file <id> <логин> <file_id> -o - > файл`: `judge` не может писать в домашний каталог
+владельца, поэтому `-o -` с перенаправлением. В терминал двоичное не выводится.
+
+**Данные, которые остаются в рабочей базе** после smoke 4в.3:
+- группа `smoke <время> files` (архивная);
+- задание `Проект <время>` (архивное) с вложениями (PDF и ссылка; картинка удалена) и работой `dev-student-1`
+  (`answer.md`, `main.py`, `report.pdf`, ссылка);
+- их блобы в `/var/lib/judge/blobs`;
+- записи аудита `item.attachment_*`.
+
+Плюс всё, что оставляют прежние блоки. Всё это убирает `deploy/dev/reset-production.sh` (D-073).
+
+**Откат 4в.3** — только из дампа (D-064): по шаблону ниже с дампом `~/judge-before-4v3.dump` и прежним кодом.
+`alembic downgrade` миграции `32cd8723a2bc` отказывает, ничего не меняя, пока есть загруженные файлы, ссылки,
+вложения или элементы с `files` / `text_or_files` (D-079), а после smoke они есть.
+
 ### Откат обновления: пересоздание базы из дампа (D-064)
 
 Любое обновление начинается с дампа (шаг 0: `(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-<что>.dump)`,

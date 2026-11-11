@@ -31,7 +31,7 @@ if URL and HAVE_SA and HAVE_API:
     from app import groups as g
     from app.admin_api.feed import STATUS
     from app.blobstore import BlobStore
-    from app.classroom import items, works
+    from app.classroom import attachments, items, works
     from app.classroom.attachments import LinkIn
     from app.models import Attachment, AuditLog, Blob, FeedItem, User
     from app.settings import AuthSettings, Settings
@@ -295,6 +295,45 @@ class AdminAttachmentTests(ApiCase):
         self.assertEqual(probes, [0])
         self.assertEqual(self.stored()[1], [])
 
+    def test_a_change_during_the_upload_is_decided_under_the_lock(self):
+        """precheck_file passed, then - while the body is being received - another teacher archives the item, attaches
+        a file of the same name, or fills the limit: add_file decides on what is there under the lock, not on the
+        early check, and the refused upload leaves nothing in the store or its tmp."""
+        def change(kind, item_id):
+            def on_take(n):
+                if n != 1:
+                    return
+                with self.Session() as db:
+                    item = db.get(FeedItem, item_id)
+                    if kind == "archive":
+                        items.archive(db, self.cli, item, self.now)
+                    elif kind == "duplicate":
+                        with self.blobs.incoming("Отчёт.TXT") as up:
+                            up.write(b"other")
+                            attachments.add_file(db, self.cli, item, up, self.now)
+                    else:
+                        for n in range(20):
+                            attachments.add_link(db, self.cli, item, f"https://a.ru/{n}", self.now)
+                    db.commit()
+            return on_take
+
+        for kind, status, code in (("archive", 409, "item_archived"), ("duplicate", 422, "duplicate_name"),
+                                   ("limit", 409, "too_many_attachments")):
+            with self.subTest(kind):
+                item = self.item()
+                blobs_before = self.stored()[0]
+                body = Body(3, on_take=change(kind, item))
+                got, out = self.call("POST", f"/api/admin/items/{item}/attachments", body, query=b"name=%D0%BE%D1%82%D1%87%D1%91%D1%82.txt")
+                self.assertEqual((got, body.taken), (status, 3), out)
+                self.assertIn(code.encode(), out)
+                self.assertEqual(self.stored()[1], [])
+                added = [b for b in self.stored()[0] if b not in blobs_before]
+                self.assertEqual(len(added), 1 if kind == "duplicate" else 0)  # only the other teacher's file
+                self.s.expire_all()
+                names = list(self.s.execute(select(Attachment.name).where(Attachment.item_id == item,
+                                                                          Attachment.name.is_not(None))).scalars())
+                self.assertEqual(names, ["Отчёт.TXT"] if kind == "duplicate" else [])
+
     # ---------------------------------------------------------------- files of a work
     def test_work_files_by_the_pair_only(self):
         item, other = self.item(), self.item()
@@ -357,3 +396,4 @@ class AdminAttachmentLimitTests(AdminAttachmentTests):
     test_every_cheap_refusal_comes_before_the_body = None
     test_the_item_is_locked_only_after_the_body = None
     test_work_files_by_the_pair_only = None
+    test_a_change_during_the_upload_is_decided_under_the_lock = None
