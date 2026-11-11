@@ -24,7 +24,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / "backend")]
 from sqlalchemy import create_engine, text  # noqa: E402
 
 # One of each thing a teacher and students leave behind, including what the downgrades of 4a.3 (groups, contest
-# deadlines), 4a.4 (version checks), 4v.1 (the feed), 4v.2 (comments) and 4v.3 (files, links, attachments) refuse.
+# deadlines), 4a.4 (version checks), 4v.1 (the feed), 4v.2 (comments), 4v.3 (files, links, attachments) and 4v.4
+# (materials, their versions and attachments, the library's groups and sections, material items, links) refuse.
 SEED_SQL = """
     INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
       (1, 'admin', '!', 'A', 'admin', true), (2, 'pupil', '!', 'P', 'student', true);
@@ -83,7 +84,21 @@ SEED_SQL = """
     INSERT INTO assignment_submission_files (submission_id, kind, path, blob_sha256, size, position)
       VALUES (2, 'file', 'project.sb3', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 5, 0);
     INSERT INTO assignment_submission_links (submission_id, url, position)
-      VALUES (2, 'https://scratch.mit.edu/projects/2', 0)
+      VALUES (2, 'https://scratch.mit.edu/projects/2', 0);
+    INSERT INTO materials (id, slug, title, library, created_by) VALUES (1, 'cycles', 'Циклы', 'groups', 1);
+    INSERT INTO material_versions (id, material_id, version, body_md, created_by)
+      VALUES (1, 1, 1, 'Цикл for', 1), (2, 1, 2, 'Цикл for и while, см. [[памятка:cycles]]', 1);
+    INSERT INTO material_groups (material_id, group_id, added_by) VALUES (1, 1, 1);
+    INSERT INTO library_sections (id, parent_id, title, position) VALUES (1, NULL, 'Python', 0), (2, 1, 'Циклы', 0);
+    INSERT INTO material_sections (section_id, material_id, position) VALUES (2, 1, 0);
+    INSERT INTO attachments (material_version_id, kind, name, blob_sha256, size, position, created_by)
+      VALUES (2, 'file', 'шпаргалка.pdf', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 5, 0, 1);
+    INSERT INTO feed_items (id, kind, state, title, body_md, material_id, published_at, created_by)
+      VALUES (4, 'material', 'published', 'Циклы', '', 1, '2026-11-12 10:00+00', 1);
+    INSERT INTO feed_item_audience (item_id, group_id) VALUES (4, 1);
+    INSERT INTO material_refs (slug, problem_version_id) VALUES ('cycles', 1);
+    INSERT INTO material_refs (slug, feed_item_id) VALUES ('cycles', 2);
+    INSERT INTO material_refs (slug, material_version_id) VALUES ('cycles', 2)
 """
 
 

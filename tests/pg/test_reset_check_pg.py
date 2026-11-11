@@ -54,9 +54,12 @@ class ResetCheckTests(unittest.TestCase):
             rows = reset_check.snapshot(conn, schema)["rows"]
         for table in ("users", "sessions", "audit_log", "worker_tokens", "groups", "contest_problems",
                       "deadline_extensions", "version_checks", "feed_items", "assignment_works", "comment_threads",
-                      "comments", "thread_reads", "attachments", "assignment_submission_links"):
+                      "comments", "thread_reads", "attachments", "assignment_submission_links", "materials",
+                      "material_versions", "material_groups", "library_sections", "material_sections",
+                      "material_refs"):
             self.assertIn(table, rows)
-        self.assertEqual(rows["attachments"], 2, "a file and a link of a teacher")
+        self.assertEqual(rows["attachments"], 3, "a file and a link of a teacher on an item, a file of a material")
+        self.assertEqual(rows["material_refs"], 3, "from a problem version, a feed item and a material version")
         with engine.connect() as conn:
             kinds = conn.execute(text("SELECT kind::text, count(*) FROM assignment_submission_files GROUP BY kind"))
             self.assertEqual(dict(kinds.all()), {"text": 1, "file": 1})
@@ -64,8 +67,28 @@ class ResetCheckTests(unittest.TestCase):
             with engine.begin() as conn:
                 self.alembic(conn, "downgrade", "base")
         self.assertIn("nothing was changed", str(caught.exception))
+        self.assertIn("materials: 1, library sections: 2, material items: 1, attachments of material versions: 1, "
+                      "links to materials: 3", str(caught.exception),
+                      "the first downgrade on the way down is the one of 4v.4")
+
+    def test_without_the_rows_of_4v4_the_next_downgrade_refuses_the_rows_of_4v3(self):
+        """Every layer of the seed refuses its own downgrade: take away 4v.4 and the downgrade of 4v.4 passes, the
+        one of 4v.3 stops."""
+        _schema, engine = self.migrated()
+        with engine.begin() as conn:
+            reset_check.seed(conn)
+            for table in ("material_refs", "material_sections", "library_sections", "material_groups"):
+                conn.execute(text(f"DELETE FROM {table}"))
+            conn.execute(text("DELETE FROM attachments WHERE material_version_id IS NOT NULL"))
+            conn.execute(text("DELETE FROM feed_item_audience WHERE item_id = 4"))
+            conn.execute(text("DELETE FROM feed_items WHERE kind = 'material'"))
+            conn.execute(text("DELETE FROM material_versions"))
+            conn.execute(text("DELETE FROM materials"))
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "downgrade", "base")
         self.assertIn("uploaded files of hand-ins: 1, links of hand-ins: 1, attachments: 2, items answered with "
-                      "files: 1", str(caught.exception), "the first downgrade on the way down is the one of 4v.3")
+                      "files: 1", str(caught.exception))
 
     def test_reset_check_snapshot_tells_a_reset_from_a_fresh_one(self):
         schema, engine = self.migrated()

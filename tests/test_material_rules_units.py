@@ -122,44 +122,46 @@ class LinkGrammarTests(unittest.TestCase):
     def bad(self, text):
         return [m.text for m in links.scan(text)[1]]
 
+    LINKS = [
+        ("См. [[памятка:cycles]].", [("cycles", None)]),
+        ("[[памятка:cycles|циклы for]]", [("cycles", "циклы for")]),
+        ("[[Памятка:cycles]] и [[ПАМЯТКА:io-fast]]", [("cycles", None), ("io-fast", None)]),
+        ("[[памятка:a1|  с пробелами по краям  ]]", [("a1", "с пробелами по краям")]),
+        ("[[[памятка:cycles]]]", [("cycles", None)]),  # the outer brackets are text
+        ("`[[памятка:cycles]]` in code counts too", [("cycles", None)]),
+        ("[[памятка:cycles]][[памятка:cycles|ещё раз]]", [("cycles", None), ("cycles", "ещё раз")]),
+        ("[[memo:cycles]] [[pamyatka:cycles]] [[cycles]]", []),  # not the prefix: plain text, no warning
+        ("no links at all", []),
+        ("", []),
+    ]
+
     def test_links(self):
-        cases = [
-            ("См. [[памятка:cycles]].", [("cycles", None)]),
-            ("[[памятка:cycles|циклы for]]", [("cycles", "циклы for")]),
-            ("[[Памятка:cycles]] и [[ПАМЯТКА:io-fast]]", [("cycles", None), ("io-fast", None)]),
-            ("[[памятка:a1|  с пробелами по краям  ]]", [("a1", "с пробелами по краям")]),
-            ("[[[памятка:cycles]]]", [("cycles", None)]),  # the outer brackets are text
-            ("`[[памятка:cycles]]` in code counts too", [("cycles", None)]),
-            ("[[памятка:cycles]][[памятка:cycles|ещё раз]]", [("cycles", None), ("cycles", "ещё раз")]),
-            ("[[memo:cycles]] [[pamyatka:cycles]] [[cycles]]", []),  # not the prefix: plain text, no warning
-            ("no links at all", []),
-            ("", []),
-        ]
-        for text, want in cases:
+        for text, want in self.LINKS:
             with self.subTest(text):
                 self.assertEqual(self.refs(text), want)
                 self.assertEqual(self.bad(text), [])
 
+    NOT_LINKS = [
+        "[[памятка:Cycles]]",  # upper case slug
+        "[[памятка:]]",
+        "[[памятка:a]]",  # one character
+        "[[памятка:-cycles]]",
+        "[[памятка:cy cles]]",
+        "[[ памятка:cycles]]",  # spaces inside the brackets
+        "[[памятка :cycles]]",
+        "[[памятка: cycles]]",
+        "[[памятка:cycles|]]",  # an empty text
+        "[[памятка:cycles|   ]]",
+        "[[памятка:cycles|a|b]]",
+        "[[памятка:cycles|a[b]]",
+        "[[памятка:cycles|" + "я" * 201 + "]]",
+        "[[памятка:cycles|zero\u200bwidth]]",
+        "[[памятка:cycles|bell\x07]]",
+        "[[памятка:" + "a" * 64 + "]]",
+    ]
+
     def test_what_looks_like_a_link_but_is_not(self):
-        cases = [
-            "[[памятка:Cycles]]",  # upper case slug
-            "[[памятка:]]",
-            "[[памятка:a]]",  # one character
-            "[[памятка:-cycles]]",
-            "[[памятка:cy cles]]",
-            "[[ памятка:cycles]]",  # spaces inside the brackets
-            "[[памятка :cycles]]",
-            "[[памятка: cycles]]",
-            "[[памятка:cycles|]]",  # an empty text
-            "[[памятка:cycles|   ]]",
-            "[[памятка:cycles|a|b]]",
-            "[[памятка:cycles|a[b]]",
-            "[[памятка:cycles|" + "я" * 201 + "]]",
-            "[[памятка:cycles|zero\u200bwidth]]",
-            "[[памятка:cycles|bell\x07]]",
-            "[[памятка:" + "a" * 64 + "]]",
-        ]
-        for text in cases:
+        for text in self.NOT_LINKS:
             with self.subTest(text):
                 self.assertEqual(self.refs(text), [])
                 self.assertEqual(self.bad(text), [text])
@@ -190,6 +192,48 @@ class LinkGrammarTests(unittest.TestCase):
         self.assertIn("there is no material nope", out[2])
         self.assertEqual(links.warnings({"body": "[[памятка:cycles]] [[памятка:cycles]]"}, {"cycles": False}), [])
         self.assertEqual(len(links.warnings({"body": "[[памятка:nope]] [[памятка:nope]]"}, {})), 1)
+
+
+class InStepTests(unittest.TestCase):
+    """The copies that must not drift: the grammar in the migration of 4v.4 (it fills material_refs for the texts
+    before it) and the limits of the CHECKs in models.py."""
+    MIGRATION = ROOT / "backend/migrations/versions/2026_11_12_0213-b8e0cbcc4cda_materials_library_module_4v_4.py"
+
+    def migration(self):
+        import importlib.util
+        try:
+            import alembic  # noqa: F401
+        except ImportError:  # pragma: no cover - alembic is not installed
+            self.skipTest("needs alembic")
+        spec = importlib.util.spec_from_file_location("materials_migration", self.MIGRATION)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_grammar_of_the_migration_is_links_py(self):
+        m = self.migration()
+        self.assertEqual((m.PREFIX, m.LABEL_MAX, m.SLUG_PATTERN, m.BAD_LABEL_CATEGORIES),
+                         (links.PREFIX, links.LABEL_MAX, links.SLUG_PATTERN, links.BAD_LABEL_CATEGORIES))
+        self.assertEqual((m.LINK_RE.pattern, m.LINK_RE.flags), (links.LINK_RE.pattern, links.LINK_RE.flags))
+        self.assertEqual((m.CANDIDATE_RE.pattern, m.CANDIDATE_RE.flags),
+                         (links.CANDIDATE_RE.pattern, links.CANDIDATE_RE.flags))
+        texts = [text for text, _ in LinkGrammarTests.LINKS] + LinkGrammarTests.NOT_LINKS + [
+            "[[памятка:cycles\n]]", "[[памятка:b-1]] x [[ПАМЯТКА:a-1|т]] [[памятка:b-1]]",
+            "[[памятка:cycles|" + "я" * 200 + "]]", "[[памятка:cycles|" + "я" * 201 + "]]"]
+        for text in texts:
+            with self.subTest(text):
+                self.assertEqual(m.link_slugs(text), links.slugs([text]))
+
+    def test_the_checks_of_the_tables_are_the_rules(self):
+        try:
+            from app import models  # the rules must not import it; the test may
+        except ImportError:  # pragma: no cover - sqlalchemy is not installed
+            self.skipTest("needs sqlalchemy")
+        self.assertEqual(models.MATERIAL_SLUG_PATTERN, "^" + rules.SLUG_RE.pattern + "$")
+        self.assertEqual(models.MATERIAL_TITLE_MAX_CHARS, rules.TITLE_MAX)
+        self.assertEqual(models.MATERIAL_TITLE_MAX_CHARS, rules.SECTION_TITLE_MAX)
+        self.assertEqual(models.MATERIAL_BODY_MAX_CHARS, rules.BODY_MAX_CHARS)
+        self.assertEqual(tuple(v.value for v in models.MaterialLibrary), rules.LIBRARY)
 
 
 # --------------------------------------------------------------------------- what a teacher types

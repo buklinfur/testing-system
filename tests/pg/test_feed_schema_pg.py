@@ -60,8 +60,9 @@ class FeedSchemaTests(PgCase):
             ("ck_feed_items_title_not_blank", dict(title="  "), dict(title="Задание")),
             ("ck_feed_items_contest_link", dict(kind="contest", contest_id=None), dict(kind="contest")),
             ("ck_feed_items_contest_link", dict(contest_id=self.contest_id), dict(contest_id=None)),
-            ("ck_feed_items_material_after_4v4", dict(kind="material", grading=None, max_points=None, answer_kind=None,
-                                                      grades_release=None), dict(kind="assignment")),
+            # 4v.4 (D-084): material_after_4v4 gave way to material_link (tests/pg/test_material_schema_pg.py)
+            ("ck_feed_items_material_link", dict(kind="material", grading=None, max_points=None, answer_kind=None,
+                                                 grades_release=None), dict(kind="assignment")),
             ("ck_feed_items_assignment_settings", dict(grading=None, max_points=None), dict(grading="none",
                                                                                             max_points=None)),
             ("ck_feed_items_assignment_settings", dict(answer_kind=None), dict(answer_kind="mark")),
@@ -234,7 +235,8 @@ class FeedSchemaTests(PgCase):
                     AND n.nspname = current_schema())""")).all()
         rules = {name: rule for _table, name, rule in rows}
         cascade = {"fk_feed_item_audience_item_id_feed_items", "fk_assignment_submission_files_submission"}
-        self.assertEqual(len(rules), 15)
+        self.assertEqual(len(rules), 16)  # 4v.4: feed_items.material_id (RESTRICT)
+        self.assertEqual(rules["fk_feed_items_material_id_materials"], "r")
         for name, rule in rules.items():
             with self.subTest(name=name):
                 self.assertEqual(rule, "c" if name in cascade else "r")  # c = CASCADE, r = RESTRICT

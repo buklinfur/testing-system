@@ -18,7 +18,8 @@ from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from .auth import audit
-from .models import Contest, ContestGroup, DeadlineExtension, FeedItem, FeedItemAudience, Group, GroupMember, Role, User
+from .models import (Contest, ContestGroup, DeadlineExtension, FeedItem, FeedItemAudience, Group, GroupMember, Material,
+                     MaterialGroup, Role, User)
 
 NAME_MAX = 64
 
@@ -62,8 +63,8 @@ def archived_named(db: Session, raw_name: str) -> bool:
 
 def why_kept_after_rollback(db: Session, group: Group) -> Optional[str]:
     """K3: a group a class import created goes with the import's rollback only while nothing else uses it: no
-    other students (ever), no contest, no extension, no feed item addressed to it. Returns why it stays, or None (it
-    may be deleted)."""
+    other students (ever), no contest, no extension, no feed item addressed to it, no material of the library shown
+    to it (4v.4). Returns why it stays, or None (it may be deleted)."""
     if db.execute(select(exists().where(GroupMember.group_id == group.id))).scalar():
         return "it has other students"
     if db.execute(select(exists().where(ContestGroup.group_id == group.id))).scalar():
@@ -72,6 +73,8 @@ def why_kept_after_rollback(db: Session, group: Group) -> Optional[str]:
         return "it has deadline extensions"
     if db.execute(select(exists().where(FeedItemAudience.group_id == group.id))).scalar():
         return "it is addressed by a feed item"
+    if db.execute(select(exists().where(MaterialGroup.group_id == group.id))).scalar():
+        return "the library shows materials to it"
     return None
 
 
@@ -132,17 +135,24 @@ def feed_items_of(db: Session, group: Group) -> list[FeedItem]:
                            .where(FeedItemAudience.group_id == group.id).order_by(FeedItem.id)).scalars())
 
 
+def materials_of(db: Session, group: Group) -> list[Material]:
+    """The materials the library shows to the group (material_groups), by id."""
+    return list(db.execute(select(Material).join(MaterialGroup, MaterialGroup.material_id == Material.id)
+                           .where(MaterialGroup.group_id == group.id).order_by(Material.id)).scalars())
+
+
 def archive(db: Session, actor: audit.Actor, group: Group, now: datetime) -> list[str]:
     """K6: the group stops giving access. Returns the contests it is attached to (they keep the attachment, it
-    just gives nothing; contest.yaml can drop it). The feed items addressed to it (feed_items_of) stay addressed and
-    give nothing either; the audit names them too."""
+    just gives nothing; contest.yaml can drop it). The feed items addressed to it (feed_items_of) and the materials
+    the library shows to it (materials_of, 4v.4) stay so and give nothing either; the audit names them too."""
     attached = [c.slug for c in contests_of(db, group)]
     if group.archived_at is None:
         group.archived_at = now
         db.flush()
         audit.record(db, actor, "group.archive", now, object_type="group", object_id=group.id,
                      details={"name": group.name, "contests": attached,
-                              "feed_items": [item.id for item in feed_items_of(db, group)]})
+                              "feed_items": [item.id for item in feed_items_of(db, group)],
+                              "materials": [m.slug for m in materials_of(db, group)]})
     return attached
 
 

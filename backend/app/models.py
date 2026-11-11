@@ -162,7 +162,7 @@ class FeedItemKind(str, enum.Enum):
 
     contest = "contest"  # a link to an existing contest; access is the contest's own
     assignment = "assignment"  # a manual assignment: submitted by students, graded by a teacher
-    material = "material"  # a material of the library: refused by a CHECK until session 4v.4
+    material = "material"  # a material of the library given to groups and students (4v.4, material_id)
 
 
 class FeedItemState(str, enum.Enum):
@@ -199,6 +199,14 @@ class AttachmentKind(str, enum.Enum):
 
     file = "file"
     link = "link"
+
+
+class MaterialLibrary(str, enum.Enum):
+    """Who sees a material in the library («Справочник», 4v.4, docs/CLASSROOM.md §11)."""
+
+    none = "none"  # nobody: the material is opened only by the feed and by links
+    all_students = "all_students"
+    groups = "groups"  # the students of the groups in material_groups (current members of groups not archived)
 
 
 class GradesRelease(str, enum.Enum):
@@ -719,7 +727,7 @@ class ContestGroup(Base):
 
 # --------------------------------------------------------------------------- class feed (module 4v, D-059)
 class FeedItem(Base):
-    """An item of the class feed: a link to a contest, a manual assignment or (from 4v.4) a material.
+    """An item of the class feed: a link to a contest, a manual assignment or a material of the library (4v.4).
 
     Its audience (feed_item_audience) is groups and/or single students; the feed of a group is the items addressed
     to it. available_from is the delayed publication: before it the item does not exist for students. Deadline
@@ -736,6 +744,8 @@ class FeedItem(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     body_md: Mapped[str] = mapped_column(Text, nullable=False, default="")  # the assignment; a note on a contest
     contest_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contests.id", ondelete="RESTRICT"))
+    # kind material only (4v.4); materials are archived, never deleted
+    material_id: Mapped[Optional[int]] = mapped_column(ForeignKey("materials.id", ondelete="RESTRICT"))
     available_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # assignments only
     after_due_statement: Mapped[AfterDueStatement] = mapped_column(
@@ -759,7 +769,7 @@ class FeedItem(Base):
     __table_args__ = (
         CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
         CheckConstraint("(kind = 'contest') = (contest_id IS NOT NULL)", name="contest_link"),
-        CheckConstraint("kind <> 'material'", name="material_after_4v4"),  # dropped by the migration of 4v.4
+        CheckConstraint("(kind = 'material') = (material_id IS NOT NULL)", name="material_link"),
         CheckConstraint("(kind = 'assignment') = (grading IS NOT NULL) AND (grading IS NULL) = (answer_kind IS NULL) "
                         "AND (grading IS NULL) = (grades_release IS NULL)", name="assignment_settings"),
         CheckConstraint("kind = 'assignment' OR due_at IS NULL", name="due_only_assignment"),
@@ -769,6 +779,7 @@ class FeedItem(Base):
         CheckConstraint("state = 'draft' OR published_at IS NOT NULL", name="published_at"),
         Index("ix_feed_items_state_available", "state", "available_from"),
         Index("ix_feed_items_contest", "contest_id", postgresql_where=text("contest_id IS NOT NULL")),
+        Index("ix_feed_items_material", "material_id", postgresql_where=text("material_id IS NOT NULL")),
     )
 
 
@@ -926,15 +937,18 @@ class AssignmentReview(Base):
 
 # --------------------------------------------------------------------------- attachments (module 4v.3, D-078)
 class Attachment(Base):
-    """A teacher's file or link on a feed item (an assignment or a contest item), in the item's order. A file is a
-    blob with its name and size; a link is data (the server never opens it). Removed by deleting the row (the blob
-    stays; the audit keeps name, sha and size); deleted with its item, which happens only to a draft. A material of
-    4v.4 will be a second owner: item_id becomes nullable with num_nonnulls(...) = 1, as for comment threads."""
+    """A teacher's file or link, in its owner's order: a feed item (an assignment, a contest item, a material item)
+    or a version of a material (4v.4) - exactly one of them. A file is a blob with its name and size; a link is data
+    (the server never opens it). From a feed item it is removed by deleting the row (the blob stays; the audit keeps
+    name, sha and size) and goes with the item, which is deleted only as a draft. A version of a material never
+    changes: a new version copies the rows it keeps."""
 
     __tablename__ = "attachments"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"), nullable=False)
+    item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"))
+    material_version_id: Mapped[Optional[int]] = mapped_column(ForeignKey("material_versions.id",
+                                                                          ondelete="RESTRICT"))
     kind: Mapped[AttachmentKind] = mapped_column(pg_enum(AttachmentKind, "attachment_kind"), nullable=False)
     name: Mapped[Optional[str]] = mapped_column(Text)  # file
     blob_sha256: Mapped[Optional[str]] = mapped_column(ForeignKey("blobs.sha256", ondelete="RESTRICT"))  # file
@@ -955,9 +969,146 @@ class Attachment(Base):
         CheckConstraint(f"url IS NULL OR ({_LINK_URL_CHECK})", name="url_valid"),
         CheckConstraint(_LINK_TITLE_CHECK, name="title_length"),
         CheckConstraint("position >= 0", name="position_non_negative"),
+        CheckConstraint("num_nonnulls(item_id, material_version_id) = 1", name="one_owner"),
         Index("ix_attachments_item", "item_id", "position", "id"),
         Index("uq_attachments_item_name", "item_id", text("lower(name)"), unique=True,
               postgresql_where=text("kind = 'file'")),
+        Index("ix_attachments_material_version", "material_version_id", "position", "id",
+              postgresql_where=text("material_version_id IS NOT NULL")),
+        Index("uq_attachments_material_version_name", "material_version_id", text("lower(name)"), unique=True,
+              postgresql_where=text("kind = 'file' AND material_version_id IS NOT NULL")),
+    )
+
+
+# --------------------------------------------------------------------------- materials (module 4v.4, D-083)
+# the limits the CHECKs below keep, the same numbers as the rules (materials/rules.py; a unit test compares them)
+MATERIAL_SLUG_PATTERN = "^[a-z0-9][a-z0-9-]{1,62}$"
+MATERIAL_TITLE_MAX_CHARS = 200
+MATERIAL_BODY_MAX_CHARS = 100_000
+
+
+class Material(Base):
+    """A material of the library: a memo, a reference, notes. The slug never changes once created (links
+    [[памятка:slug]] in immutable problem versions cannot be corrected; the services refuse, slug_immutable); the
+    title is changed in place; the content is in immutable versions and everyone sees the latest one. Archived,
+    never deleted: an archived material leaves the library but still opens by the feed and by links. `library`:
+    who sees it in the library («Справочник»); the groups of `groups` are material_groups. docs/CLASSROOM.md §11."""
+
+    __tablename__ = "materials"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(63), nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String(MATERIAL_TITLE_MAX_CHARS), nullable=False)
+    library: Mapped[MaterialLibrary] = mapped_column(pg_enum(MaterialLibrary, "material_library"), nullable=False,
+                                                     default=MaterialLibrary.none,
+                                                     server_default=MaterialLibrary.none.value)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    created_at: Mapped[datetime] = utcnow_column()
+    updated_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint(f"slug ~ '{MATERIAL_SLUG_PATTERN}'", name="slug_format"),
+        CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
+    )
+
+
+class MaterialVersion(Base):
+    """One version of a material, never changed or deleted: the Markdown (untrusted, rendered only through a
+    sanitizer) and its attachments (attachments.material_version_id). Numbered from 1 per material."""
+
+    __tablename__ = "material_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="RESTRICT"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    body_md: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        UniqueConstraint("material_id", "version", name="uq_material_versions_material_version"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(f"char_length(body_md) <= {MATERIAL_BODY_MAX_CHARS}", name="body_length"),
+    )
+
+
+class MaterialGroup(Base):
+    """A group the library shows a material to (library = groups): its current members, while the group is not
+    archived (as the audience of feed items)."""
+
+    __tablename__ = "material_groups"
+
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"), primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="RESTRICT"), primary_key=True)
+    added_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    added_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (Index("ix_material_groups_group", "group_id"),)
+
+
+class LibrarySection(Base):
+    """A section of the library («Справочник»): top level (parent_id null) or a subsection of a top-level one - two
+    levels at most, kept by the services (materials/rules.check_section_place). A section with subsections is not
+    deleted (RESTRICT); its materials are only taken out of it."""
+
+    __tablename__ = "library_sections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("library_sections.id", ondelete="RESTRICT"))
+    title: Mapped[str] = mapped_column(String(MATERIAL_TITLE_MAX_CHARS), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
+        CheckConstraint("position >= 0", name="position_non_negative"),
+        CheckConstraint("parent_id IS NULL OR parent_id <> id", name="not_own_parent"),
+        Index("ix_library_sections_parent", "parent_id", "position", "id"),
+    )
+
+
+class MaterialSection(Base):
+    """A material in a section of the library, in the teacher's order; a material may be in several sections."""
+
+    __tablename__ = "material_sections"
+
+    section_id: Mapped[int] = mapped_column(ForeignKey("library_sections.id", ondelete="CASCADE"), primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="RESTRICT"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="position_non_negative"),
+        Index("ix_material_sections_material", "material_id"),
+    )
+
+
+class MaterialRef(Base):
+    """A link [[памятка:slug]] from a text to a material, derived from the text when it is saved (and by the
+    migration of 4v.4 for the texts before it): exactly one source - a version of a problem (its statements), a feed
+    item (its body) or a version of a material (its body). The slug, not the material: a link to a slug nobody has
+    yet works once the material is created. Goes with its source (CASCADE). A link from a problem or a feed item may
+    open the material to a student; one from a material only resolves (docs/CLASSROOM.md §11)."""
+
+    __tablename__ = "material_refs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(63), nullable=False)
+    problem_version_id: Mapped[Optional[int]] = mapped_column(ForeignKey("problem_versions.id", ondelete="CASCADE"))
+    feed_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"))
+    material_version_id: Mapped[Optional[int]] = mapped_column(ForeignKey("material_versions.id",
+                                                                          ondelete="CASCADE"))
+
+    __table_args__ = (
+        CheckConstraint("num_nonnulls(problem_version_id, feed_item_id, material_version_id) = 1",
+                        name="one_source"),
+        CheckConstraint(f"slug ~ '{MATERIAL_SLUG_PATTERN}'", name="slug_format"),
+        Index("ix_material_refs_slug", "slug"),
+        Index("uq_material_refs_problem_version", "problem_version_id", "slug", unique=True,
+              postgresql_where=text("problem_version_id IS NOT NULL")),
+        Index("uq_material_refs_feed_item", "feed_item_id", "slug", unique=True,
+              postgresql_where=text("feed_item_id IS NOT NULL")),
+        Index("uq_material_refs_material_version", "material_version_id", "slug", unique=True,
+              postgresql_where=text("material_version_id IS NOT NULL")),
     )
 
 

@@ -332,3 +332,67 @@ auth_failures, auth_lockouts — неудачные попытки входа и
   элемент с `answer_kind` `files` / `text_or_files`; сообщение называет число каждого. Иначе он **ничего не теряет**:
   все оставшиеся строки файлов — текст ответа, а их вид следующий `upgrade` восстанавливает. Откат возвращает
   `UNIQUE(submission_id, path)` и `CHECK answer_kind_before_4v3`, удаляет обе таблицы и оба типа.
+
+## Изменения 4в.4 (миграция `b8e0cbcc4cda`)
+
+Решения — D-083 (правила) и D-084 (схема) в [`DECISIONS.md`](DECISIONS.md), правила — [`CLASSROOM.md`](CLASSROOM.md)
+§11. Миграцию проверяет `tests/pg/test_migrations_pg.py`, ограничения, внешние ключи и следы —
+`tests/pg/test_material_schema_pg.py` (каждая `CHECK` и каждый частичный уникальный индекс: отказ по имени и успешный
+вариант).
+
+* `materials` — материал библиотеки: `slug` (уникален; `CHECK slug_format` — формат slug задачи
+  `^[a-z0-9][a-z0-9-]{1,62}$`), `title` (до 200, `title_not_blank`), `library` — новый тип `material_library`
+  (`none` по умолчанию / `all_students` / `groups`), `archived_at`, `created_by` (пусто — консоль), `created_at`,
+  `updated_at`. Удаления нет, только архив. **slug не меняется** после создания — это правило сервиса
+  (`slug_immutable`, этап 3), не `CHECK`: ограничение не видит прежнего значения, а триггеров в схеме нет.
+* `material_versions` — неизменяемые версии: `material_id`, `version` (с 1, `version_positive`; уникален с
+  материалом — `uq_material_versions_material_version`), `body_md` (Markdown, `body_length` — до 100 000 символов),
+  `created_by`, `created_at`. Все видят последнюю.
+* `material_groups` — группы Справочника (`library = groups`): PK (`material_id`, `group_id`), `added_by`, `added_at`.
+  Индекс по группе (для `groups.why_kept_after_rollback`, `groups.materials_of`).
+* `library_sections` — разделы Справочника: `parent_id` (пусто — верхний уровень), `title` (`title_not_blank`),
+  `position` (`position_non_negative`); `not_own_parent` — не родитель самому себе. Глубину два уровня держит сервис
+  (`materials/rules.check_section_place`): `CHECK` не видит строку родителя. Индекс `(parent_id, position, id)`.
+* `material_sections` — материал в разделе: PK (`section_id`, `material_id`), `position` (`position_non_negative`).
+  Материал может быть в нескольких разделах. Индекс по материалу.
+* `feed_items.material_id` — материал элемента `material`. `CHECK material_after_4v4` (4в.1) снят, вместо него
+  `material_link`: у элемента `material` материал есть, у остальных видов его нет. Срок и шкалу у материала и так
+  запрещают `due_only_assignment` и `assignment_settings`. Индекс `ix_feed_items_material` — частичный, по непустым.
+* `attachments` — второй владелец, `material_version_id`. `item_id` стал nullable, `CHECK one_owner` —
+  `num_nonnulls(item_id, material_version_id) = 1`. Имена файлов уникальны в версии без учёта регистра —
+  `uq_attachments_material_version_name` (`(material_version_id, lower(name))` среди файлов версии); у элемента —
+  прежний `uq_attachments_item_name`. Индекс `(material_version_id, position, id)` — частичный. Версия не меняется:
+  новая версия копирует строки вложений, блобы общие.
+* `material_refs` — ссылки `[[памятка:slug]]` текста, производные: пишутся при сохранении текста (этап 3) и этой
+  миграцией для текстов до неё. Ровно один источник — `CHECK one_source` (`num_nonnulls(problem_version_id,
+  feed_item_id, material_version_id) = 1`): версия задачи (все её условия), элемент ленты (`body_md`) или версия
+  материала. Хранится **slug**, а не id: ссылка на ещё не созданный материал оживает, когда его создадут
+  (`slug_format` — тот же формат). Одна строка на источник и slug — частичные уникальные индексы
+  `uq_material_refs_problem_version`, `uq_material_refs_feed_item`, `uq_material_refs_material_version`; индекс по
+  `slug` — для доступа и «где используется».
+* **Заполнение `material_refs`** — миграция разбирает условия каждой версии задачи и текст каждого элемента. Грамматика
+  скопирована в миграцию, а не импортирована (миграция должна делать то же, что делала); `tests/test_material_rules_units.py`
+  сверяет копию с `materials/links.py` по шаблонам и по поведению. Тест на данных — префикс в разном регистре, текст
+  вместо названия, один slug дважды и в двух языках условия (одна строка), неверные записи (не ссылки). На judge_test
+  миграция дала **0 строк**: в 17 версиях задач и 14 элементах ленты нет ни одной ссылки.
+* **`ondelete` новых внешних ключей** (проверяет каталог, `test_the_new_foreign_keys_say_their_on_delete`):
+  - `materials.created_by`, `material_versions.created_by`, `material_groups.added_by` → `users` — `RESTRICT`;
+  - `material_versions.material_id` → `materials` — `RESTRICT` (ни версии, ни материалы не удаляются);
+  - `material_groups.material_id` → `materials` — `CASCADE`; `material_groups.group_id` → `groups` — `RESTRICT`;
+  - `library_sections.parent_id` → `library_sections` — `RESTRICT`: раздел с подразделами не удаляется;
+  - `material_sections.section_id` → `library_sections` — `CASCADE` (удалённый раздел отпускает материалы);
+    `material_sections.material_id` → `materials` — `RESTRICT`;
+  - `material_refs.*` → источник — `CASCADE`: производные строки уходят с источником (удаляется только черновик
+    элемента; версии не удаляются);
+  - `attachments.material_version_id` → `material_versions` — `RESTRICT`;
+  - `feed_items.material_id` → `materials` — `RESTRICT`.
+* **Следы пользователя** (`users.traces`): «materials created», «material versions written», «library groups added»;
+  метка вложений стала «attachments added» (элементы и версии материалов). Тест «каждый внешний ключ на `users` — след
+  или стирается» (`tests/pg/test_attachment_schema_pg.py`) видит новые столбцы.
+* **Группы:** `groups.why_kept_after_rollback` оставляет группу, которой Справочник показывает материалы; аудит
+  `group.archive` называет их (`materials`, slug), `groups.materials_of(group)`.
+* `tools/reset_check.py` сеет и данные 4в.4 (материал с двумя версиями, вложение версии, группа, разделы, элемент
+  `material`, ссылки из задачи, элемента и материала): `downgrade base` первым отказывает откат 4в.4.
+* Откат отказывает, ничего не меняя, пока есть материал, раздел Справочника, элемент `material`, вложение версии
+  материала или ссылка (`material_refs`, в том числе заполненная миграцией); сообщение называет число каждого. Иначе
+  он ничего не теряет и возвращает `CHECK material_after_4v4` и `attachments.item_id NOT NULL`, удаляет таблицы и тип.

@@ -229,6 +229,7 @@ class AttachmentSchemaTests(PgCase):
             "fk_attachments_item_id_feed_items": "c",          # with its item (only a draft is deleted)
             "fk_attachments_blob_sha256_blobs": "r",
             "fk_attachments_created_by_users": "r",
+            "fk_attachments_material_version_id_material_versions": "r",  # the second owner, 4v.4
         })
         files = self.s.execute(text("SELECT confdeltype FROM pg_constraint WHERE conname = "
                                     "'fk_assignment_submission_files_submission' "
@@ -253,7 +254,7 @@ class AttachmentSchemaTests(PgCase):
         self.attachment(created_by=teacher.id)
         self.attachment(kind="link", created_by=teacher.id)
         self.s.commit()
-        self.assertEqual(accounts.traces(self.s, teacher), {"feed attachments added": 2})
+        self.assertEqual(accounts.traces(self.s, teacher), {"attachments added": 2})
         with self.assertRaises(accounts.UserError) as caught:
             accounts.delete_user(self.s, audit.Actor(cli="cli:test"), teacher, now)
         self.assertEqual(caught.exception.code, "has_traces")

@@ -773,8 +773,10 @@ class MigrationTests(PgCase):
             missing = conn.execute(text("SELECT atthasmissing, attmissingval::text FROM pg_attribute WHERE attrelid = "
                                         "'assignment_submission_files'::regclass AND attname = 'kind'")).one()
             self.assertEqual(tuple(missing), (True, "{text}"))
+            self.alembic(conn, "upgrade", "head")  # compare_metadata needs the head; no links here, 4v.4 goes back
             diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
             self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
+            self.alembic(conn, "downgrade", "32cd8723a2bc")
             # what 4v.3 allows now and the old schema did not: a file named answer.md next to the text answer
             conn.execute(text("INSERT INTO assignment_submission_files (submission_id, kind, path, blob_sha256, size, position) "
                               "VALUES (1, 'file', 'answer.md', repeat('e', 64), 7, 1)"))
@@ -851,3 +853,116 @@ class MigrationTests(PgCase):
         self.assertIn("nothing was changed", str(caught.exception))
         with engine.begin() as conn:
             self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "e73284028c20")
+
+    # ---------------------------------------------------------------- b8e0cbcc4cda: the library of materials (4v.4, D-084)
+    # links in the texts before 4v.4: prefixes in any case, a text instead of the title, the same slug twice and in two
+    # languages, and what only looks like a link (upper case slug, one character, spaces, empty text, another prefix)
+    BEFORE_MATERIALS = """
+        INSERT INTO attachments (item_id, kind, url, position) VALUES (2, 'link', 'https://e.ru/', 0);
+        UPDATE problem_versions SET statements = '{"ru": "См. [[памятка:cycles]], [[ПАМЯТКА:io-fast|быстрый ввод]] и снова [[Памятка:cycles]]", "en": "[[памятка:io-fast]] [[памятка:Bad Slug]] [[ памятка:spaced]] [[memo:other]]"}' WHERE id = 1;
+        UPDATE feed_items SET body_md = '[[памятка:loops|циклы]] [[памятка:loops]] [[памятка:x]] [[памятка:loops|]]' WHERE id = 2;
+        UPDATE feed_items SET body_md = 'Перед контестом прочитайте [[ПаМяТкА:arrays]]' WHERE id = 1
+    """
+    BACKFILLED = [("io-fast", 1, None), ("cycles", 1, None), ("arrays", None, 1), ("loops", None, 2)]
+
+    def refs(self, conn):
+        return [tuple(r) for r in conn.execute(text(
+            "SELECT slug, problem_version_id, feed_item_id FROM material_refs ORDER BY id"))]
+
+    def attachment_rows(self, conn):
+        return [tuple(r) for r in conn.execute(text("SELECT id, item_id, kind::text, url FROM attachments ORDER BY id"))]
+
+    def test_materials_migration_backfills_links_and_goes_up_down_up(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "e73284028c20")
+            self.run_sql(conn, self.BEFORE_ATTACHMENTS)
+            self.alembic(conn, "upgrade", "32cd8723a2bc")
+            self.run_sql(conn, self.BEFORE_MATERIALS)
+            feed, attachments, answers = self.feed_rows(conn), self.attachment_rows(conn), self.answers(conn)
+            self.alembic(conn, "upgrade", "b8e0cbcc4cda")
+            # one row per source and slug: languages of a statement are one source, malformed links are not links
+            self.assertEqual(self.refs(conn), self.BACKFILLED)
+            self.assertEqual((self.feed_rows(conn), self.attachment_rows(conn), self.answers(conn)),
+                             (feed, attachments, answers))
+            diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+            self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
+
+        with self.assertRaises(RuntimeError) as caught:  # the backfilled links are data of 4v.4
+            with engine.begin() as conn:
+                self.alembic(conn, "downgrade", "32cd8723a2bc")
+        self.assertIn("links to materials: 4", str(caught.exception))
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM material_refs"))
+            self.alembic(conn, "downgrade", "32cd8723a2bc")  # nothing of 4v.4 left: allowed, nothing is lost
+            self.assertEqual((self.feed_rows(conn), self.attachment_rows(conn), self.answers(conn)),
+                             (feed, attachments, answers))
+            for table in ("materials", "material_versions", "material_groups", "library_sections", "material_sections",
+                          "material_refs"):
+                self.assertIsNone(conn.execute(text("SELECT to_regclass(:t)"), {"t": table}).scalar_one(), table)
+            self.assertIsNone(conn.execute(text("SELECT to_regtype('material_library')")).scalar_one())
+            with self.assertRaises(Exception) as caught, conn.begin_nested():
+                conn.execute(text("INSERT INTO feed_items (kind, state, title, body_md) "
+                                  "VALUES ('material', 'draft', 'M', '')"))
+            self.assertIn("ck_feed_items_material_after_4v4", str(caught.exception))
+            with self.assertRaises(Exception) as caught, conn.begin_nested():
+                conn.execute(text("INSERT INTO attachments (kind, url, position) VALUES ('link', 'https://e.ru/', 1)"))
+            self.assertIn("item_id", str(caught.exception))
+
+            self.alembic(conn, "upgrade", "b8e0cbcc4cda")
+            self.assertEqual(self.refs(conn), self.BACKFILLED, "the second upgrade fills the links again")
+
+    def test_materials_migration_without_data_up_down_up(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "b8e0cbcc4cda")
+            self.assertEqual(self.refs(conn), [])
+            self.alembic(conn, "downgrade", "32cd8723a2bc")
+            self.alembic(conn, "upgrade", "b8e0cbcc4cda")
+            diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+            self.assertEqual(diff, [])
+
+    def test_materials_downgrade_refuses_what_the_old_schema_cannot_hold(self):
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "e73284028c20")
+            self.run_sql(conn, self.BEFORE_ATTACHMENTS)
+            self.alembic(conn, "upgrade", "b8e0cbcc4cda")
+            conn.execute(text("INSERT INTO materials (id, slug, title) VALUES (9, 'held', 'H')"))
+            conn.execute(text("INSERT INTO material_versions (id, material_id, version, body_md) VALUES (9, 9, 1, '')"))
+        material = ("INSERT INTO materials (id, slug, title) VALUES (1, 'cycles', 'Циклы')", "DELETE FROM materials WHERE id = 1")
+        cases = {
+            "materials: 2": material,
+            "library sections: 1": ("INSERT INTO library_sections (title, position) VALUES ('Python', 0)",
+                                    "DELETE FROM library_sections"),
+            "material items: 1": ("INSERT INTO feed_items (id, kind, state, title, body_md, material_id) "
+                                  "VALUES (9, 'material', 'draft', 'M', '', 9)", "DELETE FROM feed_items WHERE id = 9"),
+            "attachments of material versions: 1": (
+                "INSERT INTO attachments (material_version_id, kind, url, position) VALUES (9, 'link', 'https://e.ru/', 0)",
+                "DELETE FROM attachments WHERE material_version_id IS NOT NULL"),
+            "links to materials: 1": ("INSERT INTO material_refs (slug, feed_item_id) VALUES ('cycles', 2)",
+                                      "DELETE FROM material_refs"),
+        }
+        for expected, (change, undo) in cases.items():
+            with self.subTest(expected):
+                with engine.begin() as conn:
+                    conn.execute(text(change))
+                    before = self.feed_rows(conn), self.attachment_rows(conn)
+                with self.assertRaises(RuntimeError) as caught:
+                    with engine.begin() as conn:
+                        self.alembic(conn, "downgrade", "32cd8723a2bc")
+                self.assertIn(expected, str(caught.exception))
+                self.assertIn("nothing was changed", str(caught.exception))
+                with engine.begin() as conn:
+                    self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(),
+                                     "b8e0cbcc4cda")
+                    self.assertEqual((self.feed_rows(conn), self.attachment_rows(conn)), before)
+                    conn.execute(text(undo))
+        with self.assertRaises(RuntimeError) as caught:  # the material 9 itself
+            with engine.begin() as conn:
+                self.alembic(conn, "downgrade", "32cd8723a2bc")
+        self.assertIn("materials: 1, library sections: 0", str(caught.exception))
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM material_versions"))
+            conn.execute(text("DELETE FROM materials"))
+            self.alembic(conn, "downgrade", "32cd8723a2bc")

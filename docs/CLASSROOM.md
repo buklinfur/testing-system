@@ -9,7 +9,7 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 
 | Где | Что |
 |---|---|
-| [`backend/app/models.py`](../backend/app/models.py) | `FeedItem`, `FeedItemAudience`, `AssignmentWork`, `AssignmentSubmission`, `AssignmentSubmissionFile`, `AssignmentReview` |
+| [`backend/app/models.py`](../backend/app/models.py) | `FeedItem`, `FeedItemAudience`, `AssignmentWork`, `AssignmentSubmission`, `AssignmentSubmissionFile`, `AssignmentReview`; с 4в.4 — `Material`, `MaterialVersion`, `MaterialGroup`, `LibrarySection`, `MaterialSection`, `MaterialRef` |
 | [`backend/app/deadline_rules.py`](../backend/app/deadline_rules.py) | правила сроков, общие с задачами контестов |
 | [`backend/app/extensions.py`](../backend/app/extensions.py) | продления сроков, общие с задачами контестов |
 | [`backend/app/classroom/access.py`](../backend/app/classroom/access.py) | правила ленты, условия, сдачи — чистые функции (§6) |
@@ -728,8 +728,8 @@ judgectl и админский API — этапы 4 и 5. Коды сервис�
 
 Решение — D-083. Материал — самостоятельная сущность библиотеки: памятка, справка, конспект. Ученику он выдаётся
 тремя путями: через Справочник, через элемент ленты `material` и по ссылке `[[памятка:slug]]` из условия задачи или
-текста элемента. Схема — этап 2, сервисы — этап 3, judgectl и админский API — этапы 4 и 5 сессии 4в.4; эндпоинты
-ученика — 4б.2, отрисовка — модуль 5.
+текста элемента. Схема — `DATA_MODEL.md` «Изменения 4в.4» (D-084), сервисы — этап 3, judgectl и админский API —
+этапы 4 и 5 сессии 4в.4; эндпоинты ученика — 4б.2, отрисовка — модуль 5.
 
 **Чистые функции** — [`materials/links.py`](../backend/app/materials/links.py) (грамматика ссылок) и
 [`materials/rules.py`](../backend/app/materials/rules.py) (ввод и доступ). Требования чистоты — как в §6: без базы и
