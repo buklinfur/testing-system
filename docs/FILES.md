@@ -70,6 +70,8 @@ D-026 и правило «тип по расширению» из `MODULE_4A.md`
 | `GET /api/admin/problems/{slug}/versions/{n}/files/{путь}` | `file_response(blobs, sha, путь, request=request)` |
 | `GET /api/admin/submissions/{id}/source` | исходник: `text=True`; архив: `media_type="application/zip"` (подтверждается сигнатурой); оба с `request=request` |
 | 4б.1: картинки условия в API ученика | тот же `file_response` после проверки доступа ученика к задаче |
-| 4в.3: вложения | тот же `file_response`; квоты и белый список типов — при загрузке |
+| `GET /api/admin/items/{id}/attachments/{att_id}` (4в.3) | вложение-файл элемента после `attachments.item_file` (файл именно этого элемента): `file_response(blobs, sha, имя, request=request)`; белый список, сигнатуры и квоты — при загрузке (`CLASSROOM.md` §10) |
+| `GET /api/admin/items/{id}/works/{user_id}/files/{file_id}` (4в.3) | файл работы после `works.work_file` (по паре из пути): загрузка — по имени и содержимому, текст ответа `answer.md` — `text=True` |
+| 4б.2: файлы ученика | тот же `file_response` после проверки доступа ученика (`can_view_item_files`, свои работы — `can_see_own_work`) |
 
 `request` — **обязательный** именованный параметр `file_response` (для `If-None-Match`): забытый `request` — ошибка `TypeError` сразу, а не тихо пропавший 304. Остальные параметры прежние.

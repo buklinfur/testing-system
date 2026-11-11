@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import api_errors
-from .admin_api import UPLOADS, router as admin_router
+from .admin_api import UPLOAD_PATTERNS, UPLOADS, router as admin_router
 from .auth.totp import SecretBox, TotpConfigError
 from .auth_api import SAFE_METHODS, router as auth_router
 from .http_body import JSON_LIMIT, BodyLimitMiddleware
@@ -108,7 +108,8 @@ def create_public_app(settings: Optional[Settings] = None, session_factory=None,
         response.headers.setdefault("Cache-Control", "no-store")
         return response
 
-    app.add_middleware(BodyLimitMiddleware, limit=JSON_LIMIT, exempt=UPLOADS)  # outermost: before anything reads
+    app.add_middleware(BodyLimitMiddleware, limit=JSON_LIMIT, exempt=UPLOADS,  # outermost: before anything reads
+                       exempt_patterns=UPLOAD_PATTERNS)
     api_errors.install(app)
     app.include_router(auth_router)
     app.include_router(admin_router)

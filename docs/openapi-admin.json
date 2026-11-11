@@ -641,6 +641,34 @@
         "title": "ItemFields",
         "type": "object"
       },
+      "LinkBody": {
+        "additionalProperties": false,
+        "description": "Limits of the schema above those of the rules (2000 and 200 characters): a longer value is link_invalid /\nlink_title_invalid from the rules, not invalid_request.",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "maxLength": 10000,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "LinkBody",
+        "type": "object"
+      },
       "LoginBody": {
         "properties": {
           "login": {
@@ -763,6 +791,24 @@
           }
         },
         "title": "NewStudent",
+        "type": "object"
+      },
+      "OrderBody": {
+        "additionalProperties": false,
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 200,
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "OrderBody",
         "type": "object"
       },
       "PasswordBody": {
@@ -2816,6 +2862,251 @@
         "summary": "Archive Item"
       }
     },
+    "/api/admin/items/{item_id}/attachments": {
+      "get": {
+        "description": "The files (id, name, size, sha256) and links (id, url, title) of the item, in their order.",
+        "operationId": "list_item_attachments_api_admin_items__item_id__attachments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Item Attachments"
+      },
+      "post": {
+        "description": "A file attachment, appended: the raw body (application/octet-stream), the name in ?name=. 201 with the\nattachment. 415 another Content-Type; 422 invalid_request (no name, twice, broken UTF-8), file_type_not_allowed,\nfile_content_mismatch, file_empty, duplicate_name; 409 item_archived, too_many_attachments; 413 too_large (more\nthan JUDGE_ATTACHMENT_MAX_MB, before the service).",
+        "operationId": "upload_attachment_api_admin_items__item_id__attachments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the file name with its extension, UTF-8 percent-encoded (encodeURIComponent)",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Attachment"
+      }
+    },
+    "/api/admin/items/{item_id}/attachments/order": {
+      "put": {
+        "description": "{ids}: every attachment of the item exactly once (attachment_order_invalid otherwise, with missing, extra and\nrepeated). The attachments in the new order.",
+        "operationId": "reorder_attachments_api_admin_items__item_id__attachments_order_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reorder Attachments"
+      }
+    },
+    "/api/admin/items/{item_id}/attachments/{attachment_id}": {
+      "get": {
+        "description": "The file of a file attachment of this item (docs/FILES.md: the type by name and content, ETag, 304). 404\nattachment_not_found: no such attachment of this item (another item's included) or a link.",
+        "operationId": "download_attachment_api_admin_items__item_id__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Attachment Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Attachment"
+      }
+    },
+    "/api/admin/items/{item_id}/attachments/{attachment_id}/delete": {
+      "post": {
+        "description": "Remove an attachment of this item (the blob stays; the audit keeps name, sha256 and size, or url and title).\nAnother item's id: 404 attachment_not_found.",
+        "operationId": "delete_attachment_api_admin_items__item_id__attachments__attachment_id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Attachment Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Attachment"
+      }
+    },
     "/api/admin/items/{item_id}/audience": {
       "put": {
         "description": "The audience becomes exactly these groups and students: {item, added, removed}.",
@@ -3199,6 +3490,56 @@
         "summary": "Delete Extension"
       }
     },
+    "/api/admin/items/{item_id}/links": {
+      "post": {
+        "description": "A link attachment, appended: stored as sent after strip (a blank title: none); the server never opens it.",
+        "operationId": "add_item_link_api_admin_items__item_id__links_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Item Link"
+      }
+    },
     "/api/admin/items/{item_id}/publish": {
       "post": {
         "description": "Needs an addressee; with a future available_from the students see it from then (no scheduler).",
@@ -3560,6 +3901,68 @@
           }
         },
         "summary": "Work Card"
+      }
+    },
+    "/api/admin/items/{item_id}/works/{user_id}/files/{file_id}": {
+      "get": {
+        "description": "One file of the work of (item, student) - an upload or the text answer answer.md (the ids are in the card:\nevents[].files) - served by content_files.file_response (docs/FILES.md: the type by name and content, ETag, 304)\nafter works.work_file found it by the pair of the path: a file of another student's or item's work is 404\nfile_not_found, like a missing one. The text answer is served as text (text=True).",
+        "operationId": "work_file_api_admin_items__item_id__works__user_id__files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "User Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "File Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Work File"
       }
     },
     "/api/admin/items/{item_id}/works/{user_id}/grade": {

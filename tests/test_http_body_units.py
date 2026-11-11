@@ -173,6 +173,46 @@ class BodyLimitTests(unittest.TestCase):
                 self.assertEqual((status, seen[-1]), (200, 0))
 
 
+    def test_only_the_upload_pattern_itself_is_exempt(self):
+        """/api/admin/items/<id>/attachments (POST) reads its own body; every neighbour keeps the 1 MB limit."""
+        from app.admin_api import UPLOAD_PATTERNS
+        self.assertEqual([(m, p.pattern) for m, p in UPLOAD_PATTERNS],
+                         [("POST", "/api/admin/items/[1-9][0-9]{0,9}/attachments")])
+        base = "/api/admin/items/5/attachments"
+        variants = [
+            ("POST", base + "/"), ("POST", "/" + base), ("POST", "/api/admin//items/5/attachments"),
+            ("POST", "/api/admin/items//5/attachments"), ("POST", "/api/admin/items/5//attachments"),
+            ("POST", "/api/admin/items/007/attachments"), ("POST", "/api/admin/items/0/attachments"),
+            ("POST", "/api/admin/items/-5/attachments"), ("POST", "/api/admin/items/+5/attachments"),
+            ("POST", "/api/admin/items/x/attachments"), ("POST", "/api/admin/items/12345678901/attachments"),
+            ("POST", "/api/admin/items/5/attachmentsx"), ("POST", "/api/admin/items/5/attachments/9"),
+            ("POST", "/api/admin/items/5/attachments/order"), ("POST", "/api/admin/items/5/links"),
+            ("POST", "/api/admin/items/5%2Fattachments"), ("POST", "/API/admin/items/5/attachments"),
+            ("POST", "/api/admin/items/5/Attachments"), ("POST", "/api/admin/items/5/attachments\n"),
+            ("POST", "/api/admin/items/5/attachments/9/delete"), ("POST", "/x/api/admin/items/5/attachments"),
+            ("PUT", base), ("PATCH", base), ("DELETE", base), ("GET", base), ("PUT", base + "/order"),
+        ]
+        for method, path in variants:
+            with self.subTest(method=method, path=path):
+                body = Body(40)
+                status, _h, _out = call(self.app, method, path, body)
+                self.assertEqual((status, body.taken), (413, JSON_LIMIT // CHUNK + 1))
+        seen = []
+
+        async def handler(scope, receive, send):
+            seen.append(body.taken)
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        layer = BodyLimitMiddleware(handler, exempt_patterns=UPLOAD_PATTERNS)
+        for path in ("/api/admin/items/1/attachments", base, "/api/admin/items/2147483647/attachments",
+                     "/api/admin/items/9999999999/attachments"):
+            with self.subTest(exact=path):
+                body = Body(40)
+                status, _h, _out = call(layer, "POST", path, body)
+                self.assertEqual((status, seen[-1]), (200, 0))
+
+
 @unittest.skipUnless(HAVE_API, "needs fastapi and httpx")
 class ErrorFormatTests(unittest.TestCase):
     def setUp(self):

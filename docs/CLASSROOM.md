@@ -690,7 +690,9 @@ GIF, HEIC, исполняемые и всё прочее в список не в
 ученик — по `can_view_item_files` с входными данными `items.view_inputs` (адресат, продления, контест). Чего ученику
 видеть нельзя, того «нет»: `visible_attachments` — `None`, `item_file` — `attachment_not_found`, как и для вложения
 чужого элемента или ссылки. Файл отдаётся `content_files.file_response(…, request=request)` только после этой
-проверки (этап 5).
+проверки (`ADMIN_API.md` §5.10). До приёма тела загрузки админский API зовёт `precheck_file` — дешёвые отказы без
+блокировки (архивный, лимит числа, тип по имени, повтор имени); `add_file` после тела решает всё заново под
+блокировкой элемента.
 
 **Сдача** — `works.submit_work(…, files=[Incoming], links=[LinkIn(url, title)], limits, quota)`:
 1. `can_submit_work` с числом файлов и ссылок;

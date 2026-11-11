@@ -38,7 +38,7 @@ STATUS = {
     # 404
     "item_not_found": 404, "user_not_found": 404, "group_not_found": 404, "contest_not_found": 404,
     "extension_not_found": 404, "work_not_found": 404, "thread_not_found": 404, "comment_not_found": 404,
-    "file_not_found": 404,
+    "file_not_found": 404, "attachment_not_found": 404,
     # 422: the input
     "title_invalid": 422, "kind_not_available": 422, "contest_required": 422, "item_invalid": 422,
     "grading_invalid": 422, "max_points_invalid": 422, "answer_kind_invalid": 422, "deadline_invalid": 422,
@@ -48,32 +48,41 @@ STATUS = {
     "missing_needs_item": 422,
     "confirmation_mismatch": 422, "due_at_invalid": 422, "available_from_invalid": 422,
     "comment_invalid": 422, "reason_too_long": 422,
+    # files and links (4v.3): the file, its name and the link are input; the order must list the attachments
+    "file_type_not_allowed": 422, "file_content_mismatch": 422, "file_name_invalid": 422, "file_empty": 422,
+    "file_too_large": 422, "duplicate_name": 422, "link_invalid": 422, "link_title_invalid": 422,
+    "attachment_order_invalid": 422,
     # 409: the state
     "grading_locked": 409, "no_audience": 409, "item_archived": 409, "item_not_published": 409,
     "item_not_draft": 409, "item_has_works": 409, "item_has_extensions": 409, "group_archived": 409,
     "not_published": 409, "not_addressed": 409, "not_an_assignment": 409, "no_deadline": 409,
     "nothing_to_return": 409, "already_returned": 409, "release_not_needed": 409, "already_deleted": 409,
+    "too_many_attachments": 409,
     # the results of a bulk release per student (in a 200 answer), never a refusal of an admin request
     "nothing_to_release": 409, "already_released": 409,
     # a student's hand-in only: no admin endpoint hands work in (the student endpoints of 4b.2 use these)
     "already_graded": 409, "deadline_passed": 409, "not_available_yet": 409, "no_access": 403,
     "answer_required": 422, "text_not_expected": 422, "text_too_long": 422, "files_required": 422,
-    "files_not_expected": 422, "quota_exceeded": 409,
+    "files_not_expected": 422, "quota_exceeded": 409, "too_many_files": 422, "submission_too_large": 422,
     # a student's comment only (4b.2; D-077): teachers write with comments off and in contest items, delete any
     # comment and have no rate
     "comments_disabled": 409, "comments_teacher_only": 409, "not_your_comment": 403, "rate_limited": 429,
 }
 # defensive codes no request can reach today: an extension of an item is later than due_at, which a CHECK keeps
-# later than available_from; a draft cannot have works (a hand-in and a grade need a published item)
-DEFENSIVE = frozenset({"extension_before_available", "item_has_works"})
+# later than available_from; a draft cannot have works (a hand-in and a grade need a published item). Of the files
+# (4v.3): an upload over JUDGE_ATTACHMENT_MAX_MB is 413 too_large from save_body before the service could say
+# file_too_large (judgectl reaches it); the name is cleaned first (content_files.clean_name: never empty, no
+# separators or control characters, cut to 150), so file_name_invalid stays the rules' guard.
+DEFENSIVE = frozenset({"extension_before_available", "item_has_works", "file_too_large", "file_name_invalid"})
 # codes that come only as per-student results of POST /items/{id}/release
 RESULT_ONLY = frozenset({"nothing_to_release", "already_released"})
 # codes no admin request can produce: only a student's hand-in (D-063; the test of 4b.2, ROADMAP)
 HAND_IN_ONLY = frozenset({"already_graded", "deadline_passed", "not_available_yet", "no_access", "answer_required",
                           "text_not_expected", "text_too_long", "files_required", "files_not_expected",
-                          "quota_exceeded"})
-# codes of services whose admin routes come at stage 5 of 4v.3 (the files of a work): emptied then
-NO_ROUTE_YET = frozenset({"file_not_found"})
+                          "quota_exceeded", "too_many_files", "submission_too_large"})
+# codes of services whose admin routes come in a later stage: none now (file_not_found has its route since 4v.3
+# stage 5); a test keeps it empty unless a stage says why
+NO_ROUTE_YET: frozenset = frozenset()
 # codes no admin request can produce: only a student's comment (D-077; the test of 4b.2, ROADMAP)
 COMMENT_STUDENT_ONLY = frozenset({"comments_disabled", "comments_teacher_only", "not_your_comment", "rate_limited"})
 

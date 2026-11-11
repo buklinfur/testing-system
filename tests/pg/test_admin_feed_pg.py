@@ -1,7 +1,8 @@
 """/api/admin class feed and works (docs/ADMIN_API.md §5.8, CLASSROOM.md) on a real PostgreSQL: every endpoint, the
 codes of its refusals (each code of STATUS reached by a request), untrusted text byte for byte, times, the review
-queue, the card of a work found only by its pair (item, student), score input, bulk release per student, and the
-feed items in the answer of a group's archiving.
+queue, the card of a work found only by its pair (item, student), score input, bulk release per student, the
+feed items in the answer of a group's archiving, and the refusals of files and links (§5.10; the scenarios are in
+test_admin_attachments_pg.py).
 
 Skipped unless JUDGE_TEST_DATABASE_URL is set.
 """
@@ -389,6 +390,29 @@ class AdminFeedTests(ApiCase):
         self.ok(P(f"/comments/{posted['id']}/delete", json={}))
         self.refused(P(f"/comments/{posted['id']}/delete", json={}), "already_deleted")
 
+        # files and links (§5.10)
+        a = f"/items/{d['id']}/attachments"
+
+        def upload(name, data):
+            return self.b.post(f"/api/admin{a}?name={name}", content=data,
+                               headers={**self.h, "Content-Type": "application/octet-stream"})
+
+        self.refused(upload("x.svg", b"<svg/>"), "file_type_not_allowed")
+        self.refused(upload("x.png", b"<html></html>"), "file_content_mismatch")
+        self.refused(upload("x.txt", b""), "file_empty")
+        self.ok(upload("x.txt", b"1"), 201)
+        self.refused(upload("X.TXT", b"2"), "duplicate_name")
+        self.refused(P(f"/items/{d['id']}/links", json={"url": "javascript:alert(1)"}), "link_invalid")
+        self.refused(P(f"/items/{d['id']}/links", json={"url": "https://a.ru", "title": "я" * 201}),
+                     "link_title_invalid")
+        self.refused(self.put(f"{a}/order", json={"ids": []}), "attachment_order_invalid")
+        self.refused(self.get(f"{a}/999999"), "attachment_not_found")
+        for n in range(19):
+            self.ok(P(f"/items/{d['id']}/links", json={"url": f"https://a.ru/{n}"}), 201)
+        self.refused(P(f"/items/{d['id']}/links", json={"url": "https://b.ru"}), "too_many_attachments")
+        self.refused(self.get(f"/items/{d['id']}/works/{self.ivanov.id}/files/999999"), "file_not_found")
+
         expected = set(STATUS) - HAND_IN_ONLY - COMMENT_STUDENT_ONLY - DEFENSIVE - NO_ROUTE_YET
+        self.assertEqual(NO_ROUTE_YET, set())
         self.assertEqual(sorted(expected - self.reached), [])
         self.assertLessEqual(RESULT_ONLY, self.reached)

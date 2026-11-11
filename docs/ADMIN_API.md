@@ -57,6 +57,11 @@ OpenAPI не отдаёт (`openapi_url=None`); файл пишет `python tool
   (если сервер его не раскодировал) или другой метод не освобождают: тело режется по 1 МБ, потом отвечает роутер.
   Освобождение сверяется с тем же путём, по которому выбирается обработчик, поэтому освобождённый запрос всегда
   попадает к обработчику загрузки с его собственным лимитом.
+* Загрузка вложения элемента (§5.10, 4в.3) — сырое тело `application/octet-stream`, лимит `JUDGE_ATTACHMENT_MAX_MB`.
+  Её путь содержит id, поэтому она освобождена **шаблоном**: метод `POST` и путь, **целиком** совпадающий с
+  `/api/admin/items/[1-9][0-9]{0,9}/attachments` (`re.fullmatch`, `admin_api/routes.py` `UPLOAD_PATTERNS`). Id без
+  ведущего нуля и не длиннее 10 цифр (id — int4), поэтому `/items/007/attachments`, слэш в конце, двойной слэш,
+  `/attachments/order`, другой метод — под лимитом 1 МБ (тест соседних путей `tests/test_http_body_units.py`).
 
 ## 4. Файлы из загруженного контента
 
@@ -354,6 +359,75 @@ D-059…D-063). Элемент — по `id`, группа и ученик — �
 Аудит: `comment.post` и `comment.delete` (без текста; у удаления — автор, ветка и причина) от имени админа сессии.
 Комментарии учеников в аудит не пишутся.
 
+### 5.10. Вложения и ссылки, файлы работ
+
+Те же сервисы, что `judgectl item attach | link | attachments | detach | attachment-order` и `work file`
+(`app/classroom/attachments.py`, `works.work_file`, правила `attachment_rules.py`; [`CLASSROOM.md`](CLASSROOM.md) §10,
+D-078…D-082). Отдача — `content_files.file_response(…, request=request)` ([`FILES.md`](FILES.md): тип по имени и
+содержимому, `nosniff`, CSP `sandbox`, `ETag`, 304) и **только после** проверки, что файл принадлежит элементу или работе
+из пути. Имена, URL и заголовки — недоверенный текст (§4.1), уходят как есть. Id в путях этих маршрутов — int4
+(1…2 147 483 647): больше — 422 `invalid_request`, а не ошибка базы.
+
+| Метод и путь | Тело / параметры | Ответ |
+|---|---|---|
+| `GET /items/{id}/attachments` | — | `{items: [вложение]}` по порядку |
+| `POST /items/{id}/attachments?name=ИМЯ` | сырое тело, `Content-Type: application/octet-stream` | 201: вложение-файл, в конце списка |
+| `POST /items/{id}/links` | `{url, title?}` | 201: вложение-ссылка, в конце списка |
+| `PUT /items/{id}/attachments/order` | `{ids}` — **все** id вложений элемента ровно по разу | `{items}` в новом порядке |
+| `GET /items/{id}/attachments/{att_id}` | — | файл (`file_response`); ссылка, чужой или удалённый id — 404 `attachment_not_found` |
+| `POST /items/{id}/attachments/{att_id}/delete` | — | 204; блоб остаётся, аудит хранит имя, sha256 и размер (у ссылки — URL и заголовок) |
+| `GET /items/{id}/works/{user_id}/files/{file_id}` | — | файл работы: загрузка ученика или текст ответа `answer.md` (id — в карточке работы, `events[].files`); файл чужой работы (другого ученика или элемента) — 404 `file_not_found` |
+
+Вложение: `{id, kind: file | link, position, created_by, created_at}` и у файла `name, size, sha256`, у ссылки
+`url, title`. В карточке работы (§5.8) у каждой сдачи — `files: [{id, kind: text | file, name, size, sha256}]` и
+`links: [{id, url, title}]`.
+
+* **Загрузка: сначала всё дешёвое, потом тело.** Порядок проверок до первого прочитанного байта тела:
+  1. `Origin` (публичное приложение, 403 `origin_not_allowed`);
+  2. сессия админа (401 `not_authenticated` / `mfa_required`, 403 `admin_required`) и CSRF-токен (403
+     `csrf_token_required`);
+  3. `Content-Type` — только `application/octet-stream` (415 `unsupported_media_type`);
+  4. имя `?name=` — UTF-8 в процентной кодировке (`encodeURIComponent`), ровно один раз, не пустое. Разбирается
+     строго из сырой строки запроса: битая кодировка — 422 `invalid_request`, а не подмена на U+FFFD; `+` — пробел;
+  5. элемент существует (404 `item_not_found`), и то, что решается без тела (`attachments.precheck_file`): архивный —
+     409 `item_archived`, лимит числа — 409 `too_many_attachments`, тип по имени — 422 `file_type_not_allowed`,
+     повтор имени без учёта регистра — 422 `duplicate_name`.
+
+  Только после этого тело пишется потоком во временный файл `<корень блобов>/tmp` (`blobstore.Incoming`,
+  `http_body.save_body`). Больше `JUDGE_ATTACHMENT_MAX_MB` — **413 `too_large`** сразу (по `Content-Length`, ничего не
+  прочитав, или как только счётчик превысит лимит). Затем сервис `add_file` берёт строку элемента `FOR UPDATE`, ещё раз
+  проверяет всё под блокировкой (тип по содержимому — `file_content_mismatch`, пустой — `file_empty`) и последним
+  шагом переносит файл в хранилище. Пока тело принимается, запрос **не держит ни транзакции, ни блокировки** (после
+  ранних проверок — `rollback`). Отказ или обрыв не оставляют ни блоба, ни временного файла. Тесты: на каждый ранний
+  отказ — тело не прочитано (0 кусков из 2,5 МБ, т. е. ранний код, а не 413) и `tmp` пуст; во время приёма тела
+  другое соединение блокирует строку элемента с `NOWAIT`.
+* **Имя** приводится к базовому (`C:\…\рисунок.PNG` → `рисунок.PNG`, `content_files.clean_name`) и проверяется
+  правилами (белый список по последнему расширению, CLASSROOM §10). Кириллица допустима.
+* **Ссылка** хранится как прислана (без пробелов по краям), сервер её не открывает. Пределы схемы (URL 10 000,
+  заголовок 1 000 символов) выше пределов правил (2000 и 200), поэтому длинное значение — `link_invalid` /
+  `link_title_invalid`, а не `invalid_request`.
+* **Порядок** (`PUT …/order`) — ровно текущий набор: иначе 422 `attachment_order_invalid` с `missing`, `extra`,
+  `repeated`. Тот же порядок — без записи в аудит.
+* **Архивный элемент** только читается: список и скачивание работают, изменения — 409 `item_archived`.
+
+**Коды отказов** (таблица `STATUS`; сканер теста полноты видит и `Refusal("…")` правил вложений):
+
+| Статус | Коды |
+|---|---|
+| 404 | `attachment_not_found`, `file_not_found`, `item_not_found`, `user_not_found` |
+| 422 | `file_type_not_allowed`, `file_content_mismatch`, `file_empty`, `duplicate_name`, `link_invalid`, `link_title_invalid`, `attachment_order_invalid`, `invalid_request` |
+| 409 | `item_archived`, `too_many_attachments` |
+| 413 / 415 | `too_large` (тело больше лимита), `unsupported_media_type` |
+
+Защитные (`DEFENSIVE`, админским запросом не достигаются): `file_too_large` — загрузку сверх лимита раньше отвергает
+413 `too_large` (`judgectl item attach` получает именно `file_too_large`); `file_name_invalid` — имя сначала очищается
+(`clean_name`: никогда не пустое, без разделителей и управляющих символов, до 150 символов). Только сдача ученика
+(`HAND_IN_ONLY`, статусы для 4б.2): `too_many_files`, `submission_too_large` (422), `quota_exceeded` (409),
+`files_required`, `files_not_expected` (422). `NO_ROUTE_YET` пуст: у каждого кода сервисов есть маршрут.
+
+Аудит: `item.attachment_add`, `item.attachment_remove`, `item.attachment_order` (без содержимого) от имени админа
+сессии.
+
 ## 6. Проверка на работающем приложении
 
 `tools/smoke-admin-api.sh [BASE_URL] ORIGIN` — curl-сценарий проверки 4а.3 и 4а.4 через этот API (для 4а.4: загруженные задачи ждут `ready` до 120 с, пакет `tests/problems/check-broken-checker` получает `failed` с логом компиляции, закрепить его нельзя, `recheck` создаёт одну проверку и заканчивается `ready`; нужен работающий воркер с `problem_check`): класс из CSV со столбцом
@@ -374,7 +448,14 @@ NUL — `comment_invalid`, одиночный суррогат — 422 `invalid_
 `comments_disabled`, после `comments_enabled: true` — общий комментарий и личный с `<script>` и ESC, входящие «ждёт
 ответа» (обе ветки), тело байт в байт, `GET` отметку не ставит, ответ преподавателя убирает ветку из «ждёт ответа»,
 `…/read` — `unread 0`, удаление с причиной, повтор — 409, ветка снова ждёт ответа. `rate_limited` не проверяется (он
-зависит от `JUDGE_COMMENT_RATE_PER_MIN` установки). Спрашивает админа и код
+зависит от `JUDGE_COMMENT_RATE_PER_MIN` установки). Блок файлов 4в.3 (§5.10, после комментариев): вложение-PDF под
+кириллическим именем и картинка; SVG, HTML под `.png`, `.exe`, имя не в UTF-8, повтор имени в другом регистре — 422,
+другой `Content-Type` — 415; ссылка с недоверенным заголовком, `javascript:` — `link_invalid`; скачивание теми же
+байтами, вложением с именем в `filename*`, `nosniff`, CSP `sandbox`, 304 по `ETag`, картинка — `inline`; ссылка как
+файл — 404; порядок и неполный порядок, удаление; с `SEED_CMD` (`dev_seed --item … --file … --link …`): `.exe`
+ученика — отказ, сдача текста, двух файлов и ссылки, карточка работы с файлами, скачивание `main.py` (304) и
+`answer.md`, тот же файл как файл другого ученика или под другим элементом — 404 `file_not_found`; архивный элемент —
+409. Файлы для `dev_seed` лежат в отдельном каталоге 755 (их читает `judge` через `seed-as-judge.sh`). Спрашивает админа и код
 TOTP (или `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `TOTP_CODE` из окружения); секреты передаются curl только через файлы во
 временном каталоге 700 и не печатаются. Всё создаётся с именами `smoke-<время>`, повторный запуск не мешает
 прежнему. Код выхода — число провалов.

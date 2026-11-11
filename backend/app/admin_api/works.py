@@ -2,7 +2,8 @@
 (D-059, D-060; docs/ADMIN_API.md §5.8, docs/CLASSROOM.md §4-§7). The same services as `judgectl work`.
 
 A work is the pair (item, student) of the path and is found by that pair only: no work id, submission id or other
-item reaches another work (a student's work on item 1 asked as /items/2/works/<student> is 404 work_not_found).
+item reaches another work (a student's work on item 1 asked as /items/2/works/<student> is 404 work_not_found), and
+a file of a work only with its pair (/items/{item}/works/{user}/files/{id}: another work's file is 404).
 Answers and comments are untrusted text (ADMIN_API §4.1) and go out as they are.
 """
 from __future__ import annotations
@@ -15,11 +16,14 @@ from sqlalchemy.orm import Session
 
 from ..api_errors import ApiError
 from ..auth import audit
-from ..auth_api import get_db, now
+from ..auth_api import Current, get_db, now
 from ..classroom import works
 from ..classroom.items import FeedError
+from ..content_files import file_response
+from ..models import SubmissionFileKind
 from ..jsonable import plain
-from .deps import Page, admin_actor, page, users_by_id
+from .attachments import DbId
+from .deps import Page, admin_actor, admin_session, page, users_by_id
 from .feed import POINTS, Body, blobs, get_group, get_item, get_user, refused
 
 router = APIRouter()
@@ -75,6 +79,22 @@ def work_card(item_id: int, user_id: int, request: Request, db: Session = Depend
     sees, missing. An addressee without work: status assigned, no events (a grade can be given from here). 404
     work_not_found: not addressed and no work on this item."""
     return _card(db, request, get_item(db, item_id), get_user(db, user_id))
+
+
+@router.get("/items/{item_id}/works/{user_id}/files/{file_id}")
+def work_file(item_id: DbId, user_id: DbId, file_id: DbId, request: Request, db: Session = Depends(get_db),
+              cur: Current = Depends(admin_session)):
+    """One file of the work of (item, student) - an upload or the text answer answer.md (the ids are in the card:
+    events[].files) - served by content_files.file_response (docs/FILES.md: the type by name and content, ETag, 304)
+    after works.work_file found it by the pair of the path: a file of another student's or item's work is 404
+    file_not_found, like a missing one. The text answer is served as text (text=True)."""
+    item, student = get_item(db, item_id), get_user(db, user_id)
+    try:
+        row = works.work_file(db, cur.user, item, student, file_id)
+    except FeedError as exc:
+        raise refused(exc) from exc
+    return file_response(blobs(request), row.blob_sha256, row.path, text=row.kind == SubmissionFileKind.text,
+                         request=request)
 
 
 @router.post("/items/{item_id}/works/{user_id}/grade")

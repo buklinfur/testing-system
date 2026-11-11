@@ -135,6 +135,22 @@ def _next_position(rows: Sequence[Attachment]) -> int:
     return max((r.position for r in rows), default=-1) + 1
 
 
+def precheck_file(db: Session, item: FeedItem, name: str, limits: rules.Limits = rules.TEACHER_LIMITS) -> str:
+    """The cheap refusals of a file attachment before its body is received (the admin API calls it before
+    save_body): the item is archived, already has its limit of attachments, the cleaned name is not allowed or
+    repeats an attachment's. No lock and nothing written: add_file decides again under the lock of the item, after
+    the body. Returns the cleaned name."""
+    refuse(rules.can_change_attachments(item))
+    rows = list_attachments(db, item)
+    if len(rows) + 1 > limits.files_max:
+        refuse(rules.Refusal("too_many_attachments"))
+    clean = clean_name(name)
+    refuse(rules.check_name(clean))
+    if any(rules.same_name(clean, r.name) for r in rows if r.kind == AttachmentKind.file):
+        refuse(rules.Refusal("duplicate_name", 0))
+    return clean
+
+
 def add_file(db: Session, actor: audit.Actor, item: FeedItem, upload: Incoming, now: datetime, *,
              limits: rules.Limits = rules.TEACHER_LIMITS) -> Attachment:
     """A file attachment, appended. The upload must be finished; it is taken into the store only when accepted
