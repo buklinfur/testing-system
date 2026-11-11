@@ -13,6 +13,7 @@ from ..classroom import items, works
 from ..contests import service as contests
 from ..models import DeadlineExtension
 from ..timeutil import parse_local
+from . import attachments as attachment_cmds
 from .core import CliError, Context, confirm, emit_json, read_input, show, terminal_text
 
 BODY_LIMIT = 1024 * 1024  # like the JSON body of the admin API
@@ -180,11 +181,14 @@ def item_list(ctx: Context, args) -> int:
 
 def item_show(ctx: Context, args) -> int:
     with ctx.session() as db:
-        data = items.item_detail(db, items.get_item(db, args.id))
+        item = items.get_item(db, args.id)
+        data = {**items.item_detail(db, item), "attachments": attachment_cmds.describe_all(db, item)}
     if ctx.json:
         emit_json(ctx, data)
         return 0
     _print_item(ctx, data)
+    ctx.print("  attachments:")
+    attachment_cmds.print_attachments(ctx, data["attachments"], indent="    ")
     _warn(ctx, data)
     return 0
 
@@ -304,6 +308,12 @@ def work_show(ctx: Context, args) -> int:
             if e["text"] is not None:
                 for line in terminal_text(e["text"], multiline=True).split("\n"):
                     ctx.print(f"    | {line}")
+            for f in e["files"]:
+                ctx.print(f"    file #{f['id']} {terminal_text(f['name'])} ({attachment_cmds.size_text(f['size'])})"
+                          + (" - the text answer" if f["kind"] == "text" else ""))
+            for link in e["links"]:
+                title = f" «{terminal_text(link['title'])}»" if link["title"] else ""
+                ctx.print(f"    link {terminal_text(link['url'])}{title}")
         else:
             what = e["action"]
             if what == "graded":
@@ -364,7 +374,8 @@ def work_release(ctx: Context, args) -> int:
 
 # ----------------------------------------------------------------------------- the parser
 def add_parsers(groups, command) -> None:
-    """`item` and `work` in the parser of cli.py (`command` is its helper)."""
+    """`item` and `work` in the parser of cli.py (`command` is its helper); returns their subparsers (the
+    attachment commands of judgectl/attachments.py join them)."""
     item = groups.add_parser("item", help="the class feed: assignments and links to contests").add_subparsers(
         dest="cmd", required=True, metavar="COMMAND")
 
@@ -467,3 +478,4 @@ def add_parsers(groups, command) -> None:
                 json=True)
     p.add_argument("id", type=int)
     p.add_argument("logins", nargs="*", metavar="login")
+    return item, work

@@ -41,6 +41,10 @@ def _stdin() -> BinaryIO:
     return sys.stdin.buffer
 
 
+def _binout() -> BinaryIO:
+    return sys.stdout.buffer
+
+
 @dataclass
 class Context:
     """Everything a command touches; tests replace the database, the terminal and the clock."""
@@ -53,6 +57,7 @@ class Context:
     getpass: Callable[[str], str] = _getpass.getpass
     input: Callable[[str], str] = input
     stdin: BinaryIO = field(default_factory=_stdin)  # `-` as a file argument: a zip or a contest.yaml piped in
+    binout: BinaryIO = field(default_factory=_binout)  # `work file -o -`: a student's file into a pipe, never a tty
     interactive: Callable[[], bool] = lambda: sys.stdin.isatty() and sys.stdout.isatty()
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     json: bool = False  # --json of the current command
