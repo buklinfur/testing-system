@@ -170,6 +170,18 @@ def problem_listed(user, contest_problem, now: datetime) -> bool:
     return not contest_problem.hidden and rules.available(contest_problem, now)
 
 
+def problem_visible(user, contest, contest_problem, participation, now: datetime, in_group: bool = False) -> bool:
+    """Whether the student sees the problem among the problems of a contest they have access to: the contest is
+    visible, the access mode lets them in, the problem is listed. No participation is needed (open, or groups /
+    code_or_groups through a group); the window, the deadlines and a statement hidden after the due moment do not
+    matter. Materials linked from the statement are opened by this (docs/CLASSROOM.md §11, D-083); the statement
+    itself is can_view_problem."""
+    if is_admin(user):
+        return True
+    return can_view_contest(user, contest, participation, now, in_group) \
+        and has_access(user, contest, participation, in_group) and problem_listed(user, contest_problem, now)
+
+
 def can_view_problem(user, contest, contest_problem, participation, now: datetime, in_group: bool = False,
                      extensions: Iterable[datetime] = ()) -> bool:
     """Statements are shown once the participant's window has begun (and after the contest, for upsolving), from

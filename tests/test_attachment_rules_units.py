@@ -480,8 +480,15 @@ class VisibilityTests(unittest.TestCase):
             ("contest item in the feed", lambda: self.see(contest_item(), contest=OPEN_CONTEST), True),
             ("contest item not addressed", lambda: self.see(contest_item(), in_audience=False, contest=OPEN_CONTEST),
              False),
-            ("a material (4v.4)", lambda: self.see(NS(kind="material", state="published", available_from=None)),
+            ("a material item in the feed (4v.4)",
+             lambda: self.see(NS(kind="material", state="published", available_from=None)), True),
+            ("a material item not addressed",
+             lambda: self.see(NS(kind="material", state="published", available_from=None), in_audience=False), False),
+            ("a material item before available_from",
+             lambda: self.see(NS(kind="material", state="published", available_from=AVAILABLE), when=AVAILABLE - US),
              False),
+            ("an archived material item",
+             lambda: self.see(NS(kind="material", state="archived", available_from=None)), False),
         ]
         for name, call, expected in cases:
             with self.subTest(name):

@@ -77,18 +77,16 @@ def _then_body_and_rate(user, body, recent, limit) -> Decision:
 def can_read_shared(user, item, now: datetime, *, in_audience: bool, extensions: Iterable[datetime] = (),
                     contest=None, participation=None, in_contest_group: bool = False) -> bool:
     """A student reads the shared thread where they see the item: an assignment with its statement
-    (access.can_view_assignment - the thread is part of the statement page and hides with it), a contest item while
-    it is in their feed (access.item_listed). Never in a draft or an archived item, outside the audience (removed
-    from the group, the group archived) or before available_from. Turning comments off does not hide them."""
+    (access.can_view_assignment - the thread is part of the statement page and hides with it), a contest item or a
+    material item (4v.4) while it is in their feed (access.item_listed). Never in a draft or an archived item,
+    outside the audience (removed from the group, the group archived) or before available_from. Turning comments
+    off does not hide them."""
     if access.is_admin(user):
         return True
-    kind = _v(item.kind)
-    if kind == "assignment":
+    if _v(item.kind) == "assignment":
         return access.can_view_assignment(user, item, now, in_audience, extensions)
-    if kind == "contest":
-        return access.item_listed(user, item, now, in_audience, contest=contest, participation=participation,
-                                  in_contest_group=in_contest_group)
-    return False
+    return access.item_listed(user, item, now, in_audience, contest=contest, participation=participation,
+                              in_contest_group=in_contest_group)
 
 
 def can_post_shared(user, item, now: datetime, *, in_audience: bool, body: Optional[str],

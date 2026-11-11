@@ -158,10 +158,14 @@ class SharedThreadTests(unittest.TestCase):
              dict(contest=NS(**{**vars(OPEN_CONTEST), "state": "draft"})), "no_access", False),
             ("contest item, removed from the group", PUPIL, contest_item(),
              dict(situation="removed from the group"), "no_access", False),
-            ("a material (from 4v.4) has no thread for students", PUPIL, NS(kind="material", state="published",
-                                                                            available_from=None,
-                                                                            comments_enabled=True),
-             {}, "no_access", False),
+            ("a material item (4v.4): as an assignment, without the deadline", PUPIL,
+             NS(kind="material", state="published", available_from=None, comments_enabled=True), {}, "ok", True),
+            ("a material item, comments off", PUPIL,
+             NS(kind="material", state="published", available_from=None, comments_enabled=False), {},
+             "comments_disabled", True),
+            ("a material item, not addressed", PUPIL,
+             NS(kind="material", state="published", available_from=None, comments_enabled=True),
+             dict(situation="not addressed"), "no_access", False),
         ]
         for name, user, item, kw, code, readable in cases:
             with self.subTest(name):

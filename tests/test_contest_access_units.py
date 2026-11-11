@@ -189,6 +189,26 @@ class ViewJoinStartTests(unittest.TestCase):
                 self.assertEqual(access.can_view_problem(STUDENT, c, cp, part, now), want)
                 self.assertTrue(access.can_view_problem(ADMIN, c, cp, part, now))
 
+    def test_problem_visible_needs_no_participation(self):
+        """Materials linked from a statement (D-083): the problem is visible to a student the mode lets in, before
+        any participation and whatever the window, the deadline and a hidden statement."""
+        groups = contest(access_mode="groups")
+        hidden_after_due = problem(due_at=at(10), after_due_statement="hidden")
+        cases = [  # (name, contest, problem, participation, in_group, now, visible)
+            ("group member, not joined yet", groups, CP, None, True, DURING, True),
+            ("group member, before the window", groups, CP, None, True, BEFORE, True),
+            ("group member, statement hidden after due", groups, hidden_after_due, JOINED, True, AFTER, True),
+            ("not in the group", groups, CP, None, False, DURING, False),
+            ("personal contest, not started", personal(access_mode="groups"), CP, JOINED, True, DURING, True),
+            ("code mode without a participation", contest(access_mode="code"), CP, None, False, DURING, False),
+            ("hidden problem", groups, HIDDEN_CP, None, True, DURING, False),
+            ("draft contest", contest(state="draft", access_mode="groups"), CP, None, True, DURING, False),
+        ]
+        for name, c, cp, part, in_group, now, want in cases:
+            with self.subTest(name):
+                self.assertEqual(access.problem_visible(STUDENT, c, cp, part, now, in_group), want)
+                self.assertTrue(access.problem_visible(ADMIN, c, cp, part, now, in_group))
+
     def test_enter(self):
         coded = contest(access_mode="code", invite_code="AC34KM")
         groups = contest(access_mode="groups")

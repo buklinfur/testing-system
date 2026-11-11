@@ -258,18 +258,16 @@ def can_view_item_files(user, item, now: datetime, *, in_audience: bool, extensi
                         contest=None, participation=None, in_contest_group: bool = False) -> bool:
     """The teacher's files and links of an item are part of its page: a student sees them where they see the
     statement of an assignment (access.can_view_assignment: hidden with it after the due moment with
-    after_due_statement = hidden, also for a student with work), or a contest item in their feed
-    (access.item_listed). Admins see everything. The student's own hand-in files are their work
-    (access.can_see_own_work), not this."""
+    after_due_statement = hidden, also for a student with work), or a contest item or a material item (4v.4) in
+    their feed (access.item_listed). Admins see everything. The student's own hand-in files are their work
+    (access.can_see_own_work), not this; the files of a material itself are materials/rules.py."""
     if access.is_admin(user):
         return True
     kind = getattr(item.kind, "value", item.kind)
     if kind == "assignment":
         return access.can_view_assignment(user, item, now, in_audience, extensions)
-    if kind == "contest":
-        return access.item_listed(user, item, now, in_audience, contest=contest, participation=participation,
-                                  in_contest_group=in_contest_group)
-    return False
+    return access.item_listed(user, item, now, in_audience, contest=contest, participation=participation,
+                              in_contest_group=in_contest_group)
 
 
 def can_change_attachments(item) -> Decision:

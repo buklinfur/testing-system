@@ -152,6 +152,7 @@ problems:
 | `can_enter` | см. §3; ответы: `not_published`, `already_joined`, `rejoin_with_code`, `contest_over`, `wrong_code`, `no_access`; в `joined_via` — путь входа |
 | `can_start` | см. §3; ответы: `not_personal`, `not_participant`, `no_access`, `not_started_yet`, `contest_over`, `already_started` |
 | `problem_listed` | задачи нет вовсе (ни метки, ни названия), если она скрыта или раньше `available_from` |
+| `problem_visible` | ученик видит задачу в контесте: `can_view_contest`, `has_access` и `problem_listed`. Участие не нужно (режим `open`; `groups` / `code_or_groups` — через группу), окно, срок и скрытое условие не важны. По нему открываются материалы, на которые ссылается условие (`CLASSROOM.md` §11, D-083); само условие — `can_view_problem` |
 | `effective_due` | максимум из `due_at` и продлений; без `due_at` срока нет (продлевать нечего) |
 | `can_view_problem` | участнику с доступом, задача есть (`problem_listed`), его окно началось (после конца — при дорешивании); после срока — только при `after_due_statement: visible` |
 | `can_submit` | см. ниже |
