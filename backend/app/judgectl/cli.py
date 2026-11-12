@@ -16,7 +16,8 @@ from ..timeutil import TimezoneError
 from protocol.problem_package import PackageError
 from ..groups import GroupError
 from ..classroom.items import FeedError
-from . import accounts, attachments, comments, contests, extensions, feed, groups as group_cmds, ops, problems, submissions
+from . import (accounts, attachments, comments, contests, extensions, feed, groups as group_cmds, materials, ops,
+               problems, submissions)
 from .core import CliError, Context, terminal_text
 from ..auth.csvimport import CsvImportError
 
@@ -234,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     item, work = feed.add_parsers(groups, command)
     attachments.add_parsers(item, work, command)
     comments.add_parsers(groups, command)
+    materials.add_parsers(groups, command)
 
     p = groups.add_parser("status", help="database, migrations, workers, queue, configuration, blob store",
                           parents=[common])

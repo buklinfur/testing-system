@@ -59,7 +59,8 @@ judgectl extension add <контест> <метка> (--user <логин> | --gr
                 | list <контест> [<метка>] | remove <id>
 judgectl group  create <название> | rename <группа> <название> | archive <группа> | unarchive <группа>
                 | list [--all] | show <группа> [--history] | add <группа> <логин>... | remove <группа> <логин>...
-judgectl item   create --kind assignment|contest --title <название> [--body-file <файл> | -] [--contest <slug>]
+judgectl item   create --kind assignment|contest|material --title <название> [--body-file <файл> | -]
+                       [--contest <slug>] [--material <slug>]
                        [--group <группа>]... [--student <логин>]... [--available-from <время>] [--due <время>]
                        [--after-due-statement visible|hidden] [--after-due-submit no|late|yes]
                        [--grading points|pass_fail|none] [--max-points N] [--answer mark|text|files|text_or_files]
@@ -78,6 +79,20 @@ judgectl comment list [--item <id>] [--group <группа>] [--awaiting | --ans
                 | show <id элемента> [--student <логин>]
                 | post <id элемента> [--student <логин>] (--text <текст> | --file <файл> | --file -)
                 | delete <id комментария> [--reason <текст>]
+judgectl material create <slug> --title <название> [--body-file <файл> | -] [--library none|all_students|groups]
+                       [--group <группа>]...
+                | list [--all] | search <текст> | show <материал> [--version N] | versions <материал>
+                | edit <материал> --body-file (<файл> | -) | title <материал> <название>
+                | library <материал> none|all_students|groups | groups <материал> [<группа>...] [--add | --remove]
+                | archive <материал> | unarchive <материал>
+                | attach <материал> (<файл> | - --name <имя>) | link <материал> <url> [--title <текст>]
+                | detach <материал> <att> | attachment-order <материал> <att>...
+                | file <материал> <att> [--version N] -o (<новый-файл> | -) [--force]
+                | where <материал> | resolve (<файл> | -)
+judgectl section create <название> [--parent <id>] | list | rename <id> <название>
+                | move <id> (--parent <id> | --top) | delete <id> [--yes]
+                | place <id> <материал> | unplace <id> <материал>
+                | order [--parent <id>] <id>... | material-order <id> <материал>...
 judgectl submission show <id>
                 | rejudge (--id <id> | --contest <slug> --problem <метка> | --contest-problem-id <id>
                            | --problem-version <slug>@<версия>) [--verdicts WA,TL]
@@ -249,7 +264,8 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 
 ### item — лента класса ([`CLASSROOM.md`](CLASSROOM.md), D-059)
 
-Элемент ленты — ручное задание (`assignment`) или ссылка на контест (`contest`); материалы — с 4в.4. Элемент — по
+Элемент ленты — ручное задание (`assignment`), ссылка на контест (`contest`) или выкладка материала библиотеки
+(`material`, 4в.4). Элемент — по
 `id`, группа — название или `#id`, ученик — логин. Время (`--available-from`, `--due`) — как в `contest.yaml`: без
 смещения — `JUDGE_TIMEZONE`, или с `Z` / `+07:00`. Баллы (`--max-points`, `--score`) — десятичное число с точкой, не
 больше двух знаков после неё (`10`, `4.5`); экспонента, `NaN`, `Infinity` — отказ (D-061). Аудит — `item.*`
@@ -259,13 +275,14 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 |---|---|
 | `create --kind assignment …` | Новое задание — **черновик**. Шкала обязательна: `--grading points --max-points N`, `pass_fail` или `none`; ответ `--answer text` (по умолчанию) или `mark` («сдано», работа в тетради); оценки видны `--release manual` (по умолчанию, после публикации) или `immediate`. Политики после срока — как у задач контеста (`CONTESTS.md` §4). `--body-file` — условие в Markdown (`-` — из stdin). `--comments on\|off` — пишут ли ученики в общую ветку (по умолчанию `off`; у контест-элемента только `off`, иначе `item_invalid`) |
 | `create --kind contest --contest <slug> …` | Ссылка на контест. Доступа не даёт: если адресаты его не получат (группы не подключены, вход по коду), в stderr — `warning:` |
+| `create --kind material --material <slug> …` | Выкладка материала (§11 CLASSROOM): `--title` необязателен, по умолчанию — название материала. Без `--material` — `material_required`, архивный материал — `material_archived`, нет такого — `material_not_found`. Срока и шкалы у материала нет; открывает его ученикам `item_listed`, как контест-элемент |
 | `create … --group G --student L` | Создание и адресаты — одной транзакцией (отказ адресата — нет и элемента) |
 | `edit <id> …` | Меняются только указанные поля; `--no-due` / `--no-available-from` очищают. Другая шкала, кроме `points`, сама убирает `max_points`. После первой оценки шкала не меняется (`grading_locked`); новый срок уже принятые `late` не пересчитывает |
 | `publish <id>` | Опубликовать; нужен хотя бы один адресат. С будущим `--available-from` — отложенная публикация |
 | `archive <id>` / `unarchive <id>` | Убрать из ленты (ученики видят свои работы и оценки) / вернуть |
 | `delete <id> [--yes]` | Удалить черновик без работ и продлений (ввести id ещё раз или `--yes`) |
 | `list [--group G] [--kind K] [--state S] [--all]` | Элементы, новые сверху: черновики и опубликованные; архивные — с `--all`; `--state` — одно состояние |
-| `show <id>` | Настройки, адресаты, число продлений, работы по статусам, условие, вложения (`--json` — поле `attachments`) |
+| `show <id>` | Настройки, адресаты, число продлений, работы по статусам, условие, вложения (`--json` — поле `attachments`); у элемента-материала — строка `material: <slug> «название»` |
 | `audience add\|remove <id> (--group G \| --student L)...` | Добавить или убрать адресатов: группа — неархивная, ученик — `student`; у опубликованного остаётся хотя бы один |
 | `extension add <id> (--user L \| --group G) --due T [--reason R]` | Продление задания — как `extension add` у контестов: позже `due_at` и `available_from`, повторно — заменяет |
 | `extension list <id>` / `extension remove <id продления>` | Продления элемента; `remove` продления задачи контеста отказывает с подсказкой `judgectl extension remove` |
@@ -274,6 +291,10 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | `attachments <id>` | Файлы и ссылки элемента по порядку: id, вид, имя или URL, размер, заголовок, когда добавлено |
 | `detach <id> <att>` | Убрать вложение (без подтверждения: файл можно приложить снова). Блоб остаётся, аудит хранит имя, sha256 и размер (у ссылки — URL и заголовок) |
 | `attachment-order <id> <att>...` | Новый порядок: **все** id вложений элемента ровно по разу, иначе `attachment_order_invalid` |
+
+Ссылки `[[памятка:slug]]` в тексте элемента (`--body-file`) никогда не мешают сохранению: неверная запись,
+неизвестный slug и архивный материал — строки `warning:` в stderr у `create`, у `edit` со сменой текста и у `show`
+(`--json` — поле `link_warnings`).
 
 ### work — работы учеников ([`CLASSROOM.md`](CLASSROOM.md) §4–§5)
 
@@ -311,6 +332,52 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 Сообщения учеников до 4б.2 пишет только `dev_seed` (dev, `JUDGE_DEV=1`): `--item <id> --comment <текст> [--private]
 [--user N]` — от `dev-student-N` через те же правила и ту же частоту (`JUDGE_COMMENT_RATE_PER_MIN`), отказ — код в
 stderr и выход 1.
+
+### material — библиотека материалов ([`CLASSROOM.md`](CLASSROOM.md) §11, D-083…D-086)
+
+Материал — по slug или `#id`, группа — название или `#id`. Консоль читает как преподаватель: любой материал, любую
+версию, архивные тоже. **Каждое изменение содержимого** — текст, файл, ссылка, удаление, порядок вложений — создаёт
+новую версию, и команда печатает её номер (`material cycles: version 4`); тот же текст или тот же порядок версии не
+дают (`no change, the latest version N is the same`; в `--json` — `created: false`). Название и аудитория библиотеки
+меняются на месте, без версии. **slug неизменен** (`slug_immutable` в API): вместо переименования — новый материал, а
+старый — в архив. Ссылки `[[памятка:slug]]` в тексте — только предупреждения (`warning:` в stderr, в `--json` —
+`warnings`), сохранению не мешают. Название, текст, имена файлов, URL и slug из ссылок — недоверенный текст:
+в выводе экранирован (`terminal_text`), в `--json` — как есть. Аудит — `material.*` (без текста: длина, имена, sha256).
+
+| Команда | Что делает |
+|---|---|
+| `create <slug> --title T [--body-file F] [--library L] [--group G]...` | Новый материал и версия 1. slug — `a-z`, `0-9`, `-`, 2–63 символа, первым не `-` (`slug_invalid`); занят, в том числе архивным, — `slug_taken`. `--library`: `none` (по умолчанию, в Справочнике не виден ученикам), `all_students`, `groups` (группы — `--group`, только неархивные) |
+| `list [--all]` / `search <текст>` | Материалы по slug (архивные — с `--all`): аудитория, число версий, архив. `search` — по названию без учёта регистра, кириллица тоже; `%`, `_`, `\` ищутся буквально |
+| `show <м> [--version N]` | Последняя версия (или указанная, с пометкой `not the latest`): название, аудитория и группы, разделы, вложения (`#id file имя (размер)` / `#id link URL «заголовок»`), разрешённые ссылки текста (`ok` / `archived` / `unknown` — так видит админ) и текст. Нет версии — `version_not_found` |
+| `versions <м>` | История: номер, когда, кто (пусто — консоль), длина текста, число вложений |
+| `edit <м> --body-file F` | Новый текст — новая версия с вложениями последней. `-` — из stdin. `body_too_long` (> 100 000 символов), `body_invalid` (NUL) |
+| `title <м> <название>` / `library <м> L` | На месте, без версии (`title_invalid`, `library_invalid`) |
+| `groups <м> [G...] [--add \| --remove]` | Группы библиотеки: ровно эти (без групп — очистить), или добавить / убрать. Новая группа — неархивная (`group_archived`); уже стоящая остаётся и после архивации группы. Если аудитория не `groups`, в stderr — подсказка |
+| `archive <м>` / `unarchive <м>` | Архив: только чтение (`material_archived` на любое изменение), из Справочника уходит, лента и ссылки по-прежнему открывают. Повтор — не ошибка (`already archived` / `not archived`, в `--json` — `changed: false`) |
+| `attach <м> <файл> [--name N]` / `link <м> <url> [--title T]` | Новая версия с файлом или ссылкой в конце: те же правила, лимиты (`JUDGE_ATTACHMENT_MAX_MB`, `JUDGE_ITEM_ATTACHMENTS_MAX`) и отказы, что у `item attach` / `item link`; `-` — файл из stdin с `--name`. Отказ не оставляет ничего ни в базе, ни в хранилище блобов, ни в его `tmp` |
+| `detach <м> <att>` / `attachment-order <м> <att>...` | Новая версия без вложения / в новом порядке. id — **последней** версии (`material show`): у каждой версии свои строки, id старой — `attachment_not_found` / `attachment_order_invalid`. Блобы остаются у старых версий |
+| `file <м> <att> [--version N] -o PATH [--force]` | Сохранить файл вложения как `work file` (D-081): новый файл 0600, существующий — только с `--force`; `-o -` — в stdout, только не в терминал. Без `--version` — последняя версия |
+| `where <м>` | Где используется: элементы-материалы, элементы со ссылкой, версии задач со ссылкой (`slug@v`), материалы, чья последняя версия ссылается |
+| `resolve <файл>` | Ссылки текста (файл или stdin) так, как они сохранятся: по строке на slug со статусом и предупреждения. Ничего не пишет |
+
+### section — разделы Справочника ([`CLASSROOM.md`](CLASSROOM.md) §11)
+
+Разделы — по `id`, два уровня: раздел и подраздел. Материал может лежать в нескольких разделах и на обоих уровнях.
+Аудит — `library.*`.
+
+| Команда | Что делает |
+|---|---|
+| `create <название> [--parent <id>]` | Раздел в конце верхнего уровня или подраздел в конце раздела верхнего уровня (иначе `section_too_deep`; нет родителя — `section_not_found`) |
+| `list` | Справочник деревом, как его видит админ: разделы по порядку, в них материалы (архивные — с пометкой), затем `in no section:`. Если есть материалы с аудиторией `none`, в stderr — сколько их |
+| `rename <id> <название>` | Новое название (`section_title_invalid`) |
+| `move <id> (--parent <id> \| --top)` | В конец другого раздела верхнего уровня или верхнего уровня. Раздел с подразделами — только на верхний уровень (`section_too_deep`) |
+| `delete <id> [--yes]` | Удалить раздел без подразделов (`section_not_empty`); материалы из него уходят, сами остаются. Подтверждение — id ещё раз или `--yes` |
+| `place <id> <м>` / `unplace <id> <м>` | Положить материал в конец раздела (архивный — `material_archived`) / убрать. Повтор — не ошибка |
+| `order [--parent <id>] <id>...` / `material-order <id> <м>...` | Новый порядок разделов уровня / материалов раздела: **все** ровно по разу, иначе `order_invalid` |
+
+Действий ученика с материалами нет (эндпоинты ученика — 4б.2), поэтому `dev_seed` для материалов ничего не делает
+(D-086); комментарий ученика в общую ветку элемента-материала (если комментарии включены: `item edit <id> --comments on`)
+— `dev_seed --item <id> --comment`, как у других элементов.
 
 ### submission — посылки
 

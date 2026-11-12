@@ -50,7 +50,7 @@ def print_attachments(ctx: Context, rows: list[dict], indent: str = "  ") -> Non
 
 
 # ----------------------------------------------------------------------------- item
-def _receive(ctx: Context, args, limit: int):
+def receive(ctx: Context, args, limit: int):
     """The file argument (or stdin for `-`, which needs --name) as a finished Incoming of at most `limit` bytes;
     the caller closes it."""
     if args.file == "-" and args.name is None:
@@ -78,7 +78,7 @@ def _receive(ctx: Context, args, limit: int):
 def item_attach(ctx: Context, args) -> int:
     files = ctx.settings.files
     # one byte over the limit is enough for the service to say file_too_large itself
-    upload = _receive(ctx, args, files.attachment_max_bytes + 1)
+    upload = receive(ctx, args, files.attachment_max_bytes + 1)
     with upload, ctx.session() as db:
         item = items.get_item(db, args.id)
         row = attachments.add_file(db, ctx.actor, item, upload, ctx.clock(),
@@ -172,19 +172,16 @@ def _write_new(path: Path, store: BlobStore, sha256: str, force: bool) -> int:
             os.unlink(tmp)
 
 
-def work_file(ctx: Context, args) -> int:
-    with ctx.session() as db:
-        item = items.get_item(db, args.id)
-        student = get_by_login(db, args.login)
-        row = works.work_file(db, CONSOLE, item, student, args.file_id)
-        data = {"id": row.id, "kind": row.kind.value, "name": row.path, "size": row.size, "sha256": row.blob_sha256}
+def save_file(ctx: Context, data: dict, out: str, force: bool) -> int:
+    """Write a stored file (`data`: id, name, size, sha256) where -o says (D-081): a new file (0600; an existing one
+    only with `force`) or stdout for `-` when it is not a terminal. Used by `work file` and `material file`."""
     store = BlobStore(ctx.settings.blob_dir)
-    if args.out == "-":
+    if out == "-":
         if ctx.json:
             raise CliError("--json and -o - both use stdout")
         if ctx.binout.isatty():
             raise CliError("-o - writes the file to stdout: redirect it to a file or a pipe, not a terminal")
-        source = store.open(row.blob_sha256)
+        source = store.open(data["sha256"])
         if source is None:
             raise CliError("the file is recorded but missing from the blob store (judgectl status --details)")
         with source:
@@ -193,13 +190,22 @@ def work_file(ctx: Context, args) -> int:
         ctx.binout.flush()
         ctx.note(f"file #{data['id']} {terminal_text(data['name'])} ({size_text(data['size'])}) written to stdout")
         return 0
-    _write_new(Path(args.out), store, row.blob_sha256, args.force)
+    _write_new(Path(out), store, data["sha256"], force)
     if ctx.json:
-        emit_json(ctx, {**data, "written_to": args.out})
+        emit_json(ctx, {**data, "written_to": out})
         return 0
     ctx.print(f"file #{data['id']} {terminal_text(data['name'])} ({size_text(data['size'])}) written to "
-              f"{terminal_text(args.out)}")
+              f"{terminal_text(out)}")
     return 0
+
+
+def work_file(ctx: Context, args) -> int:
+    with ctx.session() as db:
+        item = items.get_item(db, args.id)
+        student = get_by_login(db, args.login)
+        row = works.work_file(db, CONSOLE, item, student, args.file_id)
+        data = {"id": row.id, "kind": row.kind.value, "name": row.path, "size": row.size, "sha256": row.blob_sha256}
+    return save_file(ctx, data, args.out, args.force)
 
 
 # ----------------------------------------------------------------------------- the parser

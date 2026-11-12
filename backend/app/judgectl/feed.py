@@ -14,6 +14,7 @@ from ..contests import service as contests
 from ..models import DeadlineExtension
 from ..timeutil import parse_local
 from . import attachments as attachment_cmds
+from . import materials as material_cmds
 from .core import CliError, Context, confirm, emit_json, read_input, show, terminal_text
 
 BODY_LIMIT = 1024 * 1024  # like the JSON body of the admin API
@@ -79,6 +80,10 @@ def _print_item(ctx: Context, d: dict) -> None:
     ctx.print(f"#{d['id']} {d['kind'].value} [{d['state'].value}] {terminal_text(d['title'])}")
     if d["contest"]:
         ctx.print(f"  contest: {d['contest']['slug']} ({d['contest']['state'].value})")
+    if d.get("material"):
+        m = d["material"]
+        ctx.print(f"  material: {terminal_text(m['slug'])} «{terminal_text(m['title'])}»"
+                  + (" (archived)" if m["archived"] else ""))
     ctx.print(f"  available from: {ctx.time(d['available_from'])}  due: {ctx.time(d['due_at'])}  "
               f"published: {ctx.time(d['published_at'])}")
     if d["grading"] is not None:
@@ -100,13 +105,16 @@ def _print_item(ctx: Context, d: dict) -> None:
 # ----------------------------------------------------------------------------- item
 def item_create(ctx: Context, args) -> int:
     fields = _fields(ctx, args)
-    title = fields.pop("title")
+    title = fields.pop("title", None)
+    if title is None and args.kind != "material":
+        raise CliError("--title is required (only a material item takes the material's title)")
     body = fields.pop("body_md", "")
     now = ctx.clock()
     with ctx.session() as db:
         contest = contests.get_contest(db, args.contest) if args.contest else None
+        material = material_cmds.get_material(db, args.material) if args.material else None
         item = items.create_item(db, ctx.actor, now, kind=args.kind, title=title, body_md=body, contest=contest,
-                                 **fields)
+                                 material=material, **fields)
         groups, users = _audience(db, args)
         if groups or users:
             items.set_audience(db, ctx.actor, item, now, groups=groups, users=users)
@@ -116,6 +124,7 @@ def item_create(ctx: Context, args) -> int:
         return 0
     ctx.print(f"item #{data['id']} created: {data['kind'].value}, draft (publish: judgectl item publish {data['id']})")
     _warn(ctx, data)
+    material_cmds.warn_links(ctx, data["link_warnings"])
     return 0
 
 
@@ -131,6 +140,8 @@ def item_edit(ctx: Context, args) -> int:
         emit_json(ctx, {"item": data, "changed": changed})
         return 0
     ctx.print(f"item #{args.id}: " + (f"changed {', '.join(changed)}" if changed else "nothing changed"))
+    if "body_md" in changed:
+        material_cmds.warn_links(ctx, data["link_warnings"])
     return 0
 
 
@@ -190,6 +201,7 @@ def item_show(ctx: Context, args) -> int:
     ctx.print("  attachments:")
     attachment_cmds.print_attachments(ctx, data["attachments"], indent="    ")
     _warn(ctx, data)
+    material_cmds.warn_links(ctx, data["link_warnings"])
     return 0
 
 
@@ -376,11 +388,12 @@ def work_release(ctx: Context, args) -> int:
 def add_parsers(groups, command) -> None:
     """`item` and `work` in the parser of cli.py (`command` is its helper); returns their subparsers (the
     attachment commands of judgectl/attachments.py join them)."""
-    item = groups.add_parser("item", help="the class feed: assignments and links to contests").add_subparsers(
+    item = groups.add_parser("item", help="the class feed: assignments, links to contests, materials").add_subparsers(
         dest="cmd", required=True, metavar="COMMAND")
 
     def fields(p, editing=False):
-        p.add_argument("--title", required=not editing)
+        p.add_argument("--title", help="a new title" if editing else
+                       "required, except for a material item (default: the material's title)")
         p.add_argument("--body-file", help="the text in Markdown (a file, or - for stdin)")
         p.add_argument("--available-from", help="before it students do not see the item (JUDGE_TIMEZONE or offset)")
         p.add_argument("--due", help="the deadline of an assignment, e.g. '2026-11-17 23:59:59'")
@@ -397,9 +410,11 @@ def add_parsers(groups, command) -> None:
             p.add_argument("--no-due", action="store_true", help="drop the deadline")
             p.add_argument("--no-available-from", action="store_true", help="available at once")
 
-    p = command(item, "create", item_create, "a new item (a draft): an assignment or a link to a contest", json=True)
-    p.add_argument("--kind", required=True, choices=["assignment", "contest"])
+    p = command(item, "create", item_create, "a new item (a draft): an assignment, a link to a contest or a material",
+                json=True)
+    p.add_argument("--kind", required=True, choices=["assignment", "contest", "material"])
     p.add_argument("--contest", help="slug of the contest (kind contest)")
+    p.add_argument("--material", help="slug or #id of the material (kind material)")
     p.add_argument("--group", action="append", help="addressed group (name or #id); repeat for more")
     p.add_argument("--student", action="append", help="addressed student (login); repeat for more")
     fields(p)
@@ -417,7 +432,7 @@ def add_parsers(groups, command) -> None:
     p = command(item, "list", item_list, "items, newest first (drafts and published unless --all / --state)",
                 json=True)
     p.add_argument("--group", help="addressed to this group (name or #id)")
-    p.add_argument("--kind", choices=["assignment", "contest"])
+    p.add_argument("--kind", choices=["assignment", "contest", "material"])
     p.add_argument("--state", choices=["draft", "published", "archived"])
     p.add_argument("--all", action="store_true", help="archived ones too")
     command(item, "show", item_show, "settings, audience, text, works", json=True).add_argument("id", type=int)
