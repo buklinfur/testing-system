@@ -311,204 +311,193 @@ j .venv/bin/python -m app.judgectl status           # migration b7e3d91a4c62, р
 `judgectl problem recheck <slug>@<v>`. Настройки бэкенда: `JUDGE_MAX_CONCURRENT_CHECKS` (1),
 `JUDGE_CHECK_TIMEOUT_SEC` (600) в `backend.env`.
 
-**Обновление до 4в.1 (лента класса и ручные задания).** Одна новая миграция `b32303b5df22` (таблицы ленты, работ,
-сдач и оценок; у `deadline_extensions` вторая цель). Код воркера и протокол не менялись. Из репозитория на ветке
-`module-4v` (или на `master` после слияния):
+**Обновление от 4а (`master`) до `module-4v`: 4в.1–4в.4 и 4б.0 одним путём.** Заменяет прежние разделы
+«Обновление до 4в.1», «до 4б.0», «до 4в.2» и «до 4в.3» (на них ссылаются D-064…D-082): все их команды и проверки — здесь.
+Исходное состояние — установка 4а с `master` (последняя миграция `b7e3d91a4c62`, раздел 4а.4 выше выполнен).
+
+Что меняется:
+- **схема** — четыре миграции подряд, `install-wsl.sh` применяет их одним `alembic upgrade head`:
+  `b32303b5df22` (лента, ручные задания, работы, оценки; у продлений вторая цель) → `e73284028c20` (комментарии) →
+  `32cd8723a2bc` (вложения и ссылки, у файлов сдачи вид `text` / `file`) → `b8e0cbcc4cda` (библиотека материалов,
+  Справочник, ссылки `[[памятка:slug]]`; заполняет `material_refs` из уже сохранённых условий и текстов);
+- **воркер** — юнит `judge-worker` получает `RestartPreventExitStatus=78` (D-066); протокол — 409 `deregistered` и
+  поле `reclaimed` (совместимо в обе стороны, D-068, D-069); dev-бэкенд `local` под systemd не стартует никогда (D-065);
+- **бэкенд** — отдача файлов (`FILES.md`), приём загрузок во временный каталог `<JUDGE_BLOB_DIR>/tmp` (создаётся сам,
+  владелец `judge`); девять новых необязательных переменных (таблица ниже); новых пакетов Python нет.
+
+Переменные `/etc/judge/backend.env` (все из `backend/app/settings.py`; **новые в 4в — жирным**). Обязательных
+новых нет: без строки действует значение по умолчанию; неверное значение (не число, 0 там, где нужен минимум 1,
+отрицательная частота) останавливает запуск с сообщением.
+
+| Переменная | По умолчанию | Обязательна |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+psycopg://judge:judge@127.0.0.1:5432/judge` | да (пишет `setup-postgres.sh`) |
+| `JUDGE_SECRET_KEY` | — | да для публичного приложения и 2FA (ключ Fernet) |
+| `JUDGE_PUBLIC_ORIGIN` | — | да для публичного приложения (`https://<домен>`) |
+| `JUDGE_PUBLIC_PORT` / `JUDGE_INTERNAL_PORT` | `8000` / `8001` | нет |
+| `JUDGE_BLOB_DIR` | `/var/lib/judge/blobs` | нет |
+| `JUDGE_TIMEZONE` | `UTC` | нет |
+| `JUDGE_METRICS_TOKEN` | — (метрики без токена) | нет |
+| `JUDGE_TOTP_ISSUER` | `judge` | нет |
+| `JUDGE_LOGIN_FAIL_LIMIT`, `JUDGE_ADMIN_LOGIN_FAIL_LIMIT` | `10`, `5` | нет |
+| `JUDGE_LOGIN_WINDOW_S`, `JUDGE_LOGIN_LOCKOUT_S` | `900`, `900` | нет |
+| `JUDGE_IP_FAIL_LIMIT`, `JUDGE_IP_WINDOW_S`, `JUDGE_IP_LOCKOUT_S` | `300`, `900`, `900` | нет |
+| `JUDGE_AUTH_RETENTION_DAYS` | `30` | нет |
+| `JUDGE_HEARTBEAT_TIMEOUT_S`, `JUDGE_MAX_ATTEMPTS`, `JUDGE_MAX_JUDGING_S` | `30`, `3`, `1800` | нет |
+| `JUDGE_FAIR_WINDOW_S`, `JUDGE_EVENT_RETENTION_DAYS`, `JUDGE_REAPER_INTERVAL_S` | `300`, `14`, `5` | нет |
+| `JUDGE_MAX_CONCURRENT_CHECKS`, `JUDGE_CHECK_TIMEOUT_SEC` | `1`, `600` | нет |
+| `JUDGE_IMPORT_MAX_ARCHIVE_MB`, `JUDGE_IMPORT_MAX_UNPACKED_MB` | `100`, `512` | нет |
+| `JUDGE_IMPORT_MAX_FILES`, `JUDGE_IMPORT_MAX_RATIO` | `5000`, `0` (выкл.) | нет |
+| **`JUDGE_ASSIGNMENT_TEXT_MAX_KB`** | `64` — текст ответа ручного задания (4в.1) | нет |
+| **`JUDGE_COMMENT_RATE_PER_MIN`** | `10` — комментариев ученика в минуту, `0` — без лимита (4в.2) | нет |
+| **`JUDGE_SUBMISSION_FILES_MAX`** | `10` — файлов и ссылок в одной сдаче (4в.3) | нет |
+| **`JUDGE_SUBMISSION_FILE_MAX_MB`**, **`JUDGE_SUBMISSION_TOTAL_MAX_MB`** | `20`, `50` — файл сдачи, все файлы сдачи | нет |
+| **`JUDGE_STUDENT_QUOTA_MB`** | `200` — различные файлы ученика, `0` — без квоты | нет |
+| **`JUDGE_ITEM_ATTACHMENTS_MAX`** | `20` — вложений у элемента ленты и у версии материала (4в.3, 4в.4) | нет |
+| **`JUDGE_ATTACHMENT_MAX_MB`** | `50` — файл преподавателя (элемент, материал) | нет |
+
+В `/etc/judge/worker.env` новых переменных нет; в нём не должно быть dev-переменных (`JUDGE_BACKEND=local`,
+`JUDGE_ALLOW_UNSAFE_LOCAL`, `JUDGE_DEV`): воркер под systemd с ними откажется стартовать с кодом 78 (D-065).
+
+Команды — из рабочей копии на ветке `module-4v` **после push** (код на установку копирует `install-wsl.sh` из
+этого каталога):
 
 ```bash
-(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4v1.dump)      # 0: резервная копия, вне репозитория
+# 0. резервная копия базы, вне репозитория (D-064)
+(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4v.dump)
+
+# 1. код: ветка module-4v, ничего не изменено, совпадает с отправленной
+git switch module-4v && git status --short          # пусто
+git fetch testing-system && git status -sb | head -1  # ## module-4v...testing-system/module-4v (без ahead/behind)
+
+# 2. локаль рабочей базы (ничего не меняет): ожидается UTF8 | C.UTF-8 | C.UTF-8 | ё
+sudo -u postgres psql -X -d judge -c "SELECT pg_encoding_to_char(encoding) AS encoding, datcollate, datctype, lower('Ё') AS lower_yo FROM pg_database WHERE datname = current_database()"
+
+# 3. остановка; публичное приложение (python -m app.public_main) — Ctrl-C в его терминале
 sudo systemctl stop judge-worker judge-reaper judge-api-internal
-# публичное приложение (python -m app.public_main) — остановить в его терминале (Ctrl-C)
-sudo $P ./deploy/install-wsl.sh                                                # код + alembic upgrade head
-# лимит текста ответа (по умолчанию 64 КБ; строку можно не добавлять, если устраивает значение по умолчанию):
-sudo grep -q '^JUDGE_ASSIGNMENT_TEXT_MAX_KB=' /etc/judge/backend.env || echo 'JUDGE_ASSIGNMENT_TEXT_MAX_KB=64' | sudo tee -a /etc/judge/backend.env
-sudo systemctl start judge-api-internal judge-reaper judge-worker
-j .venv/bin/python -m app.judgectl status            # migration b32303b5df22 (head), config без замечаний
-j .venv/bin/python -m app.public_main                # публичное приложение, в отдельном терминале
-```
 
-Проверка — `tools/smoke-admin-api.sh` с `SEED_CMD=tools/seed-as-judge.sh` (тот же путь, что в 4а, D-047): новый блок
-ленты сдаёт работы через `dev_seed --item` как `dev-student-1` и `-2`. Без `SEED_CMD` сдачи пропускаются (`SKIP`
-с командой), а ручная проверка через консоль:
+# 4. код, юниты (+ daemon-reload), alembic upgrade head: b32303b5df22 → e73284028c20 → 32cd8723a2bc → b8e0cbcc4cda
+sudo $P ./deploy/install-wsl.sh
 
-```bash
-j .venv/bin/python -m app.judgectl group create 'проверка 4в'
-j .venv/bin/python -m app.judgectl item create --kind assignment --title 'Проверка' --group 'проверка 4в' \
-    --due '2026-12-31 23:59' --grading points --max-points 5                 # печатает id элемента
-j .venv/bin/python -m app.judgectl item publish <id>
-j .venv/bin/python -m app.judgectl work list --item <id>                      # пусто, пока в группе нет учеников
-j .venv/bin/python -m app.judgectl group add 'проверка 4в' <логин>
-j .venv/bin/python -m app.judgectl work show <id> <логин>                     # assigned, сдач нет
-j .venv/bin/python -m app.judgectl item archive <id>
-j .venv/bin/python -m app.judgectl group archive 'проверка 4в'                # в stderr — элемент ленты группы
-```
-
-**Данные, которые остаются в рабочей базе** после smoke и ручной проверки: группы `smoke <время>`, `smoke <время> b`
-(откатывается с импортом), `smoke <время> feed` (архивная), элементы ленты (архивные), работы, сдачи с текстом ответа
-(блоб `answer.md`), оценки и продление `dev-student-2`, записи аудита; плюс то, что оставлял smoke 4а. Всё это убирает
-`deploy/dev/reset-production.sh` перед учениками (§6 «Сброс тестовых данных»).
-
-**Откат 4в.1** — только из дампа: `alembic downgrade` миграции `b32303b5df22` отказывает, пока есть элементы ленты или
-их продления. Порядок — общий шаблон ниже, с дампом `~/judge-before-4v1.dump` и кодом ветки `master`.
-
-**Обновление до 4б.0 (воркер, очередь, отдача файлов).** Миграций у 4б.0 нет; если на установке ещё не стоит 4в.1,
-те же команды поставят и его (`install-wsl.sh` применяет `alembic upgrade head`, то есть `b32303b5df22`, если её нет).
-Меняются воркер и юнит `judge-worker` (`RestartPreventExitStatus=78`, D-066), протокол воркера (409 `deregistered`,
-поле `reclaimed`; совместимо в обе стороны), отдача файлов (`FILES.md`).
-
-```bash
-(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4b0.dump)      # 0: резервная копия, вне репозитория
-sudo systemctl stop judge-worker judge-reaper judge-api-internal
-# публичное приложение (python -m app.public_main) — остановить в его терминале (Ctrl-C)
-sudo $P ./deploy/install-wsl.sh                    # код, юниты + systemctl daemon-reload, alembic upgrade head
-systemctl show judge-worker -p RestartPreventExitStatus      # RestartPreventExitStatus=78: юнит перечитан
-sudo grep -q '^JUDGE_ASSIGNMENT_TEXT_MAX_KB=' /etc/judge/backend.env || echo 'JUDGE_ASSIGNMENT_TEXT_MAX_KB=64' | sudo tee -a /etc/judge/backend.env
+# 5. переменные: строки со значениями по умолчанию (можно не добавлять; добавленные легко поменять потом)
+for kv in JUDGE_ASSIGNMENT_TEXT_MAX_KB=64 JUDGE_COMMENT_RATE_PER_MIN=10 JUDGE_SUBMISSION_FILES_MAX=10 \
+          JUDGE_SUBMISSION_FILE_MAX_MB=20 JUDGE_SUBMISSION_TOTAL_MAX_MB=50 JUDGE_STUDENT_QUOTA_MB=200 \
+          JUDGE_ITEM_ATTACHMENTS_MAX=20 JUDGE_ATTACHMENT_MAX_MB=50; do
+  sudo grep -q "^${kv%%=*}=" /etc/judge/backend.env || echo "$kv" | sudo tee -a /etc/judge/backend.env
+done
 sudo grep -E '^(JUDGE_BACKEND|JUDGE_ALLOW_UNSAFE_LOCAL|JUDGE_DEV)=' /etc/judge/worker.env   # только JUDGE_BACKEND=isolate
+
+# 6. проверки до запуска
+systemctl show judge-worker -p RestartPreventExitStatus   # RestartPreventExitStatus=78: юнит перечитан
+w .venv/bin/python -m runner.cli sandbox-check            # 5 строк ok (менялся runner/sandbox/local.py, D-065)
+w .venv/bin/python -m runner.cli redteam                  # все ok
+j .venv/bin/python -m app.judgectl status                 # migration b8e0cbcc4cda = head, config без замечаний
+
+# 7. запуск
 sudo systemctl start judge-api-internal judge-reaper judge-worker
-j .venv/bin/python -m app.judgectl status          # migration b32303b5df22 = head, config без замечаний
-j .venv/bin/python -m app.public_main              # публичное приложение, в отдельном терминале
-SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>
+systemctl status judge-worker --no-pager | head -3        # active (running), не failed 78/CONFIG
+j .venv/bin/python -m app.judgectl worker list            # online, CAPS cpu,problem_check
+j .venv/bin/python -m app.public_main                     # публичное приложение, в отдельном терминале
+
+# 8. smoke (в третьем терминале): все блоки, в том числе лента, картинки, комментарии, файлы, материалы
+SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>   # failures: 0
+# SKIP бывает только у сдач, если dev-student-1/-2 ещё не созданы: тогда запустить smoke ещё раз
 ```
 
-Проверки 4б.0 вживую:
+Если в шаге 2 `datctype` не `C.UTF-8` (`lower_yo` = `Ё`), обновлению это не мешает, но поиск Справочника по
+кириллице станет чувствителен к регистру; `reset-production.sh` перед учениками пересоздаёт базу с `C.UTF-8`
+(D-073, D-080).
+
+**Проверки вживую** (после smoke):
 * **Отказ после deregister (D-068).** Дать воркерам работу и остановить их посреди неё:
   ```bash
   tools/seed-as-judge.sh --count 10                 # 10 посылок в очередь (dev_seed от judge, D-047)
   sudo systemctl stop judge-worker                  # сразу, пока они проверяются
   journalctl -u judge-api-internal --since "-2 min" | grep -E 'heartbeat|deregister' | tail -5
   j .venv/bin/python -m app.judgectl worker list    # STATE stopped у всех
-  j .venv/bin/python -m app.judgectl queue events --last 15   # released / worker_stopped, без requeued
+  j .venv/bin/python -m app.judgectl queue events --last 15       # released / worker_stopped, без requeued
   j .venv/bin/python -m app.judgectl queue judgements --last 10   # недоделанные — queued, FAIL 0
   sudo systemctl start judge-worker
   ```
   После строки `POST /internal/worker/v1/deregister … 200` у того же воркера нет `heartbeat … 200`: поздний heartbeat
-  получает `409`. Воркеры в `workers` — `stopped`, их задания вернулись в очередь без провала.
-* **Код 78 (D-066):** `systemctl status judge-worker` после ошибки конфигурации — `failed`, `status=78/CONFIG`
-  (§5); при нормальной работе — `active (running)`.
-* **Страховка «idle, но держит» (D-069)** вживую не воспроизводится (нужен воркер, потерявший задание); метрика должна
-  быть 0: `curl -s --noproxy '*' http://127.0.0.1:8001/internal/metrics | grep judge_orphan_reclaims`
-  (с `-H "Authorization: Bearer $JUDGE_METRICS_TOKEN"`, если он задан). Рост — повод смотреть
-  `journalctl -u judge-worker` на «could not be delivered».
-* **Картинки условия (D-070, D-071):** блок smoke «statement pictures» — заголовки, ETag, 304, предупреждение импорта.
+  получает `409`. Воркеры — `stopped`, их задания вернулись в очередь без провала.
+* **Код 78 (D-066):** при нормальной работе `systemctl status judge-worker` — `active (running)`; после ошибки
+  конфигурации — `failed`, `status=78/CONFIG` (§5).
+* **Страховка «idle, но держит» (D-069)** вживую не воспроизводится; метрика должна быть 0:
+  `curl -s --noproxy '*' http://127.0.0.1:8001/internal/metrics | grep judge_orphan_reclaims`
+  (с `-H "Authorization: Bearer $JUDGE_METRICS_TOKEN"`, если он задан). Рост — смотреть `journalctl -u judge-worker`
+  на «could not be delivered».
+* **Картинки условия, вложения, файлы работ** (D-070, D-071, D-082) — блоки smoke «statement pictures» и «files and
+  links»: заголовки `nosniff`, CSP `sandbox`, `ETag`, 304, предупреждение импорта о подделке.
 
-**Откат 4б.0** — по шаблону ниже с дампом `~/judge-before-4b0.dump` и прежним кодом (ветка `master` или коммит, что стоял).
-
-**Обновление до 4в.2 (комментарии).** Одна новая миграция `e73284028c20` (ветки комментариев, комментарии, отметки
-прочтения; у элементов ленты поле `comments_enabled`, по умолчанию выключено). Воркер, очередь и протокол воркера не
-менялись (ключ advisory-блокировки выдачи переехал в `app/locks.py` с тем же значением). Если на установке ещё не
-стоят 4в.1 и 4б.0, те же команды поставят и их: `install-wsl.sh` применяет все миграции до head и ставит юниты;
-проверки 4б.0 — строки `systemctl show` и `grep` ниже. Из репозитория на ветке `module-4v` (или на `master` после
-слияния):
+**Ручная проверка через консоль** (без `SEED_CMD` smoke пропускает действия учеников — `SKIP` с командой, — тогда
+обязательна; с ним — по желанию). `<id>` печатают команды `create`:
 
 ```bash
-(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4v2.dump)      # 0: резервная копия, вне репозитория
-sudo systemctl stop judge-worker judge-reaper judge-api-internal
-# публичное приложение (python -m app.public_main) — остановить в его терминале (Ctrl-C)
-sudo $P ./deploy/install-wsl.sh                    # код, юниты, alembic upgrade head (e73284028c20)
-systemctl show judge-worker -p RestartPreventExitStatus      # RestartPreventExitStatus=78 (4б.0)
-sudo grep -E '^(JUDGE_BACKEND|JUDGE_ALLOW_UNSAFE_LOCAL|JUDGE_DEV)=' /etc/judge/worker.env   # только JUDGE_BACKEND=isolate
-# частота комментариев ученика (по умолчанию 10 в минуту, 0 — без лимита; строку можно не добавлять):
-sudo grep -q '^JUDGE_COMMENT_RATE_PER_MIN=' /etc/judge/backend.env || echo 'JUDGE_COMMENT_RATE_PER_MIN=10' | sudo tee -a /etc/judge/backend.env
-sudo systemctl start judge-api-internal judge-reaper judge-worker
-j .venv/bin/python -m app.judgectl status          # migration e73284028c20 = head, config без замечаний
-j .venv/bin/python -m app.public_main              # публичное приложение, в отдельном терминале
-SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>
+J='j .venv/bin/python -m app.judgectl'
+$J group create 'проверка 4в'
+# лента и работы (4в.1)
+$J item create --kind assignment --title 'Проверка' --group 'проверка 4в' --due '2026-12-31 23:59' \
+    --grading points --max-points 5 --answer text_or_files --comments on
+$J item publish <id>
+$J work list --item <id>                                  # пусто, пока в группе нет учеников
+$J group add 'проверка 4в' <логин>
+$J work show <id> <логин>                                 # assigned, сдач нет
+# комментарии (4в.2)
+$J comment post <id> --text 'Пишите вопросы сюда'
+$J comment show <id>                                      # комментарий консоли
+$J comment list --item <id>                               # одна ветка, AWAITING no
+$J comment delete <comment-id> --reason 'проверка'
+$J comment delete <comment-id>                            # already_deleted, выход 1
+# вложения (4в.3): файл через stdin — judge не читает ваш домашний каталог
+$J item attach <id> - --name 'условие.pdf' < ~/условие.pdf
+$J item link <id> https://example.org --title 'Пример'
+$J item show <id>                                         # блок attachments
+$J item attach <id> - --name x.svg < /dev/null            # file_type_not_allowed, выход 1
+# материалы и Справочник (4в.4)
+echo 'Цикл for. См. [[памятка:proverka-nope]]' | $J material create proverka-4v --title 'Проверка 4в' --body-file - \
+    --library groups --group 'проверка 4в'                # version 1; warning: proverka-nope
+$J material attach proverka-4v - --name 'памятка.pdf' < ~/условие.pdf   # version 2
+$J material show proverka-4v                              # версия 2 из 2, вложение, ссылка unknown
+$J section create 'Проверка 4в'                           # печатает id раздела
+$J section place <section-id> proverka-4v
+$J material search 'проверка'                             # находит «Проверка 4в» (регистр не важен)
+$J item create --kind material --material proverka-4v --group 'проверка 4в'   # название — материала
+$J material where proverka-4v                             # material items: этот элемент
+$J section delete <section-id> --yes
+$J material archive proverka-4v
+# уборка
+$J item archive <id>
+$J group archive 'проверка 4в'                            # в stderr — элементы ленты группы
 ```
 
-Блок smoke «comments (4v.2)» (`ADMIN_API.md` §6) пишет от имени `dev-student-1` и `-2` через `dev_seed --item …
---comment` и проверяет ветки, входящие, отметку прочтения и удаление; `rate_limited` не проверяется (зависит от
-`JUDGE_COMMENT_RATE_PER_MIN`). Без `SEED_CMD` сообщения учеников пропускаются (`SKIP`), а ручная проверка через
-консоль:
+Файл работы или материала — `-o -` с перенаправлением (`judgectl work file <id> <логин> <file_id> -o - > файл`,
+`judgectl material file <slug> <att> -o - > файл`): `judge` не может писать в домашний каталог владельца, двоичное в
+терминал не выводится.
+
+**Проверка сброса на временных базах** (D-073; ничего не трогает в `judge`, сравнивает сброшенную базу со свежей и
+теперь заполняет и данные 4в.4 — материалы, версии, их вложения, разделы, ссылки):
 
 ```bash
-j .venv/bin/python -m app.judgectl group create 'проверка 4в.2'
-j .venv/bin/python -m app.judgectl item create --kind assignment --title 'Вопросы' --group 'проверка 4в.2' \
-    --grading none --comments on                                               # печатает id элемента
-j .venv/bin/python -m app.judgectl item publish <id>
-j .venv/bin/python -m app.judgectl comment post <id> --text 'Пишите вопросы сюда'
-j .venv/bin/python -m app.judgectl comment show <id>                          # комментарий консоли
-j .venv/bin/python -m app.judgectl comment list --item <id>                   # одна ветка, AWAITING no
-j .venv/bin/python -m app.judgectl comment delete <comment-id> --reason 'проверка'
-j .venv/bin/python -m app.judgectl comment delete <comment-id>                # already_deleted, выход 1
-j .venv/bin/python -m app.judgectl item archive <id>
-j .venv/bin/python -m app.judgectl group archive 'проверка 4в.2'
+sudo ./deploy/dev/check-reset-db.sh                       # выход 0: базы одинаковы
 ```
 
-**Данные, которые остаются в рабочей базе** после smoke 4в.2: группа `smoke <время> comments` (архивная), задание
-`Вопросы <время>` (архивное) с общей веткой (комментарий `dev-student-1`) и личной веткой `dev-student-2` (его
-комментарий с `<script>` и ESC и удалённый ответ админа с причиной), отметка прочтения админа, черновик контест-элемента
-создаётся и удаляется; записи аудита `item.*`, `comment.post`, `comment.delete`; `dev-student-1` и `-2` становятся
-членами этой группы. Плюс всё, что оставляют блоки 4а, 4в.1 и 4б.0. Всё это убирает `deploy/dev/reset-production.sh`
-перед учениками (§6 «Сброс тестовых данных», D-073).
+**Данные, которые остаются в рабочей базе** после smoke и ручной проверки (плюс то, что оставлял smoke 4а):
+- группы `smoke <время>`, `smoke <время> b` (откатывается с импортом), `smoke <время> feed`, `… comments`, `… files`
+  (архивные) и `проверка 4в`; `dev-student-1` и `-2` — члены этих групп;
+- элементы ленты (архивные): задания с работами, сдачами (`answer.md`, `main.py`, `report.pdf`, ссылка), оценками и
+  продлением `dev-student-2`; задание `Вопросы <время>` с общей и личной веткой (комментарий с `<script>` и ESC,
+  удалённый ответ админа), отметка прочтения админа; вложения заданий (PDF и ссылка);
+- материалы `smoke-<время>-memo` (3 версии, PDF) и `smoke-<время>-loops`, `proverka-4v` — архивные (материал не
+  удаляется); разделы удалены;
+- блобы всего этого в `/var/lib/judge/blobs`; записи аудита `item.*`, `work.*`, `comment.*`, `material.*`,
+  `library.*`; посылки `--count 10`.
 
-**Откат 4в.2** — только из дампа (D-064): по шаблону ниже с дампом `~/judge-before-4v2.dump` и прежним кодом
-(ветка `master` или коммит, что стоял). `alembic downgrade` миграции `e73284028c20` отказывает, ничего не меняя,
-пока в базе есть ветки комментариев или комментарии (а после smoke они есть).
+Всё это убирает `deploy/dev/reset-production.sh` перед учениками (§6 «Сброс тестовых данных», D-073).
 
-**Обновление до 4в.3 (вложения и ссылки).** Одна новая миграция `32cd8723a2bc`:
-- у файлов сдачи появляется вид `text` / `file` — строки 4в.1 получают `text` из каталога, без перезаписи таблицы;
-- новые таблицы: ссылки сдачи и вложения элементов ленты;
-- снимается запрет `answer_kind` `files` / `text_or_files`.
-
-Воркер, очередь и протокол воркера не менялись. Ставится разом с 4в.4 (если 4в.1, 4б.0 или 4в.2 ещё не стоят,
-`install-wsl.sh` применит и их миграции). Новые env — шесть лимитов, все необязательные: без строк действуют значения
-по умолчанию, неверное значение (не число, 0 там, где нужен минимум 1) останавливает запуск. Приём файлов пишет в
-`<JUDGE_BLOB_DIR>/tmp` — каталог создаётся сам, владелец `judge`, как у хранилища. Из репозитория:
-
-```bash
-(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4v3.dump)      # 0: резервная копия, вне репозитория
-# локаль рабочей базы (ничего не меняет): ожидается UTF8 | C.UTF-8 | C.UTF-8 | ё (§2 «PostgreSQL»)
-sudo -u postgres psql -X -d judge -c "SELECT pg_encoding_to_char(encoding) AS encoding, datcollate, datctype, lower('Ё') AS lower_yo FROM pg_database WHERE datname = current_database()"
-sudo systemctl stop judge-worker judge-reaper judge-api-internal
-# публичное приложение (python -m app.public_main) — остановить в его терминале (Ctrl-C)
-sudo $P ./deploy/install-wsl.sh                    # код, юниты, alembic upgrade head (32cd8723a2bc)
-# лимиты файлов (D-078; строки можно не добавлять — это значения по умолчанию):
-for kv in JUDGE_SUBMISSION_FILES_MAX=10 JUDGE_SUBMISSION_FILE_MAX_MB=20 JUDGE_SUBMISSION_TOTAL_MAX_MB=50 \
-          JUDGE_STUDENT_QUOTA_MB=200 JUDGE_ITEM_ATTACHMENTS_MAX=20 JUDGE_ATTACHMENT_MAX_MB=50; do
-  sudo grep -q "^${kv%%=*}=" /etc/judge/backend.env || echo "$kv" | sudo tee -a /etc/judge/backend.env
-done
-sudo systemctl start judge-api-internal judge-reaper judge-worker
-j .venv/bin/python -m app.judgectl status          # migration 32cd8723a2bc = head, config без замечаний
-j .venv/bin/python -m app.public_main              # публичное приложение, в отдельном терминале
-SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>
-```
-
-Что нового проверяет smoke — блок «files and links (4v.3)», `ADMIN_API.md` §6:
-- вложение-PDF под кириллическим именем и картинка;
-- SVG, HTML под `.png`, `.exe`, имя не в UTF-8, повтор имени — 422; другой `Content-Type` — 415;
-- скачивание с `nosniff`, CSP `sandbox` и 304, порядок и удаление;
-- сдача текста, файлов и ссылки через `dev_seed --file / --link`, скачивание файлов работы, файл чужой работы — 404;
-- архивный элемент — 409.
-
-Файлы для `dev_seed` скрипт кладёт в отдельный каталог 755, их читает `judge`. Ручная проверка через консоль:
-
-```bash
-j .venv/bin/python -m app.judgectl group create 'проверка 4в.3'
-j .venv/bin/python -m app.judgectl item create --kind assignment --title 'Проект' --group 'проверка 4в.3' \
-    --grading pass_fail --answer text_or_files                                 # печатает id элемента
-j .venv/bin/python -m app.judgectl item attach <id> - --name 'условие.pdf' < ~/условие.pdf   # stdin: judge не читает ~
-j .venv/bin/python -m app.judgectl item link <id> https://example.org --title 'Пример'
-j .venv/bin/python -m app.judgectl item show <id>                              # блок attachments
-j .venv/bin/python -m app.judgectl item attach <id> - --name x.svg < /dev/null # file_type_not_allowed, выход 1
-j .venv/bin/python -m app.judgectl item archive <id>
-j .venv/bin/python -m app.judgectl group archive 'проверка 4в.3'
-```
-
-Файл работы — `judgectl work file <id> <логин> <file_id> -o - > файл`: `judge` не может писать в домашний каталог
-владельца, поэтому `-o -` с перенаправлением. В терминал двоичное не выводится.
-
-**Данные, которые остаются в рабочей базе** после smoke 4в.3:
-- группа `smoke <время> files` (архивная);
-- задание `Проект <время>` (архивное) с вложениями (PDF и ссылка; картинка удалена) и работой `dev-student-1`
-  (`answer.md`, `main.py`, `report.pdf`, ссылка);
-- их блобы в `/var/lib/judge/blobs`;
-- записи аудита `item.attachment_*`.
-
-Плюс всё, что оставляют прежние блоки. Всё это убирает `deploy/dev/reset-production.sh` (D-073).
-
-**Откат 4в.3** — только из дампа (D-064): по шаблону ниже с дампом `~/judge-before-4v3.dump` и прежним кодом.
-`alembic downgrade` миграции `32cd8723a2bc` отказывает, ничего не меняя, пока есть загруженные файлы, ссылки,
-вложения или элементы с `files` / `text_or_files` (D-079), а после smoke они есть.
+**Откат** — только из дампа (D-064), по шаблону ниже: дамп `~/judge-before-4v.dump`, код — `git switch master`.
+`alembic downgrade` здесь не годится: миграции 4в отказывают, ничего не меняя, пока в базе есть их данные
+(элементы ленты, комментарии, вложения, материалы и ссылки — D-079, D-084), а после smoke они есть.
 
 ### Откат обновления: пересоздание базы из дампа (D-064)
 
@@ -635,6 +624,11 @@ python -m app.judgectl queue judgements --last 20
 tools/smoke-internal-api.sh ~/.config/judge/smoke-worker-token http://127.0.0.1:8002   # протокол воркера curl-ом, код выхода = число провалов
 ```
 Токен воркера для проверок — в `~/.config/judge/smoke-worker-token` (каталог 700, файл 600), не в `/tmp`.
+**Токен создаётся только этой строкой:** вывод `worker token create` целиком уходит в файл (под `umask 077`, через
+`tail -1`: токен — последняя строка) и в терминал не попадает. Нельзя запускать команду без перенаправления и нельзя
+«отфильтровать» её вывод для показа (`grep -v`, `head`): в сессии 4в.4b такой фильтр пропустил строку с токеном, и токен
+пришлось отозвать. Если токен всё же оказался на экране — сразу `judgectl worker token revoke <имя>` и новый той же
+строкой. То же — в любом сценарии smoke со своим стеком.
 
 **Уборка после smoke** (приватный стек разработчика: публичное приложение, внутреннее API, воркер, админ smoke).
 Остановить процессы стека по их PID (не `pkill -f` по шаблону: он находит и собственную оболочку команды). Отзыв токена
