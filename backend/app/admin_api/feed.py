@@ -32,7 +32,8 @@ from .deps import Page, admin_actor, page, paginate, users_by_id
 router = APIRouter()
 
 # every refusal code of the class feed (FeedError, the Decision codes of classroom/access.py, grading.py and
-# comment_rules.py, the ExtensionError codes) and of these endpoints -> HTTP status: 404 no such thing, 409 the state
+# comment_rules.py, the ExtensionError codes), of the library of materials (materials/*.py) and of these endpoints
+# -> HTTP status: 404 no such thing, 409 the state
 # forbids it now, 422 the input is never valid, 403 not yours, 429 too often. tests/test_admin_feed_units.py keeps it
 # complete.
 STATUS = {
@@ -40,6 +41,7 @@ STATUS = {
     "item_not_found": 404, "user_not_found": 404, "group_not_found": 404, "contest_not_found": 404,
     "extension_not_found": 404, "work_not_found": 404, "thread_not_found": 404, "comment_not_found": 404,
     "file_not_found": 404, "attachment_not_found": 404, "material_not_found": 404,
+    "version_not_found": 404, "section_not_found": 404,
     # 422: the input
     "title_invalid": 422, "material_required": 422, "contest_required": 422, "item_invalid": 422,
     "grading_invalid": 422, "max_points_invalid": 422, "answer_kind_invalid": 422, "deadline_invalid": 422,
@@ -53,12 +55,17 @@ STATUS = {
     "file_type_not_allowed": 422, "file_content_mismatch": 422, "file_name_invalid": 422, "file_empty": 422,
     "file_too_large": 422, "duplicate_name": 422, "link_invalid": 422, "link_title_invalid": 422,
     "attachment_order_invalid": 422,
+    # the library of materials (4v.4, D-087): the slug, the text, the audience, the sections and their order are input;
+    # the slug is fixed (another one is never valid)
+    "slug_invalid": 422, "slug_immutable": 422, "body_invalid": 422, "body_too_long": 422, "library_invalid": 422,
+    "material_invalid": 422, "section_title_invalid": 422, "section_invalid": 422, "order_invalid": 422,
     # 409: the state
     "grading_locked": 409, "no_audience": 409, "item_archived": 409, "item_not_published": 409,
     "item_not_draft": 409, "item_has_works": 409, "item_has_extensions": 409, "group_archived": 409,
     "not_published": 409, "not_addressed": 409, "not_an_assignment": 409, "no_deadline": 409,
     "nothing_to_return": 409, "already_returned": 409, "release_not_needed": 409, "already_deleted": 409,
     "too_many_attachments": 409, "material_archived": 409,
+    "slug_taken": 409, "section_too_deep": 409, "section_not_empty": 409,
     # the results of a bulk release per student (in a 200 answer), never a refusal of an admin request
     "nothing_to_release": 409, "already_released": 409,
     # a student's hand-in only: no admin endpoint hands work in (the student endpoints of 4b.2 use these)
@@ -73,8 +80,11 @@ STATUS = {
 # later than available_from; a draft cannot have works (a hand-in and a grade need a published item). Of the files
 # (4v.3): an upload over JUDGE_ATTACHMENT_MAX_MB is 413 too_large from save_body before the service could say
 # file_too_large (judgectl reaches it); the name is cleaned first (content_files.clean_name: never empty, no
-# separators or control characters, cut to 150), so file_name_invalid stays the rules' guard.
-DEFENSIVE = frozenset({"extension_before_available", "item_has_works", "file_too_large", "file_name_invalid"})
+# separators or control characters, cut to 150), so file_name_invalid stays the rules' guard. Of the materials (4v.4):
+# material_invalid is update_material's refusal of a field it does not edit, and PATCH /materials/{id} forbids any
+# key but title, library and slug (invalid_request) before the service.
+DEFENSIVE = frozenset({"extension_before_available", "item_has_works", "file_too_large", "file_name_invalid",
+                       "material_invalid"})
 # codes that come only as per-student results of POST /items/{id}/release
 RESULT_ONLY = frozenset({"nothing_to_release", "already_released"})
 # codes no admin request can produce: only a student's hand-in (D-063; the test of 4b.2, ROADMAP)

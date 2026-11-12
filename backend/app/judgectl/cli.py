@@ -18,7 +18,7 @@ from ..groups import GroupError
 from ..classroom.items import FeedError
 from . import (accounts, attachments, comments, contests, extensions, feed, groups as group_cmds, materials, ops,
                problems, submissions)
-from .core import CliError, Context, terminal_text
+from .core import CliError, Context, UsageError, terminal_text
 from ..auth.csvimport import CsvImportError
 
 
@@ -260,6 +260,9 @@ def main(argv: Optional[list] = None, ctx: Optional[Context] = None) -> int:
     except FeedError as exc:  # the code too: scripts tell refusals apart by it
         print(f"judgectl: {terminal_text(str(exc), multiline=True)} ({exc.code})", file=ctx.err)
         return 1
+    except UsageError as exc:
+        print(f"judgectl: {terminal_text(str(exc), multiline=True)}", file=ctx.err)
+        return 2
     except (CliError, UserError, LoginError, TotpConfigError, CsvImportError, PackageError, ContestError,
             ContestSpecError, TimezoneError, GroupError) as exc:
         print(f"judgectl: {terminal_text(str(exc), multiline=True)}", file=ctx.err)

@@ -15,7 +15,7 @@ from ..models import DeadlineExtension
 from ..timeutil import parse_local
 from . import attachments as attachment_cmds
 from . import materials as material_cmds
-from .core import CliError, Context, confirm, emit_json, read_input, show, terminal_text
+from .core import CliError, Context, UsageError, confirm, emit_json, read_input, show, terminal_text
 
 BODY_LIMIT = 1024 * 1024  # like the JSON body of the admin API
 
@@ -107,7 +107,7 @@ def item_create(ctx: Context, args) -> int:
     fields = _fields(ctx, args)
     title = fields.pop("title", None)
     if title is None and args.kind != "material":
-        raise CliError("--title is required (only a material item takes the material's title)")
+        raise UsageError("--title is required (only a material item takes the material's title)")
     body = fields.pop("body_md", "")
     now = ctx.clock()
     with ctx.session() as db:

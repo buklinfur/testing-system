@@ -417,6 +417,26 @@ class AdminFeedTests(ApiCase):
         self.refused(P(f"/items/{d['id']}/links", json={"url": "https://b.ru"}), "too_many_attachments")
         self.refused(self.get(f"/items/{d['id']}/works/{self.ivanov.id}/files/999999"), "file_not_found")
 
+        # the library of materials (§5.11)
+        self.refused(P("/materials", json={"slug": "Bad Slug", "title": "М"}), "slug_invalid")
+        self.refused(P("/materials", json={"slug": "memo", "title": "М", "body_md": "\x00"}), "body_invalid")
+        self.refused(P("/materials", json={"slug": "memo", "title": "М", "body_md": "я" * 100_001}),
+                     "body_too_long")
+        self.refused(P("/materials", json={"slug": "memo", "title": "М", "library": "everyone"}), "library_invalid")
+        m = self.ok(P("/materials", json={"slug": "memo", "title": "Памятка"}), 201)
+        self.refused(P("/materials", json={"slug": "memo", "title": "Ещё"}), "slug_taken")
+        self.refused(self.b.patch(f"/api/admin/materials/{m['id']}", json={"slug": "other"}, headers=self.h),
+                     "slug_immutable")
+        self.refused(self.get(f"/materials/{m['id']}/versions/9"), "version_not_found")
+        self.refused(P("/library/sections", json={"title": "Тема", "parent_id": 999999}), "section_not_found")
+        self.refused(P("/library/sections", json={"title": "  "}), "section_title_invalid")
+        top = self.ok(P("/library/sections", json={"title": "Тема"}), 201)
+        sub = self.ok(P("/library/sections", json={"title": "Подтема", "parent_id": top["id"]}), 201)
+        self.refused(P("/library/sections", json={"title": "Глубже", "parent_id": sub["id"]}), "section_too_deep")
+        self.refused(P(f"/library/sections/{top['id']}/move", json={"parent_id": top["id"]}), "section_invalid")
+        self.refused(self.put("/library/sections/order", json={"ids": []}), "order_invalid")
+        self.refused(P(f"/library/sections/{top['id']}/delete", json={"confirm_id": top["id"]}), "section_not_empty")
+
         expected = set(STATUS) - HAND_IN_ONLY - COMMENT_STUDENT_ONLY - DEFENSIVE - NO_ROUTE_YET
         self.assertEqual(NO_ROUTE_YET, set())
         self.assertEqual(sorted(expected - self.reached), [])

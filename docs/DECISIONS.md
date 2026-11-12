@@ -984,3 +984,39 @@ D-078…D-080; видимость общей ветки и вложений эл
 Почему: те же соглашения, что у ленты и вложений (D-060…D-062, D-076, D-081), и одна запись файла на диск вместо двух.
 Связи: правила — D-083; схема — D-084; сервисы — D-085; файл работы — D-081; недоверенный текст — D-062, D-076;
 `dev_seed` как ученик — D-047.
+
+### D-087. Материалы в админском API: изменение содержимого отвечает версией, вложения версии по образцу загрузок, slug только тот же, Справочник отдельными путями
+2026-11-12 · принято · 4в.4
+Этап 5 сессии 4в.4 (`ADMIN_API.md` §5.11; `admin_api/materials.py`):
+- **пути** — `GET|POST /materials`, `GET|PATCH /materials/{id}`, `POST /materials/{id}/versions`,
+  `GET /materials/{id}/versions[/{n}]`, `PUT /materials/{id}/groups` (ровно этот набор, как аудитория элемента),
+  `POST /materials/{id}/archive|unarchive`, `GET /materials/{id}/where`, `POST /materials/resolve`; вложения версии —
+  `POST /materials/{id}/attachments?name=`, `POST …/links`, `PUT …/attachments/order`,
+  `GET …/attachments/{att}[?version=N]`, `POST …/attachments/{att}/delete`; Справочник — `GET /library[?q=]`,
+  `POST /library/sections`, `PUT /library/sections/order` (`parent_id` — уровень), `PATCH /library/sections/{id}`,
+  `POST /library/sections/{id}/move|delete`, `POST|PUT /library/sections/{id}/materials[/order]`,
+  `POST /library/sections/{id}/materials/{material_id}/delete`. Все id в путях — `DbId` (int4, больше — 422);
+- **ответ изменения содержимого** — версия `{material_id, slug, version, created, warnings, attachments}`; без
+  изменений — `created: false` и последняя версия (не ошибка). `archive` / `unarchive`, `place` / `unplace`, `rename`,
+  `move` — `changed: false` при повторе (сверка этапа 0);
+- **slug** — `PATCH` принимает `slug`, но только текущий: другой — 422 `slug_immutable` (решает сервис, D-085); `null`
+  и прочие ключи — 422 `invalid_request` до сервиса, поэтому `material_invalid` сервиса — защитный (`DEFENSIVE`);
+- **загрузка файла версии** — как D-082: всё дешёвое до тела (Origin → сессия и CSRF → `Content-Type` → `?name=` →
+  материал и `precheck_file`), `rollback` перед телом, `FOR UPDATE` строки материала только в сервисе после тела;
+  `routes.UPLOAD_PATTERNS` — второй шаблон `/api/admin/materials/[1-9][0-9]{0,9}/attachments`, тест соседних путей
+  обобщён на оба шаблона и проверяет, что JSON-маршруты материалов и Справочника лимит сохраняют;
+- **разрешение ссылок** — для админа `ok` / `archived` / `unknown` с id и названием; ученический вид (`available`) —
+  в 4б.2;
+- **коды** — в `STATUS` все коды материалов и Справочника (404 `version_not_found`, `section_not_found`; 422 `slug_*`
+  кроме `slug_taken`, `body_*`, `library_invalid`, `section_title_invalid`, `section_invalid`, `order_invalid`; 409
+  `slug_taken`, `section_too_deep`, `section_not_empty`); `section_too_deep` — 409, потому что зависит от текущих
+  разделов (тот же перенос возможен, когда подразделов нет). Сканер теста полноты читает `materials/*.py`; код,
+  переданный правилу аргументом (`check_title(…, "section_title_invalid")`), тест требует литералом в файле.
+  Достижимость — тест API `test_every_code_with_an_http_status_is_reached`; `NO_ROUTE_YET` пуст;
+- **OpenAPI** — только добавления: старые пути и схемы совпадают с прежним `openapi-admin.json` (сравнение при
+  генерации), добавлены 23 пути и 10 схем;
+- **smoke** — блок «материалы» после блока файлов (`tools/smoke-admin-api.sh`, `ADMIN_API.md` §6).
+Почему: те же соглашения, что у ленты и вложений элемента (D-063, D-077, D-082), а версия в ответе избавляет клиента
+от второго запроса после каждой правки.
+Связи: правила — D-083; схема — D-084; сервисы — D-085; консоль — D-086; загрузки и int4 — D-082; таблица статусов —
+D-063, D-077.

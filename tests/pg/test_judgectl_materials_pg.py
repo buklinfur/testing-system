@@ -269,9 +269,10 @@ class JudgectlMaterialTests(PgCase):
         self.assertEqual((made["title"], made["material"]["slug"]), ("Циклы", "cycles"))
         out, _ = self.ok("item", "show", made["id"])
         self.assertIn("  material: cycles «Циклы»", out)
-        code, _, err = self.run_cli("item", "create", "--kind", "assignment", "--grading", "none")
-        self.assertEqual(code, 1)
-        self.assertIn("--title is required", err)
+        for argv in (("--kind", "assignment", "--grading", "none"), ("--kind", "contest", "--contest", "x")):
+            code, _, err = self.run_cli("item", "create", *argv)
+            self.assertEqual(code, 2, err)  # wrong arguments, as when argparse required --title (D-062)
+            self.assertIn("--title is required", err)
         self.refused("material_required", "item", "create", "--kind", "material", "--title", "М")
         self.refused("material_not_found", "item", "create", "--kind", "material", "--material", "nothing")
         out, err = self.ok("item", "create", "--kind", "assignment", "--title", "Задание", "--grading", "none",

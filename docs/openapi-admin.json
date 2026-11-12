@@ -424,6 +424,24 @@
         "title": "GradeBody",
         "type": "object"
       },
+      "GroupsBody": {
+        "additionalProperties": false,
+        "properties": {
+          "group_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 200,
+            "title": "Group Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "group_ids"
+        ],
+        "title": "GroupsBody",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -703,6 +721,97 @@
         "title": "LoginBody",
         "type": "object"
       },
+      "MaterialCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "body_md": {
+            "default": "",
+            "description": "Markdown; links [[памятка:slug]]",
+            "maxLength": 200000,
+            "title": "Body Md",
+            "type": "string"
+          },
+          "group_ids": {
+            "description": "the library groups (with library groups)",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 200,
+            "title": "Group Ids",
+            "type": "array"
+          },
+          "library": {
+            "default": "none",
+            "description": "none | all_students | groups",
+            "maxLength": 20,
+            "title": "Library",
+            "type": "string"
+          },
+          "slug": {
+            "description": "a-z, 0-9 and -, 2..63 characters; never changes",
+            "maxLength": 200,
+            "title": "Slug",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 1000,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "title"
+        ],
+        "title": "MaterialCreate",
+        "type": "object"
+      },
+      "MaterialPatch": {
+        "additionalProperties": false,
+        "description": "Only the keys sent change. slug: only the current one is accepted (another: 422 slug_immutable).",
+        "properties": {
+          "library": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "none | all_students | groups",
+            "title": "Library"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "never changes",
+            "title": "Slug"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "MaterialPatch",
+        "type": "object"
+      },
       "MembersBody": {
         "additionalProperties": false,
         "properties": {
@@ -883,6 +992,20 @@
         "title": "PinBody",
         "type": "object"
       },
+      "PlaceBody": {
+        "additionalProperties": false,
+        "properties": {
+          "material_id": {
+            "title": "Material Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "material_id"
+        ],
+        "title": "PlaceBody",
+        "type": "object"
+      },
       "ProfileBody": {
         "additionalProperties": false,
         "description": "What a user may change about themselves: only the time zone (the key is required; null clears it).",
@@ -1061,6 +1184,21 @@
         "title": "ReleaseBody",
         "type": "object"
       },
+      "ResolveBody": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 200000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ResolveBody",
+        "type": "object"
+      },
       "ReturnBody": {
         "additionalProperties": false,
         "properties": {
@@ -1074,6 +1212,100 @@
           "comment"
         ],
         "title": "ReturnBody",
+        "type": "object"
+      },
+      "SectionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "a top-level section: this one becomes its subsection",
+            "title": "Parent Id"
+          },
+          "title": {
+            "maxLength": 1000,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "SectionCreate",
+        "type": "object"
+      },
+      "SectionMove": {
+        "additionalProperties": false,
+        "properties": {
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "a top-level section, or null for the top level",
+            "title": "Parent Id"
+          }
+        },
+        "required": [
+          "parent_id"
+        ],
+        "title": "SectionMove",
+        "type": "object"
+      },
+      "SectionOrder": {
+        "additionalProperties": false,
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 500,
+            "title": "Ids",
+            "type": "array"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "the subsections of this section; null: the top level",
+            "title": "Parent Id"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "SectionOrder",
+        "type": "object"
+      },
+      "SectionPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "maxLength": 1000,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "SectionPatch",
         "type": "object"
       },
       "TimezoneBody": {
@@ -1150,6 +1382,21 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VersionBody": {
+        "additionalProperties": false,
+        "properties": {
+          "body_md": {
+            "maxLength": 200000,
+            "title": "Body Md",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body_md"
+        ],
+        "title": "VersionBody",
         "type": "object"
       },
       "app__admin_api__users__QrBody": {
@@ -4108,6 +4355,427 @@
         "summary": "Get Languages"
       }
     },
+    "/api/admin/library": {
+      "get": {
+        "description": "The library as an admin sees it: {sections: [{id, title, materials, sections}], unsorted} - every section and\nmaterial, archived ones marked. ?q=: {query, materials} - the search by title, any case (Cyrillic too), with %,\n_ and \\ taken literally.",
+        "operationId": "get_library_api_admin_library_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Library"
+      }
+    },
+    "/api/admin/library/sections": {
+      "post": {
+        "description": "A section at the end of the top level, or with parent_id a subsection at the end of a top-level section (409\nsection_too_deep under a subsection). 422 section_title_invalid.",
+        "operationId": "create_section_api_admin_library_sections_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Section"
+      }
+    },
+    "/api/admin/library/sections/order": {
+      "put": {
+        "description": "The order of the top level (parent_id null) or of the subsections of a section: every one exactly once (422\norder_invalid with missing, extra and repeated).",
+        "operationId": "order_sections_api_admin_library_sections_order_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionOrder"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Order Sections"
+      }
+    },
+    "/api/admin/library/sections/{section_id}": {
+      "patch": {
+        "description": "A new title. changed false: the same one.",
+        "operationId": "rename_section_api_admin_library_sections__section_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "section_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Section Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Section"
+      }
+    },
+    "/api/admin/library/sections/{section_id}/delete": {
+      "post": {
+        "description": "Delete a section without subsections (409 section_not_empty); its materials only leave it. confirm_id: the\nid again (422 confirmation_mismatch). What was deleted, with the slugs that were in it.",
+        "operationId": "delete_section_api_admin_library_sections__section_id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "section_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Section Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Section"
+      }
+    },
+    "/api/admin/library/sections/{section_id}/materials": {
+      "post": {
+        "description": "Put a material at the end of the section (changed false: it is there). 409 material_archived.",
+        "operationId": "place_material_api_admin_library_sections__section_id__materials_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "section_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Section Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaceBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Place Material"
+      }
+    },
+    "/api/admin/library/sections/{section_id}/materials/order": {
+      "put": {
+        "description": "{ids}: the material ids of the section, every one exactly once (422 order_invalid).",
+        "operationId": "order_section_materials_api_admin_library_sections__section_id__materials_order_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "section_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Section Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Order Section Materials"
+      }
+    },
+    "/api/admin/library/sections/{section_id}/materials/{material_id}/delete": {
+      "post": {
+        "description": "Take a material out of the section (it stays in the library). changed false: it was not there.",
+        "operationId": "unplace_material_api_admin_library_sections__section_id__materials__material_id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "section_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Section Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unplace Material"
+      }
+    },
+    "/api/admin/library/sections/{section_id}/move": {
+      "post": {
+        "description": "To the end of a top-level section (parent_id) or of the top level (null). 422 section_invalid (under itself);\n409 section_too_deep (under a subsection, or a section with subsections under another).",
+        "operationId": "move_section_api_admin_library_sections__section_id__move_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "section_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Section Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionMove"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move Section"
+      }
+    },
     "/api/admin/logins/{login}/unlock": {
       "post": {
         "description": "Any login, also one that does not exist (failures are counted for those too); not an admin's.",
@@ -4144,6 +4812,822 @@
           }
         },
         "summary": "Unlock Login"
+      }
+    },
+    "/api/admin/materials": {
+      "get": {
+        "description": "Newest first by id: slug, title, library audience and groups, sections, number of versions. archived=true:\narchived ones too.",
+        "operationId": "list_materials_api_admin_materials_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Archived",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Materials"
+      },
+      "post": {
+        "description": "A material and its version 1 (with its library groups in one transaction). 409 slug_taken (archived ones\ntoo); 422 slug_invalid, title_invalid, body_invalid, body_too_long, library_invalid. The material as GET answers\nit, plus `warnings` about the links of the text.",
+        "operationId": "create_material_api_admin_materials_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Material"
+      }
+    },
+    "/api/admin/materials/resolve": {
+      "post": {
+        "description": "The links [[памятка:slug]] of a text as they would be saved: `links` - one per distinct slug, status ok,\narchived or unknown (with id and title when the material exists); `warnings` - what judgectl prints. Writes\nnothing.",
+        "operationId": "resolve_links_api_admin_materials_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Links"
+      }
+    },
+    "/api/admin/materials/{material_id}": {
+      "get": {
+        "description": "The latest version: text, attachments, its links resolved (ok / archived / unknown) and `link_warnings`; the\nlibrary audience, groups, sections, number of versions, archived_at.",
+        "operationId": "get_material_api_admin_materials__material_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Material"
+      },
+      "patch": {
+        "description": "The title and the library audience, in place (no version). A slug other than the current one: 422\nslug_immutable (create a new material and archive this one). 409 material_archived.",
+        "operationId": "patch_material_api_admin_materials__material_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Material"
+      }
+    },
+    "/api/admin/materials/{material_id}/archive": {
+      "post": {
+        "description": "Read only and out of the library; the feed and links still open it. Again: changed false.",
+        "operationId": "archive_material_api_admin_materials__material_id__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Archive Material"
+      }
+    },
+    "/api/admin/materials/{material_id}/attachments": {
+      "post": {
+        "description": "A new version with this file appended: the raw body (application/octet-stream), the name in ?name=. 201 with\nthe version and its attachments. 415 another Content-Type; 422 invalid_request (no name, twice, broken UTF-8),\nfile_type_not_allowed, file_content_mismatch, file_empty, duplicate_name; 404 material_not_found; 409\nmaterial_archived, too_many_attachments; 413 too_large (more than JUDGE_ATTACHMENT_MAX_MB, before the service).",
+        "operationId": "upload_material_file_api_admin_materials__material_id__attachments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the file name with its extension, UTF-8 percent-encoded (encodeURIComponent)",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Material File"
+      }
+    },
+    "/api/admin/materials/{material_id}/attachments/order": {
+      "put": {
+        "description": "{ids}: every attachment of the latest version exactly once (attachment_order_invalid otherwise, with missing,\nextra and repeated). A new version in this order (`created`: false for the same order).",
+        "operationId": "reorder_material_attachments_api_admin_materials__material_id__attachments_order_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reorder Material Attachments"
+      }
+    },
+    "/api/admin/materials/{material_id}/attachments/{attachment_id}": {
+      "get": {
+        "description": "The file of a file attachment of the latest version, or of ?version=N (docs/FILES.md: the type by name and\ncontent, ETag, 304). 404 attachment_not_found (not a file of that version: another version's, a link, no such\nid), version_not_found.",
+        "operationId": "download_material_file_api_admin_materials__material_id__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Attachment Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Material File"
+      }
+    },
+    "/api/admin/materials/{material_id}/attachments/{attachment_id}/delete": {
+      "post": {
+        "description": "A new version without this attachment of the latest one (the blob stays with the old versions). 404\nattachment_not_found: not one of the latest version.",
+        "operationId": "delete_material_attachment_api_admin_materials__material_id__attachments__attachment_id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Attachment Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Material Attachment"
+      }
+    },
+    "/api/admin/materials/{material_id}/groups": {
+      "put": {
+        "description": "The library groups: exactly these (they count with library groups). A group added must not be archived (409\ngroup_archived); one already there stays. 409 material_archived.",
+        "operationId": "set_groups_api_admin_materials__material_id__groups_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Groups"
+      }
+    },
+    "/api/admin/materials/{material_id}/links": {
+      "post": {
+        "description": "A new version with this link appended (stored after strip; the server never opens it).",
+        "operationId": "add_material_link_api_admin_materials__material_id__links_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Material Link"
+      }
+    },
+    "/api/admin/materials/{material_id}/unarchive": {
+      "post": {
+        "description": "Back from the archive (its sections were kept). Again: changed false.",
+        "operationId": "unarchive_material_api_admin_materials__material_id__unarchive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unarchive Material"
+      }
+    },
+    "/api/admin/materials/{material_id}/versions": {
+      "get": {
+        "description": "Every version, newest first: number, when, who, length of the text, number of attachments.",
+        "operationId": "list_versions_api_admin_materials__material_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Versions"
+      },
+      "post": {
+        "description": "A new text: a new version with the attachments of the latest one (`created`: false and the latest version\nwhen the text is the same). `warnings` about its links. 409 material_archived; 422 body_invalid, body_too_long.",
+        "operationId": "new_version_api_admin_materials__material_id__versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VersionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "New Version"
+      }
+    },
+    "/api/admin/materials/{material_id}/versions/{number}": {
+      "get": {
+        "description": "One version: its text, attachments and links resolved now. 404 version_not_found.",
+        "operationId": "get_version_api_admin_materials__material_id__versions__number__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Number",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Version"
+      }
+    },
+    "/api/admin/materials/{material_id}/where": {
+      "get": {
+        "description": "Material items of it, feed items linking it, problem versions linking it (slug@version), materials whose\nlatest version links it.",
+        "operationId": "where_used_api_admin_materials__material_id__where_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where Used"
       }
     },
     "/api/admin/me": {

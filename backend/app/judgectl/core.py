@@ -29,6 +29,10 @@ class CliError(Exception):
     """A user-facing error: printed as `judgectl: <message>`, exit code 1."""
 
 
+class UsageError(CliError):
+    """Wrong arguments found after argparse (a flag required only with another one): exit code 2, like argparse."""
+
+
 def _stdout() -> TextIO:
     return sys.stdout
 

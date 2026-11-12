@@ -18,6 +18,12 @@
 # picture, a link), SVG / HTML under .png / .exe / a name not in UTF-8 / a repeated name are 422, another
 # Content-Type 415; downloads with nosniff, the sandbox CSP and 304; the order and removal; a hand-in with files and
 # a link through SEED_CMD (dev_seed --file / --link), the files of the work downloaded, another student's file 404.
+# And of session 4v.4b (materials, docs/ADMIN_API.md §5.11): a material linking a slug nobody has (a warning), a
+# new version linking another material, the same text gives no version, another slug is 422 slug_immutable, an
+# assignment linking a material and an unknown slug (a warning, the draft deleted), resolve, a section with a
+# subsection, the search in lower case Cyrillic, a file of a version (downloaded; not a file of the version before),
+# archive (twice: changed false), the sections deleted. The materials smoke-<time>-memo / -loops stay, archived:
+# a material is never deleted.
 # A worker with the capability problem_check must be running (judgectl worker list: CAPS).
 #   tools/smoke-admin-api.sh [BASE_URL] [ORIGIN]       defaults: http://127.0.0.1:8000 and $JUDGE_PUBLIC_ORIGIN
 # It asks for an admin (login, password, a TOTP code from the phone); ADMIN_LOGIN, ADMIN_PASSWORD and TOTP_CODE
@@ -559,6 +565,69 @@ send "archive the assignment"                         200 POST "/api/admin/items
 up "an archived item is read only"                    409 "$FITEM" "late.pdf" "$FD/report.pdf"
 check "item_archived"                                 "d['detail'] == 'item_archived'"
 send "archive $G5"                                    200 POST "/api/admin/groups/$G5ID/archive"
+
+echo "--- materials (4v.4): versions, links and their warnings, the fixed slug, sections, search, files, archive"
+MS="smoke-$STAMP"
+mup() {  # mup <label> <want> <material id> <percent-encoded name> <file>: a file of a new version, the raw body
+  c "$1" "$2" POST "/api/admin/materials/$3/attachments?name=$4" -H "$O" -H @"$D/cookie" -H @"$D/csrf" \
+    -H 'Content-Type: application/octet-stream' --data-binary @"$5"
+}
+send "a material linking a slug nobody has yet"       201 POST /api/admin/materials \
+     "{'slug': '$MS-memo', 'title': 'Памятка $STAMP', 'body_md': 'См. [[памятка:$MS-later]]'}"
+check "version 1, one warning, the link unknown"      "d['version'] == 1 and len(d['warnings']) == 1 and d['links'] == [{'slug': '$MS-later', 'status': 'unknown'}]"
+MEMO=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a material for every student"                  201 POST /api/admin/materials \
+     "{'slug': '$MS-loops', 'title': 'Циклы $STAMP', 'library': 'all_students'}"
+LOOPS=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a new text linking it"                          200 POST "/api/admin/materials/$MEMO/versions" "{'body_md': 'См. [[памятка:$MS-loops|циклы]]'}"
+check "version 2, no warnings"                        "d['version'] == 2 and d['created'] and d['warnings'] == []"
+send "the same text again"                            200 POST "/api/admin/materials/$MEMO/versions" "{'body_md': 'См. [[памятка:$MS-loops|циклы]]'}"
+check "no new version"                                "d['version'] == 2 and d['created'] is False"
+send "another slug"                                   422 PATCH "/api/admin/materials/$MEMO" "{'slug': '$MS-other'}"
+check "slug_immutable"                                "d['detail'] == 'slug_immutable'"
+send "a new title in place"                           200 PATCH "/api/admin/materials/$MEMO" "{'title': 'Памятка $STAMP (2)'}"
+check "changed title, still version 2"                "d['changed'] == ['title'] and d['material']['versions'] == 2"
+send "an assignment linking it and an unknown slug"   201 POST /api/admin/items \
+     "{'kind': 'assignment', 'title': 'Памятки $STAMP', 'grading': 'none', 'body_md': '[[памятка:$MS-memo]] [[памятка:$MS-nope]]'}"
+check "saved, one link warning"                       "len(d['link_warnings']) == 1 and '$MS-nope' in d['link_warnings'][0]"
+MITEM=$(val 'd["id"]' 2>/dev/null || echo 0)
+get "where the material is used"                      200 "/api/admin/materials/$MEMO/where"
+check "the assignment links it"                       "[i['id'] for i in d['linking_items']] == [$MITEM]"
+send "delete the draft assignment"                    204 POST "/api/admin/items/$MITEM/delete" "{'confirm_id': $MITEM}"
+send "resolve a text"                                 200 POST /api/admin/materials/resolve "{'text': '[[памятка:$MS-memo]] [[памятка:$MS-nope]] [[памятка:]]'}"
+check "ok and unknown, two warnings, nothing written" "[r['status'] for r in d['links']] == ['ok', 'unknown'] and len(d['warnings']) == 2"
+send "a section"                                      201 POST /api/admin/library/sections "{'title': 'Smoke $STAMP'}"
+SEC=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a subsection"                                   201 POST /api/admin/library/sections "{'title': 'Циклы', 'parent_id': $SEC}"
+SUB=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "no third level"                                 409 POST /api/admin/library/sections "{'title': 'Глубже', 'parent_id': $SUB}"
+check "section_too_deep"                              "d['detail'] == 'section_too_deep'"
+send "the material into the subsection"               200 POST "/api/admin/library/sections/$SUB/materials" "{'material_id': $LOOPS}"
+get "the library"                                     200 /api/admin/library
+check "the section, its subsection, the material"     "[[m['slug'] for m in x['materials']] for s in d['sections'] if s['id'] == $SEC for x in s['sections']] == [['$MS-loops']]"
+get "search in lower case Cyrillic"                   200 /api/admin/library -G --data-urlencode "q=циклы $STAMP"
+check "finds «Циклы $STAMP»"                          "[m['slug'] for m in d['materials']] == ['$MS-loops']"
+mup "a PDF into a new version"                        201 "$MEMO" "%D0%BF%D0%B0%D0%BC%D1%8F%D1%82%D0%BA%D0%B0.pdf" "$FD/report.pdf"
+check "version 3 with the file"                       "d['version'] == 3 and [a['name'] for a in d['attachments']] == ['памятка.pdf']"
+MATT=$(val 'd["attachments"][0]["id"]' 2>/dev/null || echo 0)
+mup "SVG"                                             422 "$MEMO" "x.svg" "$FD/x.svg"
+check "file_type_not_allowed"                         "d['detail'] == 'file_type_not_allowed'"
+get "download the file of the version"                200 "/api/admin/materials/$MEMO/attachments/$MATT"
+cmp -s "$D/body" "$FD/report.pdf" && echo "OK   the same bytes" || fail "the file of the material differs"
+[ "$(hdr x-content-type-options)" = nosniff ] && echo "OK   nosniff" || fail "nosniff of a material's file"
+get "not a file of version 2"                         404 "/api/admin/materials/$MEMO/attachments/$MATT?version=2"
+check "attachment_not_found"                          "d['detail'] == 'attachment_not_found'"
+get "the history"                                     200 "/api/admin/materials/$MEMO/versions"
+check "versions 3, 2, 1"                              "[v['version'] for v in d['items']] == [3, 2, 1]"
+send "archive the material"                           200 POST "/api/admin/materials/$MEMO/archive"
+check "changed"                                       "d['changed'] is True"
+send "archive it again"                               200 POST "/api/admin/materials/$MEMO/archive"
+check "not changed"                                   "d['changed'] is False"
+mup "an archived material is read only"               409 "$MEMO" "late.pdf" "$FD/report.pdf"
+check "material_archived"                             "d['detail'] == 'material_archived'"
+send "archive the other one"                          200 POST "/api/admin/materials/$LOOPS/archive"
+send "delete the subsection"                          200 POST "/api/admin/library/sections/$SUB/delete" "{'confirm_id': $SUB}"
+send "delete the section"                             200 POST "/api/admin/library/sections/$SEC/delete" "{'confirm_id': $SEC}"
 
 echo "--- the rest: archive, profile, system, audit, languages"
 send "archive the contest"                            200 POST "/api/admin/contests/$SLUG/archive"

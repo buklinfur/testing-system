@@ -13,7 +13,9 @@ sys.path[:0] = [str(ROOT), str(ROOT / "backend")]
 SOURCES = ["backend/app/classroom/access.py", "backend/app/classroom/grading.py", "backend/app/classroom/items.py",
            "backend/app/classroom/works.py", "backend/app/deadline_rules.py", "backend/app/extensions.py",
            "backend/app/classroom/comment_rules.py", "backend/app/classroom/comments.py",
-           "backend/app/classroom/attachment_rules.py", "backend/app/classroom/attachments.py"]
+           "backend/app/classroom/attachment_rules.py", "backend/app/classroom/attachments.py",
+           "backend/app/materials/rules.py", "backend/app/materials/service.py", "backend/app/materials/library.py",
+           "backend/app/materials/refs.py", "backend/app/materials/links.py"]
 # the refusals of comment_rules, written as _no("<code>"): the scan must see them (it once saw only
 # Decision(False, ...))
 COMMENT_RULE_CODES = {"comments_disabled", "comments_teacher_only", "not_your_comment", "rate_limited",
@@ -21,6 +23,9 @@ COMMENT_RULE_CODES = {"comments_disabled", "comments_teacher_only", "not_your_co
 # the refusals of attachment_rules, written as Refusal("<code>"[, index]): the scan must see them (before 4v.3
 # stage 5 it saw only Decision(False, ...), _no("...") and FeedError, and missed these)
 REFUSAL_CODES = {"too_many_files", "too_many_attachments", "duplicate_name", "submission_too_large"}
+# codes of materials/rules.py handed to a shared check as an argument (check_title(title, max, "<code>")): the scan
+# sees only calls that raise, so the test requires the literal in the file instead
+ARGUMENT_CODES = {"backend/app/materials/rules.py": {"section_title_invalid"}}
 # codes the endpoints raise themselves (ApiError) rather than the services
 API_ONLY = {"work_not_found", "confirmation_mismatch", "due_at_invalid", "available_from_invalid", "user_not_found",
             "group_not_found", "contest_not_found", "material_not_found"}
@@ -75,11 +80,16 @@ def service_codes() -> set:
 @unittest.skipUnless(HAVE_APP, "needs fastapi")
 class FeedStatusTests(unittest.TestCase):
     def test_every_code_has_a_status_and_none_is_stale(self):
-        codes = service_codes() | set(grading.REFUSALS.values()) | API_ONLY
+        for rel, given in ARGUMENT_CODES.items():
+            source = (ROOT / rel).read_text(encoding="utf-8")
+            for code in given:
+                self.assertIn(f'"{code}"', source)
+        codes = service_codes() | set(grading.REFUSALS.values()) | API_ONLY | set().union(*ARGUMENT_CODES.values())
         self.assertGreater(len(codes), 40)  # the scan really sees the services
         for new in ("work_not_found", "missing_needs_item", "score_invalid", "thread_not_found", "reason_too_long",
                     "file_empty", "link_title_invalid", "attachment_order_invalid", "attachment_not_found",
-                    "file_not_found"):
+                    "file_not_found", "slug_immutable", "section_too_deep", "order_invalid", "version_not_found",
+                    "body_too_long", "section_not_empty"):
             self.assertIn(new, codes)
         self.assertLessEqual(COMMENT_RULE_CODES, service_codes())
         self.assertLessEqual(REFUSAL_CODES, service_codes())

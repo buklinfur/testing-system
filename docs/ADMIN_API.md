@@ -428,6 +428,89 @@ D-078…D-082). Отдача — `content_files.file_response(…, request=reque
 Аудит: `item.attachment_add`, `item.attachment_remove`, `item.attachment_order` (без содержимого) от имени админа
 сессии.
 
+### 5.11. Библиотека материалов и Справочник
+
+Те же сервисы, что `judgectl material …` / `section …` (`app/materials/service.py`, `library.py`, `refs.py`;
+[`CLASSROOM.md`](CLASSROOM.md) §11, D-083…D-087). Материал — по id (int4, больше — 422 `invalid_request`), раздел — по
+id. Ученических эндпоинтов здесь нет (4б.2): админ видит всё, архивное тоже, а ссылки разрешаются как для админа —
+`ok` / `archived` / `unknown` (ученику 4б.2 отдаст только `available`, не различая «нет» и «закрыт»). Названия, тексты,
+имена файлов и URL — недоверенный текст (§4.1), уходят как есть.
+
+**Материалы и версии**
+
+| Метод и путь | Тело / параметры | Ответ |
+|---|---|---|
+| `GET /materials` | `?archived=true` — и архивные; `cursor`, `limit` | `{items: [сводка], next_cursor}`, новые сверху |
+| `POST /materials` | `{slug, title, body_md?, library?: none \| all_students \| groups, group_ids?}` | 201: материал как `GET` и `warnings` |
+| `GET /materials/{id}` | — | последняя версия: `version`, `body_md`, `attachments`, `links` (разрешённые ссылки текста), `link_warnings`; сводка: `slug`, `title`, `library`, `groups`, `sections`, `versions` (число), `archived_at` |
+| `PATCH /materials/{id}` | `{title?, library?, slug?}` — только присланные ключи | `{material: сводка, changed}`; другой slug — **422 `slug_immutable`** (тот же — без изменений); `null` и другие ключи — 422 `invalid_request` |
+| `POST /materials/{id}/versions` | `{body_md}` | версия (ниже); тот же текст — `created: false` и последняя версия |
+| `GET /materials/{id}/versions` | — | `{items: [{version, created_at, created_by, body_chars, attachments}]}`, новые сверху |
+| `GET /materials/{id}/versions/{n}` | — | `{slug, version, created_at, created_by, body_md, attachments, links}`; нет — 404 `version_not_found` |
+| `PUT /materials/{id}/groups` | `{group_ids}` — ровно эти | сводка; новая группа — неархивная (409 `group_archived`), нет — 404 `group_not_found` |
+| `POST /materials/{id}/archive` / `unarchive` | — | `{material, changed}`; повтор — `changed: false`, не ошибка |
+| `GET /materials/{id}/where` | — | `{material_items, linking_items, problems: ["slug@v"], materials: [slug]}` |
+| `POST /materials/resolve` | `{text}` | `{links: [{slug, status, id?, title?}], warnings}`; ничего не пишет |
+
+Версия в ответе изменения: `{material_id, slug, version, created, warnings, attachments}`. **Каждое изменение
+содержимого — новая версия**: текст, файл, ссылка, удаление, порядок; вложения копируются строками (новые id, общие
+блобы). Название и аудитория библиотеки меняются на месте (`PATCH`), без версии. Ссылки `[[памятка:slug]]` —
+неверная запись, неизвестный slug, архивный материал — никогда не отказ, а `warnings` / `link_warnings`; те же поля —
+у элемента ленты (`link_warnings` в `GET /items/{id}`).
+
+**Вложения версии** — по образцу §5.10:
+
+| Метод и путь | Тело / параметры | Ответ |
+|---|---|---|
+| `POST /materials/{id}/attachments?name=ИМЯ` | сырое тело, `application/octet-stream` | 201: новая версия с файлом в конце |
+| `POST /materials/{id}/links` | `{url, title?}` | 201: новая версия со ссылкой в конце |
+| `PUT /materials/{id}/attachments/order` | `{ids}` — все вложения **последней** версии по разу | версия (`created: false` — тот же порядок); иначе 422 `attachment_order_invalid` с `missing`, `extra`, `repeated` |
+| `GET /materials/{id}/attachments/{att_id}` | `?version=N` — файл старой версии | файл (`file_response`, [`FILES.md`](FILES.md)); не файл этой версии (другой версии, ссылка, нет id) — 404 `attachment_not_found`; нет версии — 404 `version_not_found` |
+| `POST /materials/{id}/attachments/{att_id}/delete` | — | новая версия без вложения; не вложение последней версии — 404 `attachment_not_found`. Блоб остаётся у старых версий |
+
+Загрузка — точно как в §5.10: до первого байта тела — `Origin` → сессия и CSRF → `Content-Type` (415) → `?name=` (422)
+→ материал (404 `material_not_found`) и то, что решается без тела (`materials.precheck_file`: архивный — 409
+`material_archived`, лимит — 409 `too_many_attachments`, тип по имени и повтор имени в последней версии — 422), затем
+`rollback`. Тело — потоком в `<корень блобов>/tmp`, сверх `JUDGE_ATTACHMENT_MAX_MB` — 413 `too_large`. Строку материала
+`FOR UPDATE` берёт только сервис `add_file` после тела и решает всё заново (архив, повтор имени, лимит, тип по
+содержимому). Путь `POST /api/admin/materials/<id>/attachments` освобождён от лимита JSON шаблоном
+`routes.UPLOAD_PATTERNS` (id без ведущего нуля, до 10 цифр); соседние пути (`/links`, `/attachments/order`,
+`/versions`, со слэшем на конце, другой метод) — нет (тест `test_http_body_units`). Лимиты — те же, что у вложений
+элемента (`JUDGE_ATTACHMENT_MAX_MB`, `JUDGE_ITEM_ATTACHMENTS_MAX`).
+
+**Справочник**
+
+| Метод и путь | Тело / параметры | Ответ |
+|---|---|---|
+| `GET /library` | `?q=` — поиск (до 200 символов) | `{sections: [{id, title, materials, sections}], unsorted}` — все разделы и материалы (архивные с `archived: true`); с `q` — `{query, materials}`: по названию без учёта регистра (кириллица тоже), `%`, `_`, `\` — буквально |
+| `POST /library/sections` | `{title, parent_id?}` | 201: `{id, title, parent_id}` в конце уровня; под подразделом — 409 `section_too_deep` |
+| `PUT /library/sections/order` | `{parent_id?, ids}` — все разделы уровня по разу (`parent_id` нет / `null` — верхний) | `{parent_id, ids}`; иначе 422 `order_invalid` с `missing`, `extra`, `repeated` |
+| `PATCH /library/sections/{id}` | `{title}` | `{id, title, parent_id, changed}`; 422 `section_title_invalid` |
+| `POST /library/sections/{id}/move` | `{parent_id}` — раздел верхнего уровня или `null` | `{…, changed}`; под себя — 422 `section_invalid`; под подраздел или раздел с подразделами под другой — 409 `section_too_deep` |
+| `POST /library/sections/{id}/delete` | `{confirm_id}` — тот же id (422 `confirmation_mismatch`) | что удалено и slug материалов, которые в нём были; с подразделами — 409 `section_not_empty` |
+| `POST /library/sections/{id}/materials` | `{material_id}` | `{section_id, material_id, changed}` — в конец раздела; архивный — 409 `material_archived` |
+| `PUT /library/sections/{id}/materials/order` | `{ids}` — id материалов раздела по разу | `{section_id, ids}`; иначе 422 `order_invalid` |
+| `POST /library/sections/{id}/materials/{material_id}/delete` | — | `{…, changed}`: убрать из раздела (материал остаётся) |
+
+**Коды отказов** (таблица `STATUS`; сканер теста полноты читает `materials/*.py`, а код, переданный правилу
+аргументом, — `section_title_invalid` — тест требует литералом в `materials/rules.py`):
+
+| Статус | Коды |
+|---|---|
+| 404 | `material_not_found`, `version_not_found`, `section_not_found`, `attachment_not_found`, `group_not_found` |
+| 422 | `slug_invalid`, `slug_immutable`, `title_invalid`, `body_invalid` (NUL), `body_too_long` (> 100 000 символов), `library_invalid`, `section_title_invalid`, `section_invalid`, `order_invalid`, `attachment_order_invalid`, коды файлов и ссылок §5.10, `confirmation_mismatch`, `invalid_request` (в том числе одиночный суррогат в JSON) |
+| 409 | `slug_taken` (архивным тоже), `material_archived`, `section_too_deep`, `section_not_empty`, `group_archived`, `too_many_attachments` |
+| 413 / 415 | `too_large`, `unsupported_media_type` |
+
+Защитный (`DEFENSIVE`): `material_invalid` — отказ `update_material` для поля, которое он не меняет; `PATCH`
+отвергает любой ключ, кроме `title`, `library`, `slug`, раньше (`invalid_request`). `NO_ROUTE_YET` пуст.
+
+Аудит: `material.create`, `material.update`, `material.version`, `material.attachment_add`,
+`material.attachment_remove`, `material.attachment_order`, `material.library_groups`, `material.archive`,
+`material.unarchive`, `library.section_create`, `library.section_rename`, `library.section_move`,
+`library.section_delete`, `library.section_order`, `library.place`, `library.unplace`, `library.order` — без текста
+(длины, имена, sha256 и размер, URL и заголовки) от имени админа сессии.
+
 ## 6. Проверка на работающем приложении
 
 `tools/smoke-admin-api.sh [BASE_URL] ORIGIN` — curl-сценарий проверки 4а.3 и 4а.4 через этот API (для 4а.4: загруженные задачи ждут `ready` до 120 с, пакет `tests/problems/check-broken-checker` получает `failed` с логом компиляции, закрепить его нельзя, `recheck` создаёт одну проверку и заканчивается `ready`; нужен работающий воркер с `problem_check`): класс из CSV со столбцом
@@ -455,7 +538,15 @@ NUL — `comment_invalid`, одиночный суррогат — 422 `invalid_
 файл — 404; порядок и неполный порядок, удаление; с `SEED_CMD` (`dev_seed --item … --file … --link …`): `.exe`
 ученика — отказ, сдача текста, двух файлов и ссылки, карточка работы с файлами, скачивание `main.py` (304) и
 `answer.md`, тот же файл как файл другого ученика или под другим элементом — 404 `file_not_found`; архивный элемент —
-409. Файлы для `dev_seed` лежат в отдельном каталоге 755 (их читает `judge` через `seed-as-judge.sh`). Спрашивает админа и код
+409. Блок материалов 4в.4 (§5.11, после файлов): материал со ссылкой на ещё не существующий slug — предупреждение,
+ссылка `unknown`; новая версия со ссылкой на другой материал — без предупреждений; тот же текст — `created: false`;
+другой slug — 422 `slug_immutable`; название — на месте, без версии; задание со ссылками на материал и на неизвестный
+slug — одно `link_warnings`, `where` его видит (черновик затем удаляется); `resolve` — `ok` и `unknown`, два
+предупреждения; раздел с подразделом, третий уровень — 409 `section_too_deep`; материал в подразделе виден в
+`GET /library`; поиск «циклы <время>» в нижнем регистре находит «Циклы <время>»; PDF в новую версию (версия 3), SVG —
+422; файл скачивается теми же байтами с `nosniff`, как файл версии 2 — 404; история 3, 2, 1; архив дважды
+(`changed` true, затем false), загрузка в архивный — 409; разделы удаляются. Остаются в базе архивными материалы
+`smoke-<время>-memo` и `-loops` (материал не удаляется) и их блобы. Файлы для `dev_seed` лежат в отдельном каталоге 755 (их читает `judge` через `seed-as-judge.sh`). Спрашивает админа и код
 TOTP (или `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `TOTP_CODE` из окружения); секреты передаются curl только через файлы во
 временном каталоге 700 и не печатаются. Всё создаётся с именами `smoke-<время>`, повторный запуск не мешает
 прежнему. Код выхода — число провалов.
