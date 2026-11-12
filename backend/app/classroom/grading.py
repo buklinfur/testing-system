@@ -74,8 +74,9 @@ def next_status(status: Optional[str], event: str) -> Transition:
     raise ValueError(f"unknown status or event: {key}")
 
 
-# plain decimal notation, at most two decimals (the columns are Numeric(8, 2)): no exponent, NaN or Infinity
-POINTS_RE = re.compile(r"-?[0-9]{1,9}(?:\.[0-9]{1,2})?")
+# plain decimal notation as the columns hold it - Numeric(8, 2): at most 6 digits before the point and two after it
+# (999999.99); no exponent, NaN or Infinity. A longer number would reach the database and fail there (D-088).
+POINTS_RE = re.compile(r"-?[0-9]{1,6}(?:\.[0-9]{1,2})?")
 
 
 def parse_points(value) -> Optional[Decimal]:

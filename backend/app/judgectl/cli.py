@@ -5,6 +5,8 @@ import argparse
 import sys
 from typing import Optional
 
+from sqlalchemy.exc import DataError
+
 from ..auth.audit import cli_actor
 from ..auth.logins import LoginError
 from ..auth.totp import TotpConfigError
@@ -18,7 +20,7 @@ from ..groups import GroupError
 from ..classroom.items import FeedError
 from . import (accounts, attachments, comments, contests, extensions, feed, groups as group_cmds, materials, ops,
                problems, submissions)
-from .core import CliError, Context, UsageError, terminal_text
+from .core import CliError, Context, UsageError, int4, terminal_text
 from ..auth.csvimport import CsvImportError
 
 
@@ -48,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="no confirmation (scripts)")
     p = command(admin, "failures", accounts.admin_failures, "failed logins of an admin (kind, time, IP)", json=True)
     p.add_argument("login")
-    p.add_argument("--last", type=int, default=20)
+    p.add_argument("--last", type=int4, default=20)
     for name, func, text in (("disable", accounts.admin_disable, "disable an admin (ends all sessions)"),
                              ("enable", accounts.admin_enable, "enable an admin again"),
                              ("reset-password", accounts.admin_reset_password,
@@ -71,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = command(user, "imports", accounts.user_imports, "past `user import` runs with their ids", json=True)
     p = command(user, "import-rollback", accounts.user_import_rollback,
                 "delete every user of one import, if none of them has logged in", json=True)
-    p.add_argument("import_id", type=int)
+    p.add_argument("import_id", type=int4)
     p.add_argument("--yes", action="store_true", help="no confirmation (scripts)")
     p = command(user, "delete", accounts.user_delete, "delete a student created by mistake (only without traces)",
                 json=True)
@@ -79,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="no confirmation (scripts)")
     p = command(user, "failures", accounts.user_failures, "failed logins of a login, even an unknown one", json=True)
     p.add_argument("login")
-    p.add_argument("--last", type=int, default=20)
+    p.add_argument("--last", type=int4, default=20)
     p = command(user, "list", accounts.user_list, "students (active ones unless --all)", json=True)
     p.add_argument("--all", action="store_true", help="include disabled students")
     command(user, "reset-password", accounts.user_reset_password,
@@ -105,12 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
     command(queue, "status", ops.queue_status, "load snapshot: queue length, workers, expected wait", json=True)
     command(queue, "reap", ops.queue_reap, "return jobs of lost workers to the queue now", json=True)
     p = command(queue, "judgements", ops.queue_judgements, "newest judgements first", json=True)
-    p.add_argument("--last", type=int, default=20)
+    p.add_argument("--last", type=int4, default=20)
     p = command(queue, "events", ops.queue_events, "newest queue events first", json=True)
-    p.add_argument("--last", type=int, default=30)
+    p.add_argument("--last", type=int4, default=30)
     p = command(queue, "rejudge", ops.queue_rejudge, "deprecated: judgectl submission rejudge", json=True)
-    p.add_argument("--submission", type=int)
-    p.add_argument("--contest-problem", type=int)
+    p.add_argument("--submission", type=int4)
+    p.add_argument("--contest-problem", type=int4)
     p.add_argument("--verdicts", default="", help="with --contest-problem: only these current verdicts, e.g. WA,TL")
 
     worker = groups.add_parser("worker", help="judging workers").add_subparsers(dest="cmd", required=True,
@@ -139,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
             "check a version again with a worker (<slug>@<version>; the status changes only when it ends)",
             json=True).add_argument("ref")
     p = command(problem, "checks", problems.problem_checks, "the newest checks of problem versions", json=True)
-    p.add_argument("--last", type=int, default=20)
+    p.add_argument("--last", type=int4, default=20)
     command(problem, "archive", problems.problem_archive, "archive: no more imports or pins").add_argument("slug")
     command(problem, "unarchive", problems.problem_unarchive, "undo archive").add_argument("slug")
 
@@ -156,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = command(contest, "pin", contests.contest_pin, "pin another (ready) version of a problem", json=True)
     p.add_argument("contest")
     p.add_argument("label")
-    p.add_argument("version", type=int)
+    p.add_argument("version", type=int4)
     choice = p.add_mutually_exclusive_group(required=True)
     choice.add_argument("--rejudge", dest="rejudge", action="store_true", help="rejudge every submission of it")
     choice.add_argument("--no-rejudge", dest="rejudge", action="store_false", help="keep the old results")
@@ -181,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = command(extension, "list", extensions.extension_list, "extensions of a contest (or of one problem)", json=True)
     p.add_argument("contest")
     p.add_argument("label", nargs="?")
-    command(extension, "remove", extensions.extension_remove, "remove an extension by id").add_argument("id", type=int)
+    command(extension, "remove", extensions.extension_remove, "remove an extension by id").add_argument("id", type=int4)
 
     group = groups.add_parser("group", help="groups (classes) that contests are addressed to").add_subparsers(
         dest="cmd", required=True, metavar="COMMAND")
@@ -206,14 +208,14 @@ def build_parser() -> argparse.ArgumentParser:
     submission = groups.add_parser("submission", help="submissions").add_subparsers(dest="cmd", required=True,
                                                                                     metavar="COMMAND")
     command(submission, "show", submissions.submission_show, "one submission with every judgement and test",
-            json=True).add_argument("id", type=int)
+            json=True).add_argument("id", type=int4)
     p = command(submission, "rejudge", submissions.submission_rejudge,
                 "rejudge: --id N | --contest <slug> --problem <label> | --contest-problem-id N | "
                 "--problem-version <slug>@<v>", json=True)
-    p.add_argument("--id", type=int)
+    p.add_argument("--id", type=int4)
     p.add_argument("--contest")
     p.add_argument("--problem", help="the label in the contest")
-    p.add_argument("--contest-problem-id", type=int)
+    p.add_argument("--contest-problem-id", type=int4)
     p.add_argument("--problem-version", help="<slug>@<version>: every contest problem pinned to it")
     p.add_argument("--verdicts", default="", help="only submissions whose current verdict is one of these, e.g. WA,TL")
     p.add_argument("--dry-run", action="store_true", help="only count what would be rejudged")
@@ -230,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     late = p.add_mutually_exclusive_group()
     late.add_argument("--late", dest="late", action="store_true", default=None, help="only late ones")
     late.add_argument("--not-late", dest="late", action="store_false", help="only the ones on time")
-    p.add_argument("--last", type=int, default=50)
+    p.add_argument("--last", type=int4, default=50)
 
     item, work = feed.add_parsers(groups, command)
     attachments.add_parsers(item, work, command)
@@ -266,6 +268,9 @@ def main(argv: Optional[list] = None, ctx: Optional[Context] = None) -> int:
     except (CliError, UserError, LoginError, TotpConfigError, CsvImportError, PackageError, ContestError,
             ContestSpecError, TimezoneError, GroupError) as exc:
         print(f"judgectl: {terminal_text(str(exc), multiline=True)}", file=ctx.err)
+        return 1
+    except DataError:  # a value without bounds reached the database: an error of judgectl itself (D-088)
+        print("judgectl: the database refused a value (out of range or too long)", file=ctx.err)
         return 1
     except (KeyboardInterrupt, EOFError):
         print("\njudgectl: interrupted", file=ctx.err)

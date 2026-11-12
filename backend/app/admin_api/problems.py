@@ -22,6 +22,7 @@ from ..auth_api import get_db, now
 from ..blobstore import BlobStore
 from ..content_files import file_response
 from ..http_body import require_type, save_body
+from ..ids import VersionNo
 from ..jsonable import plain
 from .. import problem_checks as checks
 from ..models import Problem
@@ -93,13 +94,13 @@ def get_problem(slug: str, db: Session = Depends(get_db)):
 
 
 @router.get("/problems/{slug}/versions/{number}")
-def get_version(slug: str, number: int, db: Session = Depends(get_db)):
+def get_version(slug: str, number: VersionNo, db: Session = Depends(get_db)):
     problem = _problem(db, slug)
     return plain(catalog.version_detail(db, problem, _version(db, problem, number)))
 
 
 @router.post("/problems/{slug}/versions/{number}/recheck")
-def recheck(slug: str, number: int, request: Request, db: Session = Depends(get_db),
+def recheck(slug: str, number: VersionNo, request: Request, db: Session = Depends(get_db),
             actor: audit.Actor = Depends(admin_actor)):
     """Check the version again with a worker (D-054). 202: queued; 200: a check is already queued or running
     (nothing new). The status of the version changes only when the check ends."""
@@ -117,7 +118,7 @@ def recheck(slug: str, number: int, request: Request, db: Session = Depends(get_
 
 
 @router.get("/problems/{slug}/versions/{number}/files/{path:path}")
-def get_file(slug: str, number: int, path: str, request: Request, db: Session = Depends(get_db)):
+def get_file(slug: str, number: VersionNo, path: str, request: Request, db: Session = Depends(get_db)):
     """One file of the package (a test, the statement, a picture), looked up only among the version's files."""
     problem = _problem(db, slug)
     version = _version(db, problem, number)

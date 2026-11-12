@@ -45,7 +45,7 @@
       "description": "Absent: every language enabled in the system."
     },
     "submit_cooldown_sec": { "type": "integer", "minimum": 0, "maximum": 3600, "default": 15 },
-    "max_submissions_per_problem": { "type": ["integer", "null"], "minimum": 1 },
+    "max_submissions_per_problem": { "type": ["integer", "null"], "minimum": 1, "maximum": 2147483647 },
     "tests_after_end": { "type": "boolean", "default": false },
     "plagiarism_enabled": { "type": "boolean", "default": false },
     "problems": { "type": "array", "items": { "$ref": "#/$defs/problem" } }
@@ -65,7 +65,7 @@
     },
     "duration": {
       "type": "string",
-      "pattern": "^(?=\\d)(\\d+h)?(\\d+m)?$",
+      "pattern": "^(?=\\d)(\\d{1,5}h)?(\\d{1,6}m)?$",
       "description": "e.g. 90m, 1h30m, 2h; must be positive."
     },
     "problem": {
@@ -76,7 +76,7 @@
         "label": { "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,7}$" },
         "problem": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$", "description": "slug of the problem" },
         "version": {
-          "type": "integer", "minimum": 1,
+          "type": "integer", "minimum": 1, "maximum": 2147483647,
           "description": "Pinned version (must be ready). Absent: keep the current pin; when the problem is added, the latest ready version."
         },
         "points": {

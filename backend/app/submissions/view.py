@@ -16,6 +16,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.orm import Session, aliased
 
 from ..blobstore import BlobStore
+from ..ids import parse_id
 from ..models import (Contest, ContestProblem, Group, GroupMember, Judgement, JudgementStatus, Problem, ProblemVersion,
                       Submission, TestCase, TestGroup, TestResult, User, Verdict, Worker)
 
@@ -69,10 +70,11 @@ def base_query():
 
 
 def _version(db: Session, ref: str) -> ProblemVersion:
-    slug, _, number = (ref or "").partition("@")
+    slug, _, text = (ref or "").partition("@")
+    number = parse_id(text)
     version = db.execute(select(ProblemVersion).join(Problem, Problem.id == ProblemVersion.problem_id)
-                         .where(Problem.slug == slug, ProblemVersion.version == int(number))
-                         ).scalar_one_or_none() if number.isdigit() else None
+                         .where(Problem.slug == slug, ProblemVersion.version == number)
+                         ).scalar_one_or_none() if number is not None else None
     if version is None:
         raise ViewError(f"no problem version {ref!r} (write <slug>@<version>, e.g. sum@2)", "version_not_found", 404)
     return version

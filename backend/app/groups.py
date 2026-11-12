@@ -18,6 +18,7 @@ from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from .auth import audit
+from .ids import parse_id
 from .models import (Contest, ContestGroup, DeadlineExtension, FeedItem, FeedItemAudience, Group, GroupMember, Material,
                      MaterialGroup, Role, User)
 
@@ -82,7 +83,8 @@ def get_group(db: Session, ref: str) -> Group:
     """A group by `#id`, or by name (ignoring case): the group not archived, else the only archived one."""
     ref = (ref or "").strip()
     if ref.startswith("#") and ref[1:].isdigit():
-        group = db.get(Group, int(ref[1:]))
+        number = parse_id(ref[1:])
+        group = db.get(Group, number) if number is not None else None
         if group is None:
             raise GroupError(f"no group {ref}", "group_not_found")
         return group

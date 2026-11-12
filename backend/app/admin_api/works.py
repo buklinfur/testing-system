@@ -20,9 +20,9 @@ from ..auth_api import Current, get_db, now
 from ..classroom import works
 from ..classroom.items import FeedError
 from ..content_files import file_response
+from ..ids import Id
 from ..models import SubmissionFileKind
 from ..jsonable import plain
-from .attachments import DbId
 from .deps import Page, admin_actor, admin_session, page, users_by_id
 from .feed import POINTS, Body, blobs, get_group, get_item, get_user, refused
 
@@ -45,7 +45,7 @@ class ReturnBody(Body):
 
 
 class ReleaseBody(Body):
-    user_ids: Optional[list[int]] = Field(None, min_length=1, max_length=200)
+    user_ids: Optional[list[Id]] = Field(None, min_length=1, max_length=200)
 
 
 def _card(db: Session, request: Request, item, student) -> dict:
@@ -57,7 +57,7 @@ def _card(db: Session, request: Request, item, student) -> dict:
 
 
 @router.get("/works")
-def review_queue(request: Request, item_id: Optional[int] = None, group_id: Optional[int] = None,
+def review_queue(request: Request, item_id: Optional[Id] = None, group_id: Optional[Id] = None,
                  status: Optional[QUEUE_STATUS] = None, late: Optional[bool] = None, missing: Optional[bool] = None,
                  pg: Page = Depends(page), db: Session = Depends(get_db)):
     """With item_id: every student addressed now and everyone with work on it (assigned: no work yet), the cursor is
@@ -74,7 +74,7 @@ def review_queue(request: Request, item_id: Optional[int] = None, group_id: Opti
 
 
 @router.get("/items/{item_id}/works/{user_id}")
-def work_card(item_id: int, user_id: int, request: Request, db: Session = Depends(get_db)):
+def work_card(item_id: Id, user_id: Id, request: Request, db: Session = Depends(get_db)):
     """Every hand-in with its text answer, every review (unreleased grades too), the cached status, what the student
     sees, missing. An addressee without work: status assigned, no events (a grade can be given from here). 404
     work_not_found: not addressed and no work on this item."""
@@ -82,7 +82,7 @@ def work_card(item_id: int, user_id: int, request: Request, db: Session = Depend
 
 
 @router.get("/items/{item_id}/works/{user_id}/files/{file_id}")
-def work_file(item_id: DbId, user_id: DbId, file_id: DbId, request: Request, db: Session = Depends(get_db),
+def work_file(item_id: Id, user_id: Id, file_id: Id, request: Request, db: Session = Depends(get_db),
               cur: Current = Depends(admin_session)):
     """One file of the work of (item, student) - an upload or the text answer answer.md (the ids are in the card:
     events[].files) - served by content_files.file_response (docs/FILES.md: the type by name and content, ETag, 304)
@@ -98,7 +98,7 @@ def work_file(item_id: DbId, user_id: DbId, file_id: DbId, request: Request, db:
 
 
 @router.post("/items/{item_id}/works/{user_id}/grade")
-def grade(item_id: int, user_id: int, body: GradeBody, request: Request, db: Session = Depends(get_db),
+def grade(item_id: Id, user_id: Id, body: GradeBody, request: Request, db: Session = Depends(get_db),
           actor: audit.Actor = Depends(admin_actor)):
     item, student = get_item(db, item_id), get_user(db, user_id)
     try:
@@ -112,7 +112,7 @@ def grade(item_id: int, user_id: int, body: GradeBody, request: Request, db: Ses
 
 
 @router.post("/items/{item_id}/works/{user_id}/return")
-def return_work(item_id: int, user_id: int, body: ReturnBody, request: Request, db: Session = Depends(get_db),
+def return_work(item_id: Id, user_id: Id, body: ReturnBody, request: Request, db: Session = Depends(get_db),
                 actor: audit.Actor = Depends(admin_actor)):
     """Back for rework with a comment: the student sees it at once and may hand in again."""
     item, student = get_item(db, item_id), get_user(db, user_id)
@@ -126,7 +126,7 @@ def return_work(item_id: int, user_id: int, body: ReturnBody, request: Request, 
 
 
 @router.post("/items/{item_id}/release")
-def release(item_id: int, body: ReleaseBody, request: Request, db: Session = Depends(get_db),
+def release(item_id: Id, body: ReleaseBody, request: Request, db: Session = Depends(get_db),
             actor: audit.Actor = Depends(admin_actor)):
     """Release the current grades of every work of the item, or of these students: one result per student -
     released, nothing_to_release (no work or not graded) or already_released. Unknown user_ids: 404 before

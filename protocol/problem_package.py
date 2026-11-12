@@ -23,6 +23,8 @@ from typing import Mapping, Optional
 from .languages import SYSTEM_LANGUAGES, language_of
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "problem.schema.json"
+# the most points a submission can score: test_groups.points and judgements.score are Numeric(8, 2) (D-088)
+POINTS_MAX = 999999.99
 DESCRIPTOR = "problem.yaml"
 JUNK_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 JUNK_DIRS = frozenset({"__MACOSX", ".git", "__pycache__"})
@@ -365,6 +367,9 @@ def _semantics(data: dict, files: list, errors: list, warnings: list):
         if g.get("show_in_statement") and not all(t.answer for t in group.tests):
             warnings.append(f"group '{g['name']}' is shown in the statement but has no .out files: "
                             "only inputs will be shown")
+    if total_points > POINTS_MAX:
+        errors.append(f"total points of groups is {total_points:.2f}: at most {POINTS_MAX:.2f} "
+                      "(the score of a submission)")
     if groups_raw and total_points not in (0, 100):
         warnings.append(f"total points of groups is {total_points:g}, usually 100")
 
@@ -379,6 +384,11 @@ def _semantics(data: dict, files: list, errors: list, warnings: list):
             for c in q["correct"]:
                 if c not in oids:
                     errors.append(f"question '{q['id']}': correct option '{c}' does not exist")
+    if ptype in ("choice", "text_answer"):
+        items = data["questions"] if ptype == "choice" else data["answers"]
+        quiz_total = sum(item.get("points", 1) for item in items)
+        if quiz_total > POINTS_MAX:
+            errors.append(f"total points is {quiz_total:.2f}: at most {POINTS_MAX:.2f} (the score of a submission)")
     if ptype == "text_answer":
         aids = [a["id"] for a in data["answers"]]
         if len(aids) != len(set(aids)):

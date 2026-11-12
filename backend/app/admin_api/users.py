@@ -21,6 +21,7 @@ from ..auth import audit, csvimport, ratelimit, users
 from ..auth.users import UserError
 from ..auth_api import get_db, now
 from ..http_body import require_type, save_body
+from ..ids import Count, Id
 from ..models import AuditLog, Role, User
 from ..jsonable import plain
 from .deps import Page, admin_actor, page, paginate
@@ -57,7 +58,7 @@ class ConfirmLogin(Body):
 
 
 class ConfirmImport(Body):
-    confirm_import_id: int
+    confirm_import_id: Count  # compared with the path, never looked up
 
 
 class IpBody(Body):
@@ -65,7 +66,7 @@ class IpBody(Body):
 
 
 class QrBody(Body):
-    user_ids: list[int] = Field(min_length=1, max_length=200)
+    user_ids: list[Id] = Field(min_length=1, max_length=200)
 
 
 def refused(exc: UserError) -> ApiError:
@@ -121,12 +122,12 @@ def list_imports(pg: Page = Depends(page), db: Session = Depends(get_db)):
 
 
 @router.get("/users/{user_id}")
-def get_user(user_id: int, request: Request, db: Session = Depends(get_db)):
+def get_user(user_id: Id, request: Request, db: Session = Depends(get_db)):
     return _out(db, request, _user(db, user_id))
 
 
 @router.get("/users/{user_id}/failures")
-def user_failures(user_id: int, request: Request, limit: int = Query(20, ge=1, le=200), db: Session = Depends(get_db)):
+def user_failures(user_id: Id, request: Request, limit: int = Query(20, ge=1, le=200), db: Session = Depends(get_db)):
     user = _user(db, user_id)
     at, settings = now(request), request.app.state.settings.auth
     return plain({"login": user.login, "counting": ratelimit.current_failures(db, settings, at, user.login),
@@ -186,7 +187,7 @@ async def import_class(request: Request, dry_run: bool = False, db: Session = De
 
 
 @router.post("/users/imports/{import_id}/rollback")
-def rollback_import(import_id: int, body: ConfirmImport, request: Request, db: Session = Depends(get_db),
+def rollback_import(import_id: Id, body: ConfirmImport, request: Request, db: Session = Depends(get_db),
                     actor: audit.Actor = Depends(admin_actor)):
     if body.confirm_import_id != import_id:
         raise ApiError(422, "confirmation_mismatch", "confirm_import_id must repeat the id of the import")
@@ -200,7 +201,7 @@ def rollback_import(import_id: int, body: ConfirmImport, request: Request, db: S
 
 # ----------------------------------------------------------------------------- one student
 @router.post("/users/{user_id}/reset-password")
-def reset_password(user_id: int, request: Request, db: Session = Depends(get_db),
+def reset_password(user_id: Id, request: Request, db: Session = Depends(get_db),
                    actor: audit.Actor = Depends(admin_actor)):
     user = _student(db, user_id)
     password = users.reset_password(db, actor, user, now(request))
@@ -209,7 +210,7 @@ def reset_password(user_id: int, request: Request, db: Session = Depends(get_db)
 
 
 @router.post("/users/{user_id}/disable")
-def disable(user_id: int, request: Request, db: Session = Depends(get_db), actor: audit.Actor = Depends(admin_actor)):
+def disable(user_id: Id, request: Request, db: Session = Depends(get_db), actor: audit.Actor = Depends(admin_actor)):
     user = _student(db, user_id)
     users.set_active(db, actor, user, False, now(request))
     db.commit()
@@ -217,7 +218,7 @@ def disable(user_id: int, request: Request, db: Session = Depends(get_db), actor
 
 
 @router.post("/users/{user_id}/enable")
-def enable(user_id: int, request: Request, db: Session = Depends(get_db), actor: audit.Actor = Depends(admin_actor)):
+def enable(user_id: Id, request: Request, db: Session = Depends(get_db), actor: audit.Actor = Depends(admin_actor)):
     user = _student(db, user_id)
     users.set_active(db, actor, user, True, now(request))
     db.commit()
@@ -225,7 +226,7 @@ def enable(user_id: int, request: Request, db: Session = Depends(get_db), actor:
 
 
 @router.put("/users/{user_id}/login")
-def set_login(user_id: int, body: NewLogin, request: Request, db: Session = Depends(get_db),
+def set_login(user_id: Id, body: NewLogin, request: Request, db: Session = Depends(get_db),
               actor: audit.Actor = Depends(admin_actor)):
     user = _student(db, user_id)
     try:
@@ -237,7 +238,7 @@ def set_login(user_id: int, body: NewLogin, request: Request, db: Session = Depe
 
 
 @router.put("/users/{user_id}/timezone")
-def set_timezone(user_id: int, body: TimezoneBody, request: Request, db: Session = Depends(get_db),
+def set_timezone(user_id: Id, body: TimezoneBody, request: Request, db: Session = Depends(get_db),
                  actor: audit.Actor = Depends(admin_actor)):
     """The zone the web shows a student's times in; an admin sets their own through PUT /api/auth/profile."""
     user = _student(db, user_id)
@@ -250,7 +251,7 @@ def set_timezone(user_id: int, body: TimezoneBody, request: Request, db: Session
 
 
 @router.post("/users/{user_id}/unlock")
-def unlock_user(user_id: int, request: Request, db: Session = Depends(get_db), actor: audit.Actor = Depends(admin_actor)):
+def unlock_user(user_id: Id, request: Request, db: Session = Depends(get_db), actor: audit.Actor = Depends(admin_actor)):
     user = _student(db, user_id)
     was = users.unlock(db, actor, user.login, now(request))
     db.commit()
@@ -258,7 +259,7 @@ def unlock_user(user_id: int, request: Request, db: Session = Depends(get_db), a
 
 
 @router.post("/users/{user_id}/delete", status_code=204)
-def delete_user(user_id: int, body: ConfirmLogin, request: Request, db: Session = Depends(get_db),
+def delete_user(user_id: Id, body: ConfirmLogin, request: Request, db: Session = Depends(get_db),
                 actor: audit.Actor = Depends(admin_actor)):
     user = _student(db, user_id)
     if body.confirm_login.strip().lower() != user.login:

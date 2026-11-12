@@ -351,12 +351,14 @@ class GradeCheckTests(unittest.TestCase):
         """A score or max_points as a person gives it: a string or a JSON number, through str() never float
         arithmetic; at most two decimals, no exponent, NaN, Infinity or bool (score_invalid / max_points_invalid)."""
         good = {"4.5": Decimal("4.5"), 4.5: Decimal("4.5"), "8": Decimal(8), 8: Decimal(8), " 7.25 ": Decimal("7.25"),
-                "-1": Decimal(-1), 10.0: Decimal(10), Decimal("4.50"): Decimal("4.5"), 0.1: Decimal("0.1")}
+                "-1": Decimal(-1), 10.0: Decimal(10), Decimal("4.50"): Decimal("4.5"), 0.1: Decimal("0.1"),
+                "999999.99": Decimal("999999.99"), 999999: Decimal(999999)}
         for value, want in good.items():
             with self.subTest(value=value):
                 self.assertEqual(grading.parse_points(value), want)
         for value in ("4.555", 4.555, "1e1", "1E1", 1e20, "NaN", float("nan"), "Infinity", float("inf"), "-inf",
-                      "", " ", "4,5", "+4", ".5", "5.", "0x10", True, False, None, [], "١٢"):
+                      "", " ", "4,5", "+4", ".5", "5.", "0x10", True, False, None, [], "١٢",
+                      "1000000", 1000000, "123456789", 10 ** 12, 1234567.5):  # Numeric(8, 2) holds 6 digits (D-088)
             with self.subTest(value=value):
                 self.assertIsNone(grading.parse_points(value))
         self.assertEqual(grading.check_grade(assignment(), grading.parse_points("-1"), None).reason,

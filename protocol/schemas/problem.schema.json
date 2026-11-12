@@ -179,7 +179,7 @@
             { "type": "array", "items": { "type": "string" }, "minItems": 1 }
           ]
         },
-        "points": { "type": "number", "minimum": 0, "default": 0 },
+        "points": { "type": "number", "minimum": 0, "maximum": 999999.99, "default": 0 },
         "scoring": { "enum": ["sum", "all_or_nothing", "min"], "default": "sum" },
         "visibility": { "enum": ["open", "hidden"], "default": "hidden" },
         "depends_on": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
@@ -209,7 +209,7 @@
           }
         },
         "correct": { "type": "array", "minItems": 1, "items": { "type": "string" }, "uniqueItems": true },
-        "points": { "type": "number", "minimum": 0, "default": 1 },
+        "points": { "type": "number", "minimum": 0, "maximum": 999999.99, "default": 1 },
         "explanation": { "type": "string" }
       }
     },
@@ -224,7 +224,7 @@
         "accept": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "match": { "enum": ["exact", "normalized", "regex", "number"], "default": "normalized" },
         "eps": { "type": "number", "exclusiveMinimum": 0 },
-        "points": { "type": "number", "minimum": 0, "default": 1 },
+        "points": { "type": "number", "minimum": 0, "maximum": 999999.99, "default": 1 },
         "explanation": { "type": "string" }
       }
     },

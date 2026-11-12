@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .. import problem_checks as checks
 from ..auth import audit
 from ..blobstore import BlobStore
+from ..ids import parse_id
 from ..models import Problem, ProblemVersion
 from ..problems import catalog
 from ..problems.importer import import_package
@@ -62,11 +63,12 @@ def problem_import(ctx: Context, args) -> int:
 
 def _ref(db: Session, ref: str) -> tuple:
     """<slug> or <slug>@<version> (default: the latest version) -> (problem, version)."""
-    slug, _, number = ref.partition("@")
-    if number and not number.isdigit():
+    slug, _, text = ref.partition("@")
+    number = parse_id(text) if text else None
+    if text and number is None:
         raise CliError(f"not a version: {ref!r} (write {slug}@3)")
     problem = _problem(db, slug)
-    return problem, _version(db, problem, int(number) if number else None)
+    return problem, _version(db, problem, number)
 
 
 def problem_list(ctx: Context, args) -> int:

@@ -60,6 +60,7 @@ from .classroom import attachments as works_links
 from .classroom import comments, works
 from .contests import access, service
 from .db import session_scope
+from .judgectl.core import int4
 from .models import AccessMode, Contest, ContestProblem, ContestState, Language, ProblemType, ProblemVersion, Role, \
     Submission, User
 from .problems.importer import ImportResult, import_package, store_blob
@@ -231,11 +232,11 @@ def main(argv=None) -> int:
     parser.add_argument("--language", default="python", choices=["python", "c", "cpp"])
     parser.add_argument("--archive", action="store_true", help="--source is a zip with several files")
     parser.add_argument("--entry", help="entry file inside the archive (interpreted languages)")
-    parser.add_argument("--user", type=int, default=1, help="student number: dev-student-N")
-    parser.add_argument("--count", type=int, default=1)
+    parser.add_argument("--user", type=int4, default=1, help="student number: dev-student-N")
+    parser.add_argument("--count", type=int4, default=1)
     parser.add_argument("--contest", help="slug of a published contest (with --label): through the access rules")
     parser.add_argument("--label", help="the problem's label in --contest")
-    parser.add_argument("--item", type=int, help="id of a manual assignment of the class feed: hand in work")
+    parser.add_argument("--item", type=int4, help="id of a manual assignment of the class feed: hand in work")
     parser.add_argument("--text-file", type=Path, help="with --item: the text answer")
     parser.add_argument("--file", type=Path, action="append",
                         help="with --item: a file handed in (its base name is the name); repeat for more")

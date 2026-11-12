@@ -98,6 +98,23 @@ class PackageTests(unittest.TestCase):
         exc = self.refused(root, "wall_ms", "missing answer file tests/small01.out", "unknown group 'nope'")
         self.assertGreaterEqual(len(exc.problems), 3)
 
+    def test_points_fit_the_score_column(self):
+        """test_groups.points and judgements.score are Numeric(8, 2): a group or a total beyond 999999.99 would fail in
+        the database at import or at the result, so the package is refused (D-088)."""
+        root = self.copy()
+        self.edit(root, lambda d: d["test_groups"][0].update(points=1_000_000))
+        self.refused(root, "is greater than the maximum of 999999.99")
+        # three groups of 600000: each within the column, the total not
+        self.edit(root, lambda d: [g.update(points=600_000) for g in d["test_groups"]])
+        self.refused(root, "total points of groups", "at most 999999.99")
+        for name, key in (("quiz-python-basics", "questions"), ("what-is-the-output", "answers")):
+            with self.subTest(example=name):
+                root = self.copy(name)
+                self.edit(root, lambda d: [q.update(points=999_999) for q in d[key]])
+                self.refused(root, "total points is", "at most 999999.99")
+                self.edit(root, lambda d: [q.update(points=1) for q in d[key]])
+                load(root)  # the same package within the limit loads
+
     def test_unknown_jury_language_and_solution_extension(self):
         root = self.copy()
         (root / "solutions" / "ok.rb").write_text("puts 1\n")

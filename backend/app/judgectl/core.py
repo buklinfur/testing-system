@@ -1,6 +1,7 @@
 """Shared plumbing of judgectl: the context (database, settings, terminal), errors, output and secrets input."""
 from __future__ import annotations
 
+import argparse
 import getpass as _getpass
 import json
 import os
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 from ..auth.audit import Actor
 from ..auth.passwords import MIN_LENGTH, PasswordPolicyError, check_policy
 from ..auth.totp import SecretBox, TotpConfigError
+from ..ids import DB_ID_MAX
 from ..models import Role
 from ..settings import Settings
 from ..jsonable import plain
@@ -31,6 +33,18 @@ class CliError(Exception):
 
 class UsageError(CliError):
     """Wrong arguments found after argparse (a flag required only with another one): exit code 2, like argparse."""
+
+
+def int4(text: str) -> int:
+    """argparse type of every number judgectl takes - ids, version numbers, --last: a whole number 1..2147483647 (the
+    ids are int4); anything else is a usage error (exit 2) before the database is asked (D-088)."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if not 1 <= value <= DB_ID_MAX:
+        raise argparse.ArgumentTypeError(f"must be from 1 to {DB_ID_MAX}: {text}")
+    return value
 
 
 def _stdout() -> TextIO:

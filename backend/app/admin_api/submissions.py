@@ -18,6 +18,7 @@ from ..auth import audit
 from ..auth_api import get_db, now
 from ..blobstore import BlobStore
 from ..content_files import file_response
+from ..ids import Count, Id
 from ..jsonable import plain
 from ..models import Submission
 from ..submissions import rejudge, view
@@ -45,14 +46,14 @@ class RejudgeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     contest: Optional[str] = Field(None, max_length=64)
     label: Optional[str] = Field(None, max_length=8)
-    contest_problem_id: Optional[int] = None
+    contest_problem_id: Optional[Id] = None
     problem_version: Optional[str] = Field(None, max_length=80, description="<slug>@<version>")
-    submission_ids: Optional[list[int]] = Field(None, min_length=1, max_length=1000)
+    submission_ids: Optional[list[Id]] = Field(None, min_length=1, max_length=1000)
     verdicts: list[VERDICT] = Field(default_factory=list, description="only those whose current verdict is one of")
-    user_id: Optional[int] = None
-    group_id: Optional[int] = None
+    user_id: Optional[Id] = None
+    group_id: Optional[Id] = None
     dry_run: bool = False
-    expect: Optional[int] = Field(None, ge=0)
+    expect: Optional[Count] = None
 
     def filters(self) -> Filters:
         return Filters(contest=self.contest, label=self.label, contest_problem_id=self.contest_problem_id,
@@ -62,8 +63,8 @@ class RejudgeBody(BaseModel):
 
 @router.get("/submissions")
 def list_submissions(contest: Optional[str] = Query(None, max_length=64), label: Optional[str] = Query(None, max_length=8),
-                     problem: Optional[str] = Query(None, max_length=64), user_id: Optional[int] = None,
-                     group_id: Optional[int] = None, verdict: Optional[VERDICT] = None,
+                     problem: Optional[str] = Query(None, max_length=64), user_id: Optional[Id] = None,
+                     group_id: Optional[Id] = None, verdict: Optional[VERDICT] = None,
                      status: Optional[STATUS] = None, late: Optional[bool] = None, pg: Page = Depends(page),
                      db: Session = Depends(get_db)):
     """Newest first. verdict and status: of the current judgement; group_id: its current members."""
@@ -95,7 +96,7 @@ def rejudge_many(body: RejudgeBody, request: Request, db: Session = Depends(get_
 
 
 @router.get("/submissions/{submission_id}")
-def get_submission(submission_id: int, request: Request, judgement_id: Optional[int] = None,
+def get_submission(submission_id: Id, request: Request, judgement_id: Optional[Id] = None,
                    db: Session = Depends(get_db)):
     """The source (text up to 256 KB, or the names in an archive), every judgement, and every test of the current
     judgement (or of judgement_id), hidden tests included."""
@@ -106,7 +107,7 @@ def get_submission(submission_id: int, request: Request, judgement_id: Optional[
 
 
 @router.get("/submissions/{submission_id}/source")
-def get_source(submission_id: int, request: Request, db: Session = Depends(get_db)):
+def get_source(submission_id: Id, request: Request, db: Session = Depends(get_db)):
     """A single file as text/plain, an archive as application/zip, always an attachment (never a page)."""
     try:
         sub = view.get_row(db, submission_id)[0]
@@ -122,7 +123,7 @@ def get_source(submission_id: int, request: Request, db: Session = Depends(get_d
 
 
 @router.post("/submissions/{submission_id}/rejudge")
-def rejudge_one(submission_id: int, request: Request, db: Session = Depends(get_db),
+def rejudge_one(submission_id: Id, request: Request, db: Session = Depends(get_db),
                 actor: audit.Actor = Depends(admin_actor)):
     try:
         result = rejudge.one(db, actor, submission_id, now(request))

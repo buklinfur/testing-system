@@ -11,7 +11,7 @@ from __future__ import annotations
 from .. import groups as g
 from ..auth.users import get_by_login
 from ..classroom import comments, items
-from .core import CliError, Context, emit_json, read_input, show, terminal_text
+from .core import CliError, Context, emit_json, int4, read_input, show, terminal_text
 
 FILE_LIMIT = 64 * 1024  # bytes of --file: room for 4000 characters of any script, so the service says too long
 
@@ -135,25 +135,25 @@ def add_parsers(groups, command) -> None:
     comment = groups.add_parser("comment", help="comment threads of the class feed").add_subparsers(
         dest="cmd", required=True, metavar="COMMAND")
     p = command(comment, "list", comment_list, "threads, the one with the newest comment first", json=True)
-    p.add_argument("--item", type=int, help="threads of one item")
+    p.add_argument("--item", type=int4, help="threads of one item")
     p.add_argument("--group", help="private threads of its current members, shared threads of items addressed to it "
                                    "(name or #id)")
     waits = p.add_mutually_exclusive_group()
     waits.add_argument("--awaiting", dest="awaiting", action="store_true", default=None,
                        help="the last comment (not deleted) is a student's")
     waits.add_argument("--answered", dest="awaiting", action="store_false", help="the last comment is a teacher's")
-    p.add_argument("--last", type=int, default=50, help=f"at most this many threads (up to {comments.PAGE_MAX})")
+    p.add_argument("--last", type=int4, default=50, help=f"at most this many threads (up to {comments.PAGE_MAX})")
     p = command(comment, "show", comment_show, "a whole thread, deleted comments marked", json=True)
-    p.add_argument("item", type=int)
+    p.add_argument("item", type=int4)
     p.add_argument("--student", help="login: the private thread of this student (assignments)")
     p = command(comment, "post", comment_post, "write as the console: shared thread, or --student's private one",
                 json=True)
-    p.add_argument("item", type=int)
+    p.add_argument("item", type=int4)
     p.add_argument("--student", help="login: the private thread of this student (assignments)")
     text = p.add_mutually_exclusive_group(required=True)
     text.add_argument("--text", help="the comment (Markdown)")
     text.add_argument("--file", help="the comment from a UTF-8 file, or - for stdin")
     p = command(comment, "delete", comment_delete, "delete a comment (soft: teachers still see the text)",
                 json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("--reason", help="why, at most 200 characters (teachers see it)")
