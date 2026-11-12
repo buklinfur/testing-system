@@ -19,7 +19,8 @@ ROTATE=0; [ "${1:-}" = "--rotate" ] && ROTATE=1
 PGVER=$(pg_lsclusters --no-header | awk '$2 == "main" {print $1; exit}')
 [ -n "$PGVER" ] || { echo "no 'main' PostgreSQL cluster found (apt install postgresql)"; exit 1; }
 CONF=/etc/postgresql/$PGVER/main
-psql_admin() { sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 "$@"; }
+. "$(dirname "$0")/lib/pg-database.sh"  # judge_role_ensure, judge_db_create: one definition (D-073)
+psql_admin() { judge_psql_admin "$@"; }
 
 # 1. server settings
 install -m 644 -o postgres -g postgres /dev/stdin "$CONF/conf.d/judge.conf" <<'EOF'
@@ -54,17 +55,12 @@ fi
 [ -n "$PW_PROD" ] || PW_PROD=$(openssl rand -hex 24)  # hex: no escaping needed in URLs or SQL
 [ -n "$PW_TEST" ] || PW_TEST=$(openssl rand -hex 24)
 
-# 3. roles and databases (passwords go through stdin, never on a command line)
+# 3. roles and databases (deploy/lib/pg-database.sh; passwords go through stdin, never on a command line).
+#    reset-production.sh recreates a database with the same judge_db_create.
 for pair in "judge:$PW_PROD" "judge_test:$PW_TEST"; do
   role=${pair%%:*}; pw=${pair#*:}
-  psql_admin <<EOF
-SELECT format('CREATE ROLE %I', '$role') WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$role') \gexec
-ALTER ROLE $role LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '$pw';
-SELECT format('CREATE DATABASE %I OWNER %I', '$role', '$role') WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$role') \gexec
-ALTER DATABASE $role OWNER TO $role;
-REVOKE ALL ON DATABASE $role FROM PUBLIC;
-EOF
-  psql_admin -d "$role" -c "ALTER SCHEMA public OWNER TO $role"
+  judge_role_ensure "$role" "$pw"
+  judge_db_create "$role"
 done
 
 # 4. env files

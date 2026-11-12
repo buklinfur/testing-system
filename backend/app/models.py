@@ -157,6 +157,78 @@ class AfterDueSubmit(str, enum.Enum):
     yes = "yes"  # accepted as usual
 
 
+class FeedItemKind(str, enum.Enum):
+    """What a class feed item is (D-059, docs/CLASSROOM.md)."""
+
+    contest = "contest"  # a link to an existing contest; access is the contest's own
+    assignment = "assignment"  # a manual assignment: submitted by students, graded by a teacher
+    material = "material"  # a material of the library given to groups and students (4v.4, material_id)
+
+
+class FeedItemState(str, enum.Enum):
+    draft = "draft"  # admins only
+    published = "published"  # students of the audience, from available_from on
+    archived = "archived"  # gone from the feed; students keep their own work
+
+
+class GradingScale(str, enum.Enum):
+    points = "points"  # 0..max_points
+    pass_fail = "pass_fail"  # зачёт / незачёт
+    none = "none"  # no mark, only the status
+
+
+class AnswerKind(str, enum.Enum):
+    """What a student hands in (docs/CLASSROOM.md §10: the matrix of answer kind, text, files and links)."""
+
+    mark = "mark"  # just "done" (work in a notebook)
+    text = "text"  # a text answer, stored as the file answer.md
+    files = "files"  # at least one file or link, no text (4v.3)
+    text_or_files = "text_or_files"  # text, files and links, at least one of them (4v.3)
+
+
+class SubmissionFileKind(str, enum.Enum):
+    """A file of a hand-in: the text answer or an upload (4v.3). A student's upload named answer.md is a `file` and
+    does not meet the text answer."""
+
+    text = "text"  # the text answer, the file answer.md; at most one per hand-in
+    file = "file"  # a file the student uploaded
+
+
+class AttachmentKind(str, enum.Enum):
+    """A teacher's attachment of a feed item (4v.3): a file (a blob) or a link (data, never opened by the server)."""
+
+    file = "file"
+    link = "link"
+
+
+class MaterialLibrary(str, enum.Enum):
+    """Who sees a material in the library («Справочник», 4v.4, docs/CLASSROOM.md §11)."""
+
+    none = "none"  # nobody: the material is opened only by the feed and by links
+    all_students = "all_students"
+    groups = "groups"  # the students of the groups in material_groups (current members of groups not archived)
+
+
+class GradesRelease(str, enum.Enum):
+    immediate = "immediate"  # a student sees a grade at once
+    manual = "manual"  # a student sees a grade once a teacher releases it (default)
+
+
+class WorkStatus(str, enum.Enum):
+    """The current status of a student's work, a cache of its history (submissions and reviews). "assigned" is not
+    stored: a student without a work row has not handed anything in."""
+
+    submitted = "submitted"
+    graded = "graded"
+    returned = "returned"  # back for rework, the student may hand in again
+
+
+class ReviewAction(str, enum.Enum):
+    graded = "graded"  # a grade (score / passed / none); the current grade is the last one
+    returned = "returned"  # back for rework, seen by the student at once
+    released = "released"  # a graded row (release_of) is now visible to the student (grades_release = manual)
+
+
 class ScoringMode(str, enum.Enum):
     points = "points"  # IOI style: sum of points, ties by time of last improvement
     icpc = "icpc"  # number of solved problems and penalty time
@@ -217,6 +289,8 @@ def pg_enum(cls: type[enum.Enum], name: str) -> Enum:
 VERDICT_T = pg_enum(Verdict, "verdict")
 VISIBILITY_T = pg_enum(Visibility, "visibility")
 FEEDBACK_T = pg_enum(Feedback, "feedback")
+AFTER_DUE_STATEMENT_T = pg_enum(AfterDueStatement, "after_due_statement")  # contest problems and feed items
+AFTER_DUE_SUBMIT_T = pg_enum(AfterDueSubmit, "after_due_submit")
 
 
 def utcnow_column() -> Mapped[datetime]:
@@ -536,10 +610,10 @@ class ContestProblem(Base):
     available_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     after_due_statement: Mapped[AfterDueStatement] = mapped_column(
-        pg_enum(AfterDueStatement, "after_due_statement"), nullable=False, default=AfterDueStatement.visible,
+        AFTER_DUE_STATEMENT_T, nullable=False, default=AfterDueStatement.visible,
         server_default=AfterDueStatement.visible.value)
     after_due_submit: Mapped[AfterDueSubmit] = mapped_column(
-        pg_enum(AfterDueSubmit, "after_due_submit"), nullable=False, default=AfterDueSubmit.late,
+        AFTER_DUE_SUBMIT_T, nullable=False, default=AfterDueSubmit.late,
         server_default=AfterDueSubmit.late.value)
     note_md: Mapped[Optional[str]] = mapped_column(Text)  # the teacher's note, shown to students with access
 
@@ -557,15 +631,15 @@ class ContestProblem(Base):
 
 
 class DeadlineExtension(Base):
-    """A later due moment of one contest problem for one student or for one group (D-023). Only later than due_at;
-    a student's effective due moment is the latest of due_at, their own extension and those of the groups they are
-    in now."""
+    """A later due moment of one contest problem or one class feed item (exactly one target, D-059) for one student
+    or for one group (D-023). Only later than due_at; a student's effective due moment is the latest of due_at,
+    their own extension and those of the groups they are in now (app/extensions.py)."""
 
     __tablename__ = "deadline_extensions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    contest_problem_id: Mapped[int] = mapped_column(ForeignKey("contest_problems.id", ondelete="CASCADE"),
-                                                    nullable=False)
+    contest_problem_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contest_problems.id", ondelete="CASCADE"))
+    feed_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("feed_items.id", ondelete="RESTRICT"))
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id"))
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -575,10 +649,15 @@ class DeadlineExtension(Base):
 
     __table_args__ = (
         CheckConstraint("(user_id IS NULL) <> (group_id IS NULL)", name="one_subject"),
+        CheckConstraint("(contest_problem_id IS NULL) <> (feed_item_id IS NULL)", name="one_target"),
         Index("uq_deadline_extensions_user", "contest_problem_id", "user_id", unique=True,
               postgresql_where=text("user_id IS NOT NULL")),
         Index("uq_deadline_extensions_group", "contest_problem_id", "group_id", unique=True,
               postgresql_where=text("group_id IS NOT NULL")),
+        Index("uq_deadline_extensions_item_user", "feed_item_id", "user_id", unique=True,
+              postgresql_where=text("feed_item_id IS NOT NULL AND user_id IS NOT NULL")),
+        Index("uq_deadline_extensions_item_group", "feed_item_id", "group_id", unique=True,
+              postgresql_where=text("feed_item_id IS NOT NULL AND group_id IS NOT NULL")),
     )
 
 
@@ -644,6 +723,456 @@ class ContestGroup(Base):
     added_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
 
     __table_args__ = (Index("ix_contest_groups_group", "group_id"),)
+
+
+# --------------------------------------------------------------------------- class feed (module 4v, D-059)
+class FeedItem(Base):
+    """An item of the class feed: a link to a contest, a manual assignment or a material of the library (4v.4).
+
+    Its audience (feed_item_audience) is groups and/or single students; the feed of a group is the items addressed
+    to it. available_from is the delayed publication: before it the item does not exist for students. Deadline
+    columns mean the same as on contest_problems and use the same rules (app/deadline_rules.py). Contests, groups
+    and users are archived, never deleted, so their foreign keys restrict. docs/CLASSROOM.md.
+    """
+
+    __tablename__ = "feed_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[FeedItemKind] = mapped_column(pg_enum(FeedItemKind, "feed_item_kind"), nullable=False)
+    state: Mapped[FeedItemState] = mapped_column(pg_enum(FeedItemState, "feed_item_state"), nullable=False,
+                                                 default=FeedItemState.draft)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body_md: Mapped[str] = mapped_column(Text, nullable=False, default="")  # the assignment; a note on a contest
+    contest_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contests.id", ondelete="RESTRICT"))
+    # kind material only (4v.4); materials are archived, never deleted
+    material_id: Mapped[Optional[int]] = mapped_column(ForeignKey("materials.id", ondelete="RESTRICT"))
+    available_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # assignments only
+    after_due_statement: Mapped[AfterDueStatement] = mapped_column(
+        AFTER_DUE_STATEMENT_T, nullable=False, default=AfterDueStatement.visible,
+        server_default=AfterDueStatement.visible.value)
+    after_due_submit: Mapped[AfterDueSubmit] = mapped_column(
+        AFTER_DUE_SUBMIT_T, nullable=False, default=AfterDueSubmit.late, server_default=AfterDueSubmit.late.value)
+    # assignments only (null for the other kinds)
+    grading: Mapped[Optional[GradingScale]] = mapped_column(pg_enum(GradingScale, "grading_scale"))
+    max_points: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))  # grading = points only
+    answer_kind: Mapped[Optional[AnswerKind]] = mapped_column(pg_enum(AnswerKind, "answer_kind"))
+    grades_release: Mapped[Optional[GradesRelease]] = mapped_column(pg_enum(GradesRelease, "grades_release"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    created_at: Mapped[datetime] = utcnow_column()
+    updated_at: Mapped[datetime] = utcnow_column()
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # the first publication
+    # students may write in the shared comment thread (4v.2; never on a contest item); teachers always can
+    comments_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False,
+                                                   server_default=text("false"))
+
+    __table_args__ = (
+        CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
+        CheckConstraint("(kind = 'contest') = (contest_id IS NOT NULL)", name="contest_link"),
+        CheckConstraint("(kind = 'material') = (material_id IS NOT NULL)", name="material_link"),
+        CheckConstraint("(kind = 'assignment') = (grading IS NOT NULL) AND (grading IS NULL) = (answer_kind IS NULL) "
+                        "AND (grading IS NULL) = (grades_release IS NULL)", name="assignment_settings"),
+        CheckConstraint("kind = 'assignment' OR due_at IS NULL", name="due_only_assignment"),
+        CheckConstraint("COALESCE(grading = 'points', false) = (max_points IS NOT NULL)", name="max_points"),
+        CheckConstraint("max_points IS NULL OR max_points > 0", name="max_points_positive"),
+        CheckConstraint("available_from IS NULL OR due_at IS NULL OR available_from < due_at", name="deadline"),
+        CheckConstraint("state = 'draft' OR published_at IS NOT NULL", name="published_at"),
+        Index("ix_feed_items_state_available", "state", "available_from"),
+        Index("ix_feed_items_contest", "contest_id", postgresql_where=text("contest_id IS NOT NULL")),
+        Index("ix_feed_items_material", "material_id", postgresql_where=text("material_id IS NOT NULL")),
+    )
+
+
+class FeedItemAudience(Base):
+    """Who a feed item is addressed to: one group or one student per row. A group gives the item to the students
+    who are in it now (as contest groups do); an archived group gives nothing."""
+
+    __tablename__ = "feed_item_audience"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"), nullable=False)
+    group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id", ondelete="RESTRICT"))
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    added_at: Mapped[datetime] = utcnow_column()
+    added_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+
+    __table_args__ = (
+        CheckConstraint("(group_id IS NULL) <> (user_id IS NULL)", name="one_subject"),
+        Index("uq_feed_item_audience_group", "item_id", "group_id", unique=True,
+              postgresql_where=text("group_id IS NOT NULL")),
+        Index("uq_feed_item_audience_user", "item_id", "user_id", unique=True,
+              postgresql_where=text("user_id IS NOT NULL")),
+        Index("ix_feed_item_audience_group", "group_id", postgresql_where=text("group_id IS NOT NULL")),
+        Index("ix_feed_item_audience_user", "user_id", postgresql_where=text("user_id IS NOT NULL")),
+    )
+
+
+class AssignmentWork(Base):
+    """A student's work on an assignment: created by the first submission or the first grade. Its row is locked
+    (SELECT ... FOR UPDATE) by every change - a submission, a grade, a return, a release - so they go one after
+    another. `status` is a cache of the history (assignment_submissions and assignment_reviews), written in the same
+    transaction; the history is the truth."""
+
+    __tablename__ = "assignment_works"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="RESTRICT"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[WorkStatus] = mapped_column(pg_enum(WorkStatus, "work_status"), nullable=False)
+    status_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        UniqueConstraint("item_id", "user_id", name="uq_assignment_works_item_user"),
+        Index("ix_assignment_works_item_status", "item_id", "status"),
+        Index("ix_assignment_works_user", "user_id"),
+    )
+
+
+class AssignmentSubmission(Base):
+    """One hand-in of a work, never changed; the latest one counts, the others are its history. `late` is fixed at
+    receipt (as for contest submissions). Never a judgement: manual work does not reach the workers' queue."""
+
+    __tablename__ = "assignment_submissions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("assignment_works.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()  # the moment the request was received
+    late: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    ip: Mapped[Optional[str]] = mapped_column(String(45))
+
+    __table_args__ = (Index("ix_assignment_submissions_work_created", "work_id", "created_at"),)
+
+
+# The limits the CHECKs below keep, the same numbers as the rules (classroom/attachment_rules.py; a unit test compares
+# them): the rules refuse more, these only make sure nothing longer is ever stored.
+ATTACHMENT_NAME_MAX_CHARS = 150  # content_files.NAME_MAX
+LINK_URL_MAX_CHARS = 2000
+LINK_TITLE_MAX_CHARS = 200
+_LINK_URL_CHECK = f"char_length(url) <= {LINK_URL_MAX_CHARS} AND url ~* '^https?://'"
+_LINK_TITLE_CHECK = f"title IS NULL OR char_length(title) <= {LINK_TITLE_MAX_CHARS}"
+
+
+class AssignmentSubmissionFile(Base):
+    """A file of a hand-in, by content (blobs): the text answer (kind text, answer.md, at most one) and the files the
+    student uploaded (kind file, 4v.3; names unique in the hand-in ignoring case, never empty)."""
+
+    __tablename__ = "assignment_submission_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # named by hand: the conventional name is longer than the 63 characters PostgreSQL keeps
+    submission_id: Mapped[int] = mapped_column(ForeignKey("assignment_submissions.id", ondelete="CASCADE",
+                                                          name="fk_assignment_submission_files_submission"),
+                                               nullable=False)
+    kind: Mapped[SubmissionFileKind] = mapped_column(pg_enum(SubmissionFileKind, "submission_file_kind"),
+                                                     nullable=False)
+    path: Mapped[str] = mapped_column(String(255), nullable=False)
+    blob_sha256: Mapped[str] = mapped_column(ForeignKey("blobs.sha256", ondelete="RESTRICT"), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("btrim(path) <> ''", name="path_not_blank"),
+        CheckConstraint("size >= 0 AND position >= 0", name="non_negative"),
+        CheckConstraint("kind <> 'text' OR path = 'answer.md'", name="text_is_answer_md"),
+        CheckConstraint("kind <> 'file' OR size > 0", name="file_not_empty"),
+        Index("ix_assignment_submission_files_submission", "submission_id", "position", "id"),
+        Index("uq_assignment_submission_files_text", "submission_id", unique=True,
+              postgresql_where=text("kind = 'text'")),
+        # lower() folds Cyrillic in the C.UTF-8 databases of the installation; the rules compare by casefold first
+        Index("uq_assignment_submission_files_name", "submission_id", text("lower(path)"), unique=True,
+              postgresql_where=text("kind = 'file'")),
+    )
+
+
+class AssignmentSubmissionLink(Base):
+    """A link of a hand-in (4v.3): data, stored as sent after strip; the server never opens it."""
+
+    __tablename__ = "assignment_submission_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    submission_id: Mapped[int] = mapped_column(ForeignKey("assignment_submissions.id", ondelete="CASCADE",
+                                                          name="fk_assignment_submission_links_submission"),
+                                               nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint(_LINK_URL_CHECK, name="url_valid"),
+        CheckConstraint(_LINK_TITLE_CHECK, name="title_length"),
+        CheckConstraint("position >= 0", name="position_non_negative"),
+        Index("ix_assignment_submission_links_submission", "submission_id", "position", "id"),
+    )
+
+
+class AssignmentReview(Base):
+    """What a teacher did with a work, rows only added: the history of grades. The current grade is the last
+    `graded` row; with grades_release = manual a student sees the last graded row that has a `released` row
+    (release_of), a `returned` row at once (docs/CLASSROOM.md)."""
+
+    __tablename__ = "assignment_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("assignment_works.id", ondelete="RESTRICT"), nullable=False)
+    action: Mapped[ReviewAction] = mapped_column(pg_enum(ReviewAction, "review_action"), nullable=False)
+    score: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))  # grading = points
+    passed: Mapped[Optional[bool]] = mapped_column(Boolean)  # grading = pass_fail
+    comment: Mapped[Optional[str]] = mapped_column(Text)  # plain text, untrusted (ADMIN_API.md 4.1)
+    reviewer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    at: Mapped[datetime] = utcnow_column()
+    release_of: Mapped[Optional[int]] = mapped_column(ForeignKey("assignment_reviews.id", ondelete="RESTRICT"))
+
+    __table_args__ = (
+        CheckConstraint("(action = 'released') = (release_of IS NOT NULL)", name="release_of"),
+        CheckConstraint("action = 'graded' OR (score IS NULL AND passed IS NULL)", name="mark_only_graded"),
+        CheckConstraint("score IS NULL OR passed IS NULL", name="one_mark"),
+        CheckConstraint("score IS NULL OR score >= 0", name="score_non_negative"),
+        CheckConstraint("comment IS NULL OR char_length(comment) <= 2000", name="comment_length"),
+        Index("ix_assignment_reviews_work", "work_id", "id"),
+        Index("uq_assignment_reviews_release_of", "release_of", unique=True,
+              postgresql_where=text("release_of IS NOT NULL")),
+    )
+
+
+# --------------------------------------------------------------------------- attachments (module 4v.3, D-078)
+class Attachment(Base):
+    """A teacher's file or link, in its owner's order: a feed item (an assignment, a contest item, a material item)
+    or a version of a material (4v.4) - exactly one of them. A file is a blob with its name and size; a link is data
+    (the server never opens it). From a feed item it is removed by deleting the row (the blob stays; the audit keeps
+    name, sha and size) and goes with the item, which is deleted only as a draft. A version of a material never
+    changes: a new version copies the rows it keeps."""
+
+    __tablename__ = "attachments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"))
+    material_version_id: Mapped[Optional[int]] = mapped_column(ForeignKey("material_versions.id",
+                                                                          ondelete="RESTRICT"))
+    kind: Mapped[AttachmentKind] = mapped_column(pg_enum(AttachmentKind, "attachment_kind"), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(Text)  # file
+    blob_sha256: Mapped[Optional[str]] = mapped_column(ForeignKey("blobs.sha256", ondelete="RESTRICT"))  # file
+    size: Mapped[Optional[int]] = mapped_column(BigInteger)  # file
+    url: Mapped[Optional[str]] = mapped_column(Text)  # link
+    title: Mapped[Optional[str]] = mapped_column(Text)  # link, optional
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint("(kind = 'file') = (blob_sha256 IS NOT NULL) AND (kind = 'file') = (name IS NOT NULL) "
+                        "AND (kind = 'file') = (size IS NOT NULL) AND (kind = 'link') = (url IS NOT NULL) "
+                        "AND (kind = 'link' OR title IS NULL)", name="kind_shape"),
+        CheckConstraint(f"name IS NULL OR (btrim(name, E' \\t\\r\\n') <> '' "
+                        f"AND char_length(name) <= {ATTACHMENT_NAME_MAX_CHARS})", name="name_valid"),
+        CheckConstraint("size IS NULL OR size > 0", name="size_positive"),
+        CheckConstraint(f"url IS NULL OR ({_LINK_URL_CHECK})", name="url_valid"),
+        CheckConstraint(_LINK_TITLE_CHECK, name="title_length"),
+        CheckConstraint("position >= 0", name="position_non_negative"),
+        CheckConstraint("num_nonnulls(item_id, material_version_id) = 1", name="one_owner"),
+        Index("ix_attachments_item", "item_id", "position", "id"),
+        Index("uq_attachments_item_name", "item_id", text("lower(name)"), unique=True,
+              postgresql_where=text("kind = 'file'")),
+        Index("ix_attachments_material_version", "material_version_id", "position", "id",
+              postgresql_where=text("material_version_id IS NOT NULL")),
+        Index("uq_attachments_material_version_name", "material_version_id", text("lower(name)"), unique=True,
+              postgresql_where=text("kind = 'file' AND material_version_id IS NOT NULL")),
+    )
+
+
+# --------------------------------------------------------------------------- materials (module 4v.4, D-083)
+# the limits the CHECKs below keep, the same numbers as the rules (materials/rules.py; a unit test compares them)
+MATERIAL_SLUG_PATTERN = "^[a-z0-9][a-z0-9-]{1,62}$"
+MATERIAL_TITLE_MAX_CHARS = 200
+MATERIAL_BODY_MAX_CHARS = 100_000
+
+
+class Material(Base):
+    """A material of the library: a memo, a reference, notes. The slug never changes once created (links
+    [[памятка:slug]] in immutable problem versions cannot be corrected; the services refuse, slug_immutable); the
+    title is changed in place; the content is in immutable versions and everyone sees the latest one. Archived,
+    never deleted: an archived material leaves the library but still opens by the feed and by links. `library`:
+    who sees it in the library («Справочник»); the groups of `groups` are material_groups. docs/CLASSROOM.md §11."""
+
+    __tablename__ = "materials"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(63), nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String(MATERIAL_TITLE_MAX_CHARS), nullable=False)
+    library: Mapped[MaterialLibrary] = mapped_column(pg_enum(MaterialLibrary, "material_library"), nullable=False,
+                                                     default=MaterialLibrary.none,
+                                                     server_default=MaterialLibrary.none.value)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    created_at: Mapped[datetime] = utcnow_column()
+    updated_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        CheckConstraint(f"slug ~ '{MATERIAL_SLUG_PATTERN}'", name="slug_format"),
+        CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
+    )
+
+
+class MaterialVersion(Base):
+    """One version of a material, never changed or deleted: the Markdown (untrusted, rendered only through a
+    sanitizer) and its attachments (attachments.material_version_id). Numbered from 1 per material."""
+
+    __tablename__ = "material_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="RESTRICT"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    body_md: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        UniqueConstraint("material_id", "version", name="uq_material_versions_material_version"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(f"char_length(body_md) <= {MATERIAL_BODY_MAX_CHARS}", name="body_length"),
+    )
+
+
+class MaterialGroup(Base):
+    """A group the library shows a material to (library = groups): its current members, while the group is not
+    archived (as the audience of feed items)."""
+
+    __tablename__ = "material_groups"
+
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"), primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="RESTRICT"), primary_key=True)
+    added_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    added_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (Index("ix_material_groups_group", "group_id"),)
+
+
+class LibrarySection(Base):
+    """A section of the library («Справочник»): top level (parent_id null) or a subsection of a top-level one - two
+    levels at most, kept by the services (materials/rules.check_section_place). A section with subsections is not
+    deleted (RESTRICT); its materials are only taken out of it."""
+
+    __tablename__ = "library_sections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("library_sections.id", ondelete="RESTRICT"))
+    title: Mapped[str] = mapped_column(String(MATERIAL_TITLE_MAX_CHARS), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
+        CheckConstraint("position >= 0", name="position_non_negative"),
+        CheckConstraint("parent_id IS NULL OR parent_id <> id", name="not_own_parent"),
+        Index("ix_library_sections_parent", "parent_id", "position", "id"),
+    )
+
+
+class MaterialSection(Base):
+    """A material in a section of the library, in the teacher's order; a material may be in several sections."""
+
+    __tablename__ = "material_sections"
+
+    section_id: Mapped[int] = mapped_column(ForeignKey("library_sections.id", ondelete="CASCADE"), primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="RESTRICT"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="position_non_negative"),
+        Index("ix_material_sections_material", "material_id"),
+    )
+
+
+class MaterialRef(Base):
+    """A link [[памятка:slug]] from a text to a material, derived from the text when it is saved (and by the
+    migration of 4v.4 for the texts before it): exactly one source - a version of a problem (its statements), a feed
+    item (its body) or a version of a material (its body). The slug, not the material: a link to a slug nobody has
+    yet works once the material is created. Goes with its source (CASCADE). A link from a problem or a feed item may
+    open the material to a student; one from a material only resolves (docs/CLASSROOM.md §11)."""
+
+    __tablename__ = "material_refs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(63), nullable=False)
+    problem_version_id: Mapped[Optional[int]] = mapped_column(ForeignKey("problem_versions.id", ondelete="CASCADE"))
+    feed_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"))
+    material_version_id: Mapped[Optional[int]] = mapped_column(ForeignKey("material_versions.id",
+                                                                          ondelete="CASCADE"))
+
+    __table_args__ = (
+        CheckConstraint("num_nonnulls(problem_version_id, feed_item_id, material_version_id) = 1",
+                        name="one_source"),
+        CheckConstraint(f"slug ~ '{MATERIAL_SLUG_PATTERN}'", name="slug_format"),
+        Index("ix_material_refs_slug", "slug"),
+        Index("uq_material_refs_problem_version", "problem_version_id", "slug", unique=True,
+              postgresql_where=text("problem_version_id IS NOT NULL")),
+        Index("uq_material_refs_feed_item", "feed_item_id", "slug", unique=True,
+              postgresql_where=text("feed_item_id IS NOT NULL")),
+        Index("uq_material_refs_material_version", "material_version_id", "slug", unique=True,
+              postgresql_where=text("material_version_id IS NOT NULL")),
+    )
+
+
+# --------------------------------------------------------------------------- comments (module 4v.2, D-072)
+COMMENT_MAX_CHARS = 4000  # the CHECK below; the rules (classroom/comment_rules.py) refuse more, and more blank text
+
+
+class CommentThread(Base):
+    """A comment thread of a feed item: the shared one (student_id null, one per item) or the private one of a
+    student and the teachers (one per item and student; assignments only, the service checks the kind). Created by
+    its first comment, never deleted: a thread always has comments. Keyed by the pair (item, student), not by the
+    work: a question comes before the first hand-in, and a work exists only from then (docs/CLASSROOM.md §9)."""
+
+    __tablename__ = "comment_threads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="RESTRICT"), nullable=False)
+    student_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: shared
+    created_at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (
+        Index("uq_comment_threads_shared", "item_id", unique=True, postgresql_where=text("student_id IS NULL")),
+        Index("uq_comment_threads_private", "item_id", "student_id", unique=True,
+              postgresql_where=text("student_id IS NOT NULL")),
+        Index("ix_comment_threads_student", "student_id", postgresql_where=text("student_id IS NOT NULL")),
+    )
+
+
+class Comment(Base):
+    """One comment, never edited; rows are only added. Deletion is soft: deleted_at / deleted_by (null with
+    deleted_at: the console) and the reason; teachers still see the text, students do not see the comment at all.
+    The body is untrusted Markdown, stored as sent (rendered only through a sanitizer, without raw HTML)."""
+
+    __tablename__ = "comments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("comment_threads.id", ondelete="RESTRICT"), nullable=False)
+    author_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()  # the moment the request was received
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    deleted_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
+    delete_reason: Mapped[Optional[str]] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint(f"char_length(body) <= {COMMENT_MAX_CHARS}", name="body_length"),
+        CheckConstraint("btrim(body, E' \\t\\r\\n') <> ''", name="body_not_blank"),
+        CheckConstraint("deleted_at IS NOT NULL OR (deleted_by IS NULL AND delete_reason IS NULL)",
+                        name="deleted_fields"),
+        Index("ix_comments_thread", "thread_id", "id"),
+        Index("ix_comments_author_created", "author_id", "created_at", postgresql_where=text("author_id IS NOT NULL")),
+    )
+
+
+class ThreadRead(Base):
+    """How far a user has read a thread: the last comment read (only grows; the service keeps it in the thread).
+    Unread = comments of others, not deleted, after it. Per user, teachers included (each has their own)."""
+
+    __tablename__ = "thread_reads"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("comment_threads.id", ondelete="RESTRICT"), primary_key=True)
+    last_read_comment_id: Mapped[int] = mapped_column(ForeignKey("comments.id", ondelete="RESTRICT"), nullable=False)
+    updated_at: Mapped[datetime] = utcnow_column()
 
 
 # --------------------------------------------------------------------------- submissions

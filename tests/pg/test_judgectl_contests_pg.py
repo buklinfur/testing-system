@@ -89,7 +89,14 @@ class JudgectlContestTests(PgCase):
         out = self.ok("problem", "import", str(copy), "--dry-run")
         self.assertIn("would be imported as v2 (dry run: nothing was written)", out)
         self.assertEqual(self.blob_files(), blobs)
+        images = copy / "statement" / "images"  # a substituted picture: imported, with a warning (D-071)
+        images.mkdir(parents=True, exist_ok=True)
+        (images / "fake.png").write_bytes(b"<svg/>")
+        code, out, err = self.run_cli("problem", "import", str(copy), "--dry-run")
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: statement/images/fake.png: not a PNG, JPEG or WebP picture", err)
         data = json.loads(self.ok("problem", "import", "-", "--json", stdin=pack(copy)))  # a zip on stdin
+        self.assertTrue(any(w.startswith("statement/images/fake.png") for w in data["warnings"]))
         self.assertEqual((data["result"], data["version"], data["status"]), ("created", 2, "pending_check"))
         self.assertIsInstance(data["check_id"], int)
         self.assertRegex(self.ok("problem", "versions", "sum-of-two"),

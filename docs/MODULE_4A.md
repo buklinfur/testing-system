@@ -552,7 +552,7 @@ judgectl status   # БД, живые воркеры, глубина очеред
   `check_report`), карточка версии, файлы версии, архивация.
 - **Файлы из загруженного контента** (файлы версии, исходник посылки) — защита от XSS: на всех таких ответах
   `X-Content-Type-Options: nosniff` и `Content-Security-Policy: sandbox; default-src 'none'`. В браузере (`inline`)
-  открываются только картинки `png`, `jpeg`, `gif`, `webp` (*уточнено в 4а.3a, §5.8: без `gif`*) — тип **по расширению** из `files`, не по содержимому; всё
+  открываются только картинки `png`, `jpeg`, `gif`, `webp` (*уточнено в 4а.3a, §5.8: без `gif`*) — тип **по расширению** из `files`, не по содержимому (*уточнено в 4б.0, D-070: имя и содержимое вместе, [`FILES.md`](FILES.md)*); всё
   остальное, включая SVG и HTML, — `Content-Disposition: attachment` и `application/octet-stream`; исходники и тесты —
   `text/plain; charset=utf-8` и `attachment`. `{path}` ищется **только среди ключей `files` версии**, без обращения к
   файловой системе по пути из URL. **Это же правило обязательно для картинок условия в 4б.**
@@ -577,6 +577,10 @@ judgectl status   # БД, живые воркеры, глубина очеред
 
 ТЗ — [`PLAN_4A_DELTA_4V.md`](PLAN_4A_DELTA_4V.md) §1–§3 (К1–К8 решены там, §2); решения — D-020…D-026 и D-032…D-041
 в [`DECISIONS.md`](DECISIONS.md). Там, где этот раздел расходится с Р19–Р25 и §5.6–§5.7 выше, действует он.
+
+> **D-027 заменено D-059** (5 ноября 2026): ручные задания и материалы — не `contest_problems.kind`, а элементы
+> ленты класса с адресатами (модуль 4в, [`CLASSROOM.md`](CLASSROOM.md)). Таблица `contest_problems` и всё, что здесь
+> сказано о контестах, не меняется.
 
 - **Модель** (миграция `6fca2cdc55b2`, [`DATA_MODEL.md`](DATA_MODEL.md)): `groups`, `group_members` (с историей),
   `contest_groups`, `deadline_extensions`; `contests.access_mode` вместо `join_policy`; `participations.joined_via`;

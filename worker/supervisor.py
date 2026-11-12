@@ -1,5 +1,10 @@
 """Supervisor: starts N worker processes, pins each to its CPUs, restarts crashed ones, stops gracefully.
 
+Exit codes of a worker: 75 (superseded by another process of the same name) - restarted after a minute; 78 (a final
+configuration error: a bad or revoked token, a bad setting, the local backend refused) - never restarted: the
+supervisor stops every worker and exits with 78 itself, so systemd does not restart it either
+(RestartPreventExitStatus=78 in judge-worker.service). Anything else - restarted with a backoff.
+
     python -m worker run
 
 Each worker is a separate OS process (`python -m worker run-one --index i`), so a crash or a hang of
@@ -37,8 +42,8 @@ def make_slots(cfg: WorkerConfig) -> list:
 
 
 def restart_delay(consecutive_failures: int, exit_code: Optional[int]) -> float:
-    if exit_code in (EXIT_FATAL, EXIT_SUPERSEDED):
-        return 60.0  # a bad token or a duplicate supervisor: do not hammer the server
+    if exit_code == EXIT_SUPERSEDED:
+        return 60.0  # a duplicate supervisor: do not hammer the server
     return min(1.0 * (2 ** max(0, consecutive_failures - 1)), 60.0)
 
 
@@ -61,6 +66,7 @@ class Supervisor:
         self._clock = clock
         self.stopping = threading.Event()
         self._term_sent = False
+        self.exit_code = 0  # EXIT_FATAL once a worker exited with a final configuration error
 
     def _default_spawn(self, slot: WorkerSlot) -> subprocess.Popen:
         cmd = [sys.executable, "-m", "worker", "run-one", "--index", str(slot.index)]
@@ -81,7 +87,13 @@ class Supervisor:
                 child.proc, child.last_exit = None, code
                 if self.stopping.is_set():
                     continue
-                child.failures = 0 if (now - child.started > 300 and code not in (EXIT_FATAL, EXIT_SUPERSEDED)) else child.failures + 1
+                if code == EXIT_FATAL:
+                    log.error("worker %d exited with code %d (a configuration error, see its log above): not restarting; "
+                              "stopping every worker, the supervisor exits with %d", child.slot.index, code, EXIT_FATAL)
+                    self.exit_code = EXIT_FATAL
+                    self.stopping.set()
+                    continue
+                child.failures = 0 if (now - child.started > 300 and code != EXIT_SUPERSEDED) else child.failures + 1
                 delay = restart_delay(child.failures, code)
                 child.next_start = now + delay
                 log.warning("worker %d exited with code %s; restart in %.0fs", child.slot.index, code, delay)
@@ -141,4 +153,4 @@ class Supervisor:
                     log.warning("cache gc failed: %s", exc)
             self.stopping.wait(1.0)
         self.shutdown()
-        return 0
+        return self.exit_code

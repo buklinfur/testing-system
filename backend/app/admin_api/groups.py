@@ -1,7 +1,8 @@
 """/api/admin groups (classes, D-020): the same service as `judgectl group` (app/groups.py; docs/ADMIN_API.md).
 
 Groups are addressed by id here. Students come by user id; an admin in the list is refused (not_a_student), an
-unknown id is 404 with every missing one. Archiving answers the contests the group is attached to (K6).
+unknown id is 404 with every missing one. Archiving answers the contests the group is attached to and the feed
+items addressed to it (K6, `feed_items` since 4v.1b).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from ..auth_api import get_db, now
 from ..groups import GroupError
 from ..jsonable import plain
 from ..models import Group, User
-from .deps import Page, admin_actor, like, page, paginate
+from .deps import Page, admin_actor, like, page, paginate, users_by_id
 
 router = APIRouter()
 STATUS = {"group_not_found": 404, "group_name_taken": 409, "group_archived": 409, "group_name_invalid": 422,
@@ -49,13 +50,7 @@ def _group(db: Session, group_id: int) -> Group:
     return group
 
 
-def _users(db: Session, ids: list[int]) -> list[User]:
-    ids = list(dict.fromkeys(ids))
-    found = {u.id: u for u in db.execute(select(User).where(User.id.in_(ids))).scalars()}
-    missing = [i for i in ids if i not in found]
-    if missing:
-        raise ApiError(404, "user_not_found", problems=[f"no user {i}" for i in missing])
-    return [found[i] for i in ids]
+_users = users_by_id
 
 
 def _detail(db: Session, group: Group, history: bool = False) -> dict:
@@ -115,7 +110,8 @@ def archive_group(group_id: int, request: Request, db: Session = Depends(get_db)
     group = _group(db, group_id)
     attached = g.archive(db, actor, group, now(request))
     db.commit()
-    return {"group": _detail(db, group), "contests": attached}
+    feed_items = [{"id": i.id, "kind": i.kind, "state": i.state, "title": i.title} for i in g.feed_items_of(db, group)]
+    return plain({"group": _detail(db, group), "contests": attached, "feed_items": feed_items})
 
 
 @router.post("/groups/{group_id}/unarchive")

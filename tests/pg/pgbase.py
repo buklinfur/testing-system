@@ -5,9 +5,16 @@
     python -m unittest discover -s tests/pg -t . -v
 
 Every test class works in its own throw-away schema, dropped afterwards; the database itself is not touched.
+
+A run that is interrupted (Ctrl-C, a killed process, a hang) cannot drop its schema. Schema names carry their creation
+time (t_<unixtime>_<hex>, m_<unixtime>_<hex> for the scratch schemas of the migration tests), and the first test
+class of every run drops the ones older than STALE_SCHEMA_AGE_S (6 h): a run that is still going is never touched,
+schemas of any other name never. Schemas of the older format without a time are left alone: docs/DEPLOY_WSL2.md §9.
 """
 import os
+import re
 import sys
+import time
 import unittest
 import uuid
 from datetime import datetime, timezone
@@ -41,6 +48,29 @@ if URL and HAVE_SA:
     )
 
 
+STALE_SCHEMA_AGE_S = 6 * 3600
+SCHEMA_NAME = re.compile(r"^(t|m)_([0-9]{10})_[0-9a-f]{10}$")  # the only names the sweep may drop
+_swept = False  # once per process
+
+
+def schema_name(prefix: str = "t", now: float = None) -> str:
+    """A throw-away schema name with its creation time: <prefix>_<unixtime>_<10 hex>."""
+    return f"{prefix}_{int(time.time() if now is None else now)}_{uuid.uuid4().hex[:10]}"
+
+
+def sweep_stale_schemas(conn, now: float = None, max_age_s: float = STALE_SCHEMA_AGE_S) -> list:
+    """Drop the throw-away schemas of this format older than max_age_s; returns their names. Other names - public,
+    the older format without a time, anything else - are never touched."""
+    now = time.time() if now is None else now
+    dropped = []
+    for name in conn.execute(text("SELECT schema_name FROM information_schema.schemata ORDER BY 1")).scalars():
+        m = SCHEMA_NAME.match(name)
+        if m and now - int(m.group(2)) > max_age_s:
+            conn.execute(text(f'DROP SCHEMA "{name}" CASCADE'))
+            dropped.append(name)
+    return dropped
+
+
 class PgCase(unittest.TestCase):
     settings = QueueSettings(heartbeat_timeout_s=30, max_attempts=3, max_judging_s=1800, recent_window_s=300)
 
@@ -48,9 +78,15 @@ class PgCase(unittest.TestCase):
     def setUpClass(cls):
         if not (URL and HAVE_SA):
             raise unittest.SkipTest("PostgreSQL tests are not configured")
-        cls.schema = "t_" + uuid.uuid4().hex[:10]
+        global _swept
+        cls.schema = schema_name("t")
         admin = create_engine(URL)
         with admin.begin() as conn:
+            if not _swept:  # what interrupted runs left behind (see the module docstring)
+                dropped = sweep_stale_schemas(conn)
+                if dropped:
+                    print(f"pgbase: dropped {len(dropped)} stale test schemas: {', '.join(dropped)}", file=sys.stderr)
+                _swept = True
             conn.execute(text(f'CREATE SCHEMA "{cls.schema}"'))
         admin.dispose()
         cls.engine = create_engine(URL, connect_args={"options": f"-csearch_path={cls.schema}"}, pool_size=20, max_overflow=20)

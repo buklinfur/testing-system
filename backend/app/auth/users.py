@@ -12,9 +12,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from ..models import (AuditLog, AuthLockout, Contest, ContestGroup, DeadlineExtension, Group, GroupMember, Judgement,
-                      LoginToken, Participation, Problem, ProblemVersion, Role, Submission, User, UserSession,
-                      VersionCheck)
+from ..models import (AssignmentReview, AssignmentWork, Attachment, AuditLog, AuthLockout, Comment, CommentThread,
+                      Contest, ContestGroup, DeadlineExtension, FeedItem, FeedItemAudience, Group, GroupMember,
+                      Judgement, LoginToken, Material, MaterialGroup, MaterialVersion, Participation, Problem,
+                      ProblemVersion, Role, Submission, ThreadRead, User, UserSession, VersionCheck)
 from ..timeutil import iso_utc
 from . import audit, login_tokens, ratelimit, sessions
 from .logins import LoginError, checked_login, default_display_name, default_login, unique_login
@@ -266,7 +267,27 @@ TRACES = (
     ("groups attached to contests", ContestGroup.added_by),
     ("deadline extensions given", DeadlineExtension.created_by),
     ("deadline extensions", DeadlineExtension.user_id),
+    # the class feed (4v.1): what a teacher made and did, and a student's own work or personal addressing
+    ("feed items created", FeedItem.created_by),
+    ("feed addressees added", FeedItemAudience.added_by),
+    ("feed items addressed personally", FeedItemAudience.user_id),
+    ("assignment works", AssignmentWork.user_id),
+    ("assignment reviews", AssignmentReview.reviewer_id),
+    # comments (4v.2): what the user wrote or deleted, and a student's private threads; read marks are no trace
+    ("comments written", Comment.author_id),
+    ("comments deleted", Comment.deleted_by),
+    ("private comment threads", CommentThread.student_id),
+    # attachments (4v.3): the files and links a teacher put on feed items, and on material versions (4v.4)
+    ("attachments added", Attachment.created_by),
+    # the library of materials (4v.4)
+    ("materials created", Material.created_by),
+    ("material versions written", MaterialVersion.created_by),
+    ("library groups added", MaterialGroup.added_by),
 )
+
+# Rows that reference the user and are deleted with it (_erase): no trace. tests/pg/test_attachment_schema_pg.py
+# checks that every foreign key to users is in TRACES or here.
+ERASED = (UserSession.user_id, LoginToken.user_id, GroupMember.user_id, ThreadRead.user_id)
 
 
 def traces(db: Session, user: User) -> dict:
@@ -284,12 +305,13 @@ def _describe(found: dict) -> str:
 
 
 def _erase(db: Session, user: User) -> dict:
-    """Delete the user with its sessions, QR tokens, group memberships and the failures / lockouts of its login
-    (no audit here)."""
+    """Delete the user with its sessions, QR tokens, group memberships, comment read marks and the failures /
+    lockouts of its login (no audit here)."""
     removed = {"sessions_deleted": db.execute(delete(UserSession).where(UserSession.user_id == user.id)).rowcount,
                "qr_tokens_deleted": db.execute(delete(LoginToken).where(LoginToken.user_id == user.id)).rowcount,
                "group_memberships_deleted": db.execute(delete(GroupMember)
-                                                       .where(GroupMember.user_id == user.id)).rowcount}
+                                                       .where(GroupMember.user_id == user.id)).rowcount,
+               "thread_reads_deleted": db.execute(delete(ThreadRead).where(ThreadRead.user_id == user.id)).rowcount}
     removed.update(ratelimit.forget_login(db, user.login))
     db.delete(user)
     db.flush()

@@ -1,20 +1,27 @@
 """Checks of problem versions end to end (session 4a.4): import -> pending_check + a queued check -> the real internal
-API (uvicorn on a free localhost port) -> a real WorkerProcess (local sandbox) -> version status and check report.
+API (uvicorn on a free localhost port) -> a real worker (`python -m worker run-one`, local sandbox) -> version status
+and check report.
+
+The worker runs in a fresh process, not in a thread of the test process: the local sandbox measures memory by
+ru_maxrss, which a child inherits from its parent's peak across fork and exec, so a test process grown by the whole
+tests/pg run would report ML for every solution (ROADMAP «Отложено», the local backend).
 
 The test packages in tests/problems/check-* and the examples in problems-examples/ are imported as they are. Skipped
 unless JUDGE_TEST_DATABASE_URL is set. The isolate backend is not used here (sandbox-check / redteam by hand).
 """
-import os
+import signal
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest import mock
 
 from tests.pg.pgbase import HAVE_SA, ROOT, URL, PgCase, requires_pg
+from tests.unsafe_local import child_env, enable_for_test
 
 EXAMPLES = ROOT / "problems-examples"
 PACKAGES = ROOT / "tests" / "problems"
@@ -38,9 +45,6 @@ if URL and HAVE_SA:
     from app.problems.importer import import_package, store_blob
     from app.settings import ImportSettings, QueueSettings, Settings
     from app.timeutil import zone
-    from worker.config import WorkerConfig
-    from worker.process import WorkerProcess
-    from worker.topology import WorkerSlot
 
 # what every package must end as: (status, report reason)
 EXPECTED = {
@@ -62,10 +66,10 @@ def free_port() -> int:
 
 @requires_pg
 @unittest.skipUnless(HAVE_UVICORN, "needs uvicorn")
-@mock.patch.dict(os.environ, {"JUDGE_ALLOW_UNSAFE_LOCAL": "1"})
 class ProblemCheckEndToEndTests(PgCase):
     def setUp(self):
         super().setUp()
+        enable_for_test(self)  # the local backend for this test only (tests/unsafe_local.py)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
@@ -89,19 +93,26 @@ class ProblemCheckEndToEndTests(PgCase):
         self.s.commit()
 
     def start_worker(self, index=0):
-        cfg = WorkerConfig(api_url=self.url, token=self.token, machine="e2e", backend="local", pin_cpus=False,
-                           cache_dir=self.tmp / "cache", poll_interval_s=0.05, heartbeat_interval_s=0.2)
-        worker = WorkerProcess(cfg, WorkerSlot(index, (), index * 2))
-        codes = []
-        thread = threading.Thread(target=lambda: codes.append(worker.run()), daemon=True)
-        thread.start()
+        """One worker process, started fresh (see the module docstring); SIGTERM stops it, and it must exit 0."""
+        env = child_env(JUDGE_API_URL=self.url, JUDGE_WORKER_TOKEN=self.token, JUDGE_MACHINE_NAME="e2e",
+                        JUDGE_BACKEND="local", JUDGE_PIN_CPUS="0", JUDGE_CACHE_DIR=str(self.tmp / "cache"),
+                        JUDGE_POLL_INTERVAL_S="0.05", JUDGE_HEARTBEAT_INTERVAL_S="0.2", JUDGE_LOG_LEVEL="WARNING")
+        env.pop("JUDGE_TEST_DATABASE_URL", None)  # the worker never talks to the database
+        proc = subprocess.Popen([sys.executable, "-m", "worker", "run-one", "--index", str(index)], cwd=ROOT,
+                                env=env)
 
         def stop():
-            worker.stop.set()
-            thread.join(30)
-            self.assertEqual(codes, [0], "the worker stopped cleanly")
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGTERM)
+            try:
+                code = proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise
+            self.assertEqual(code, 0, "the worker stopped cleanly")
         self.addCleanup(stop)
-        return worker
+        return proc
 
     def imported(self, root):
         result = import_package(self.s, self.blobs, ImportSettings(), self.actor, self.now(), directory=root)

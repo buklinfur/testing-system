@@ -97,6 +97,36 @@ def content_digest(files: Mapping[str, str]) -> str:
     return h.hexdigest()
 
 
+# ----------------------------------------------------------------------------- statement pictures
+PICTURE_DIR = "statement/images/"
+
+
+def picture_kind(head: bytes) -> Optional[str]:
+    """"png" / "jpeg" / "webp" by the signature, or None - the same test as the server's when it serves the file
+    (backend app/content_files.sniff, docs/FILES.md; a unit test keeps the two in step)."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def picture_warnings(root: Path, files: list) -> list:
+    """statement/images/* that are not PNG, JPEG or WebP by their content (В3, D-071): a warning, never an error -
+    the package imports, but students would get such a file as a download instead of seeing it in the statement."""
+    out = []
+    for rel in files:
+        if rel.startswith(PICTURE_DIR):
+            with open(Path(root) / rel, "rb") as f:
+                head = f.read(16)
+            if picture_kind(head) is None:
+                out.append(f"{rel}: not a PNG, JPEG or WebP picture by its content: students will get it as a "
+                           "download, not see it in the statement; save it as PNG")
+    return out
+
+
 # ----------------------------------------------------------------------------- masks
 def _mask_regex(pattern: str) -> re.Pattern:
     """A glob mask as Path.glob reads it: `*`, `?`, `[...]` stay inside one path part, `**/` spans parts."""
@@ -369,6 +399,7 @@ def load(root, files: Optional[list] = None, schema_path: Path = SCHEMA_PATH) ->
         raise PackageError(errors)
     warnings: list = []
     groups, programs, statements = _semantics(data, files, errors, warnings)
+    warnings += picture_warnings(root, files)  # warnings only: they never change the files or content_sha256
     if errors:
         raise PackageError(errors, warnings)
     return Package(root=root, data=data, files=files, groups=groups, programs=programs, statements=statements,

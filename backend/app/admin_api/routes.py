@@ -1,10 +1,12 @@
 """The router of /api/admin. Every endpoint depends on admin_session (deps.py); sections come in their own modules."""
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends
 
 from ..auth_api import Current, session_out
-from . import contests, groups, problems, submissions, system, users
+from . import attachments, comments, contests, feed, groups, materials, problems, submissions, system, users, works
 from .deps import admin_session
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(admin_session)])
@@ -13,6 +15,11 @@ router = APIRouter(prefix="/api/admin", dependencies=[Depends(admin_session)])
 # Exact (method, path) pairs only, compared with the same scope["path"] the router uses: a trailing slash, a double
 # slash, another case or another method is not exempt (the body limit applies, then the router answers).
 UPLOADS: frozenset = frozenset({("POST", "/api/admin/problems"), ("POST", "/api/admin/users/import")})
+# Upload paths with an id: the method and a pattern the whole path must match (re.fullmatch). The id is written the
+# way the router's int would print it - no leading zero, at most 10 digits (the ids are int4) - so /items/007/...,
+# a trailing slash, a double slash or another method keep the JSON limit.
+UPLOAD_PATTERNS: tuple = (("POST", re.compile(r"/api/admin/items/[1-9][0-9]{0,9}/attachments")),
+                          ("POST", re.compile(r"/api/admin/materials/[1-9][0-9]{0,9}/attachments")))
 
 
 @router.get("/me")
@@ -26,4 +33,9 @@ router.include_router(problems.router)
 router.include_router(contests.router)
 router.include_router(groups.router)
 router.include_router(submissions.router)
+router.include_router(feed.router)
+router.include_router(works.router)
+router.include_router(attachments.router)
+router.include_router(comments.router)
+router.include_router(materials.router)
 router.include_router(system.router)

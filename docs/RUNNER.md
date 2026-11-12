@@ -7,7 +7,7 @@
 | Модуль | Назначение |
 |---|---|
 | `sandbox/isolate.py` | **Боевой** бэкенд поверх `isolate` (cgroup v2): лимиты, запрет сети, урезанная файловая система |
-| `sandbox/local.py` | **Небезопасный** бэкенд для разработки и тестов (rlimits, обычный процесс). Включается только `JUDGE_ALLOW_UNSAFE_LOCAL=1` |
+| `sandbox/local.py` | **Небезопасный** бэкенд для разработки и тестов (rlimits, обычный процесс). Только на машине разработчика (D-065): нужны `JUDGE_ALLOW_UNSAFE_LOCAL=1` **и** `JUDGE_DEV=1`, и процесс не должен быть службой systemd (нет `INVOCATION_ID`); иначе `SandboxError` с перечнем недостающих условий |
 | `languages.py` | Профили Python, C, C++: команды сборки и запуска |
 | `archive.py` | Распаковка zip: защита от zip-slip, символических ссылок, бомб, шифрования |
 | `compile.py` | Сборка (или проверка синтаксиса Python) в песочнице, очистка лога от путей сервера |
@@ -73,6 +73,20 @@ CPU-время решения не меняется (TL считается по 
 `tests/test_e2e_local.py` (тупик без flush даёт TL), все
 детерминированы причинностью, а не таймингами.
 
+### Почему dev-бэкенд нельзя включить на установке (D-065)
+
+`local` — не песочница: решение работает обычным процессом с правами того, кто запустил. Поэтому он открывается только
+при трёх условиях сразу: `JUDGE_ALLOW_UNSAFE_LOCAL=1`, `JUDGE_DEV=1` и отсутствие `INVOCATION_ID` (systemd ставит его
+каждой службе, так что воркер установки `local` не откроет, даже если оба флага вписаны в `/etc/judge/worker.env`).
+Проверок две, независимые и одинаковые по смыслу:
+* сама песочница (`runner/sandbox/local.py`, `local_refusal`) — при создании каждого бокса;
+* воркер до старта (`worker/cli.py`, `local_backend_refusal`, свой код) — для `run`, `run-one` и `check`; отказ — код
+  выхода 78 и строка в журнале.
+
+Обход одной не открывает `local`: отказывает другая. Текст отказа называет недостающие условия и не выводит значения
+переменных окружения. Тесты (`tests/test_unsafe_local_units.py`) проверяют каждое сочетание переменных в обеих
+точках. Тестовые модули включают dev-бэкенд через `tests/unsafe_local.py` только на время своих тестов.
+
 ## Лимиты
 
 Итоговый лимит времени = лимит задачи × множитель языка × `per_language` задачи, но не выше системного потолка (`RunnerConfig`). Если лимит в задаче не указан, действует потолок. Wall-time = 2 × время + 1 с (страховка от зависаний), если задача не задала `limits.wall_ms` (тогда он × множитель языка, тоже с потолком).
@@ -85,9 +99,9 @@ TL помечается видом `tl_kind`: `cpu` (CPU-лимит; у isolate 
 pip install -r requirements.txt
 
 # логика и тесты, без isolate (dev-бэкенд, НЕБЕЗОПАСНО для чужого кода)
-export JUDGE_ALLOW_UNSAFE_LOCAL=1
-python -m unittest discover -s tests -t .
-python -m runner.cli --backend local selfcheck problems-examples/sum-of-two
+python -m unittest discover -s tests -t .        # тесты включают dev-бэкенд сами, только на время своих тестов
+JUDGE_ALLOW_UNSAFE_LOCAL=1 JUDGE_DEV=1 python -m runner.cli --backend local selfcheck problems-examples/sum-of-two
+JUDGE_ALLOW_UNSAFE_LOCAL=1 JUDGE_DEV=1 python tools/bench_interactive.py --backend local --exchanges 1000
 
 # боевой режим в WSL2 (нужен isolate из модуля 0)
 python -m runner.cli sandbox-check               # допущения о поведении isolate

@@ -20,6 +20,9 @@ KillMode=mixed
 TimeoutStopSec=170
 Restart=always
 RestartSec=3
+# 78 = a final configuration error (bad or revoked token, bad setting, local backend refused): restarting cannot fix
+# it. The supervisor exits with 78 then, and systemd leaves the unit failed until the configuration is fixed.
+RestartPreventExitStatus=78
 # isolate needs setuid helpers and cgroups: do NOT add NoNewPrivileges / ProtectSystem / PrivateTmp here
 LimitNOFILE=65536
 Nice=0

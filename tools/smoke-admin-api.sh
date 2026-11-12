@@ -4,7 +4,26 @@
 # student, deadlines with the policies late and no, an extension for one student, submissions and a rejudge in two
 # steps, the rollback of the import (K3), the profile time zone, system, audit, languages; and of session 4a.4:
 # uploaded problems are checked by a worker (it waits for ready, up to 120 s), a package whose checker does not
-# compile (tests/problems/check-broken-checker) ends failed and cannot be pinned, a recheck runs once and ends ready.
+# compile (tests/problems/check-broken-checker) ends failed and cannot be pinned, a recheck runs once and ends ready;
+# and of session 4v.1b (the class feed, docs/ADMIN_API.md §5.8): an assignment for a group, hand-ins through SEED_CMD
+# (dev_seed --item), an extension, grades, a return, a hand-in again, a regrade, a release per student, the filters of
+# the review queue, archiving the group answers its feed items.
+# And of session 4b.0 (docs/FILES.md): a statement picture under a Cyrillic name, a PNG under .jpg and HTML under .png
+# are served by content and name together, with ETag and 304; the import warns about the fake picture.
+# And of session 4v.2b (comments, docs/ADMIN_API.md §5.9): a student refused while comments are off, then a shared and
+# a private comment through SEED_CMD (dev_seed --comment), the inbox awaiting reply, untrusted text byte for byte,
+# a teacher's answer, the read mark, soft deletion and again; NUL and a lone surrogate are 422. rate_limited is not
+# checked (it depends on JUDGE_COMMENT_RATE_PER_MIN of the installation).
+# And of session 4v.3b (files and links, docs/ADMIN_API.md §5.10): attachments of a teacher (a Cyrillic name, a
+# picture, a link), SVG / HTML under .png / .exe / a name not in UTF-8 / a repeated name are 422, another
+# Content-Type 415; downloads with nosniff, the sandbox CSP and 304; the order and removal; a hand-in with files and
+# a link through SEED_CMD (dev_seed --file / --link), the files of the work downloaded, another student's file 404.
+# And of session 4v.4b (materials, docs/ADMIN_API.md §5.11): a material linking a slug nobody has (a warning), a
+# new version linking another material, the same text gives no version, another slug is 422 slug_immutable, an
+# assignment linking a material and an unknown slug (a warning, the draft deleted), resolve, a section with a
+# subsection, the search in lower case Cyrillic, a file of a version (downloaded; not a file of the version before),
+# archive (twice: changed false), the sections deleted. The materials smoke-<time>-memo / -loops stay, archived:
+# a material is never deleted.
 # A worker with the capability problem_check must be running (judgectl worker list: CAPS).
 #   tools/smoke-admin-api.sh [BASE_URL] [ORIGIN]       defaults: http://127.0.0.1:8000 and $JUDGE_PUBLIC_ORIGIN
 # It asks for an admin (login, password, a TOTP code from the phone); ADMIN_LOGIN, ADMIN_PASSWORD and TOTP_CODE
@@ -98,6 +117,21 @@ seed() {  # seed <label> <want exit 0|1> <grep in output or -> dev_seed args...;
     fail "$label: exit $code, want $want $needle: $(tail -c 200 "$D/seed.err" | tr '\n' ' ')"
   fi
   cp "$D/seed.out" "$D/body" 2>/dev/null
+}
+
+seed_item() {  # seed_item <label> <want exit> <grep or -> dev_seed args...: a hand-in on the assignment $ITEM
+  local label=$1 want=$2 needle=$3; shift 3
+  if [ -z "${SEED_CMD:-}" ]; then
+    echo "SKIP $label   ->  dev_seed --item $ITEM $*   (expect exit $want${needle:+, \"$needle\"})"
+    SKIPS=$((SKIPS + 1)); return 1
+  fi
+  local code
+  $SEED_CMD --item "$ITEM" "$@" > "$D/seed.out" 2> "$D/seed.err"; code=$?
+  if [ "$code" = "$want" ] && { [ "$needle" = - ] || grep -q -- "$needle" "$D/seed.out" "$D/seed.err"; }; then
+    echo "OK   $label (exit $code)"
+  else
+    fail "$label: exit $code, want $want $needle: $(tail -c 200 "$D/seed.err" | tr '\n' ' ')"
+  fi
 }
 
 [ "$(curl -s --noproxy '*' --max-time 5 -o /dev/null -w '%{http_code}' "$BASE/api/auth/me")" = 401 ] || {
@@ -241,6 +275,359 @@ check "nothing new: the same check"                   "d['result'] in ('already_
 poll "the recheck ends ready"                         "/api/admin/problems/sum-of-two/versions/$V_sum_of_two" \
      "d['status'] == 'ready' and any(c['id'] == $RC and c['outcome'] == 'ready' for c in d['checks'])"
 send "archive $BROKEN (test data)"                    200 POST "/api/admin/problems/$BROKEN/archive"
+
+echo "--- the class feed (4v.1b): an assignment for a group, hand-ins, grades, a return, a release, the queue"
+G3="smoke $STAMP feed"
+send "a group for the feed"                           201 POST /api/admin/groups "{'name': '$G3'}"
+G3ID=$(val 'd["id"]' 2>/dev/null || echo 0)
+# the answer is read by dev_seed as judge (SEED_CMD): a file in /tmp anyone may read, not in the private $D
+TXT=$(mktemp); chmod 644 "$TXT"; trap 'rm -rf "$D" "$TXT"' EXIT
+printf '%s\n' "<script>alert(\"smoke\")</script> ответ $STAMP" > "$TXT"
+TITLE="<script>alert(1)</script> Блок-схема $STAMP"
+ITEM_BODY="{'kind': 'assignment', 'title': '$TITLE', 'body_md': '**Нарисуй** <img src=x onerror=alert(1)>',
+            'grading': 'points', 'max_points': 10, 'due_at': '2026-01-02 00:00', 'after_due_submit': 'late',
+            'group_ids': [$G3ID]}"
+send "create an assignment for $G3 (a draft)"         201 POST /api/admin/items "$ITEM_BODY"
+ITEM=$(val 'd["id"]' 2>/dev/null || echo 0)
+check "untrusted title back byte for byte, due in UTC with Z" \
+      "d['title'] == '$TITLE' and d['due_at'].endswith('Z') and d['state'] == 'draft' and d['max_points'] == '10.00'"
+send "publish it"                                     200 POST "/api/admin/items/$ITEM/publish"
+check "published"                                     "d['item']['state'] == 'published' and d['changed']"
+get "the feed of $G3"                                 200 "/api/admin/groups/$G3ID/feed"
+check "the assignment is in it"                       "[i['id'] for i in d['items']] == [$ITEM]"
+get "an unknown student in the path"                  404 "/api/admin/items/$ITEM/works/999999999"
+if [ "$U1" != 0 ] && [ "$U2" != 0 ]; then
+  send "dev-student-1 and -2 into $G3"                200 POST "/api/admin/groups/$G3ID/members" "{'user_ids': [$U1, $U2]}"
+  get "the card of an addressee without work"         200 "/api/admin/items/$ITEM/works/$U1"
+  check "assigned, no events, missing (past due)"     "d['status'] == 'assigned' and d['events'] == [] and d['missing']"
+  seed_item "dev-student-1 hands in after due: late"  0 '"late": true' --user 1 --text-file "$TXT"
+  send "extension for dev-student-2"                  201 POST "/api/admin/items/$ITEM/extensions" \
+                                                          "{'user_id': $U2, 'due_at': '2098-12-31 23:59:59', 'reason': '<b>smoke</b>'}"
+  seed_item "dev-student-2 with the extension: on time" 0 '"late": false' --user 2 --text-file "$TXT"
+  get "the review queue of the item"                  200 "/api/admin/works?item_id=$ITEM"
+  [ -z "${SEED_CMD:-}" ] || check "2 hand-ins; dev-student-1 late, dev-student-2 not" \
+      "sorted((r['login'], r['status'], r['late']) for r in d['items']) == [('dev-student-1', 'submitted', True), ('dev-student-2', 'submitted', False)]"
+  get "late ones of $G3 across items"                 200 "/api/admin/works?late=true&group_id=$G3ID"
+  [ -z "${SEED_CMD:-}" ] || check "of this item: dev-student-1 only (earlier runs have works too)" \
+      "[r['login'] for r in d['items'] if r['item'] == $ITEM] == ['dev-student-1']"
+  get "missing without an item"                       422 "/api/admin/works?missing=true"
+  if [ -n "${SEED_CMD:-}" ]; then
+    get "the card of dev-student-1"                   200 "/api/admin/items/$ITEM/works/$U1"
+    check "the answer byte for byte"                  "d['events'][0]['text'].startswith('<script>alert(\"smoke\")</script>')"
+  fi
+  send "a score with three decimals"                  422 POST "/api/admin/items/$ITEM/works/$U1/grade" "{'score': '8.555'}"
+  check "score_invalid"                               "d['detail'] == 'score_invalid'"
+  send "grade dev-student-1: 8.5"                     200 POST "/api/admin/items/$ITEM/works/$U1/grade" "{'score': '8.5', 'comment': 'хорошо'}"
+  check "graded, not released"                        "d['result']['status'] == 'graded' and not d['result']['released'] and d['work']['student_sees']['grade'] is None"
+  if [ -n "${SEED_CMD:-}" ]; then
+    send "return dev-student-2"                       200 POST "/api/admin/items/$ITEM/works/$U2/return" "{'comment': 'доделай <i>схему</i>'}"
+    check "returned, seen at once"                    "d['work']['student_sees']['status'] == 'returned'"
+    seed_item "dev-student-2 hands in again"          0 '"status": "submitted"' --user 2 --text-file "$TXT"
+  else
+    echo "SKIP return and hand in again   ->  needs a hand-in of dev-student-2 (SEED_CMD)"; SKIPS=$((SKIPS + 1))
+  fi
+  send "regrade dev-student-1: 9"                     200 POST "/api/admin/items/$ITEM/works/$U1/grade" "{'score': 9}"
+  send "release unknown students: nothing changes"    404 POST "/api/admin/items/$ITEM/release" "{'user_ids': [$U1, 999999999]}"
+  send "release the grades"                           200 POST "/api/admin/items/$ITEM/release" "{}"
+  check "per student: dev-student-1 released, dev-student-2 nothing_to_release" \
+      "{r['login']: r['result'] for r in d['results']} == {'dev-student-1': 'released', 'dev-student-2': 'nothing_to_release'} or not '${SEED_CMD:-}'"
+  get "dev-student-1 now sees 9"                      200 "/api/admin/items/$ITEM/works/$U1"
+  check "the released grade is the regrade"           "d['student_sees']['grade']['score'] == '9.00'"
+  get "submitted ones of $G3"                         200 "/api/admin/works?group_id=$G3ID&status=submitted"
+  [ -z "${SEED_CMD:-}" ] || check "of this item: dev-student-2 (handed in again)" \
+      "[r['login'] for r in d['items'] if r['item'] == $ITEM] == ['dev-student-2']"
+else
+  echo "SKIP the hand-ins and grades of the feed (dev-student-1/-2 do not exist yet: run with SEED_CMD twice)"
+  SKIPS=$((SKIPS + 1))
+fi
+send "archive the assignment"                         200 POST "/api/admin/items/$ITEM/archive"
+send "archive $G3: answers its feed items"            200 POST "/api/admin/groups/$G3ID/archive"
+check "feed_items = [the assignment], no contests; the old fields stay" \
+      "set(d) == {'group', 'contests', 'feed_items'} and d['contests'] == [] and [i['id'] for i in d['feed_items']] == [$ITEM]"
+
+echo "--- statement pictures and file headers (4b.0): content and name together, ETag, 304, the import warning"
+PIC="smoke-pic-$STAMP"
+PICDIR=$(mktemp -d); trap 'rm -rf "$D" "${TXT:-}" "$PICDIR"' EXIT
+cp -r "$ROOT/problems-examples/sum-of-two" "$PICDIR/pkg"
+sed -i "s/^slug: .*/slug: $PIC/" "$PICDIR/pkg/problem.yaml"
+mkdir -p "$PICDIR/pkg/statement/images"
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40)' \
+  "$PICDIR/pkg/statement/images/схема.png"
+cp "$PICDIR/pkg/statement/images/схема.png" "$PICDIR/pkg/statement/images/photo.jpg"   # a PNG under .jpg
+printf '<html><script>alert(1)</script></html>' > "$PICDIR/pkg/statement/images/fake.png"
+"$HERE/pack-problem.sh" "$PICDIR/pkg" > "$D/pic.zip" || fail "pack $PIC"
+c "upload $PIC (a fake picture inside)"              201 POST /api/admin/problems -H "$O" -H @"$D/cookie" -H @"$D/csrf" \
+                                                          -H 'Content-Type: application/zip' --data-binary @"$D/pic.zip"
+check "imported, one warning: fake.png, save it as PNG" \
+      "[w for w in d['warnings'] if w.startswith('statement/images/')] == [w for w in d['warnings'] if w.startswith('statement/images/fake.png') and 'save it as PNG' in w] and len([w for w in d['warnings'] if w.startswith('statement/images/')]) == 1"
+PV=$(val 'd["version"]' 2>/dev/null || echo 1)
+poll "$PIC v$PV is ready (its check, so that no check is left waiting)" "/api/admin/problems/$PIC/versions/$PV" "d['status'] == 'ready'"
+FILES="/api/admin/problems/$PIC/versions/$PV/files/statement/images"
+get "the Cyrillic picture"                            200 "$FILES/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png"
+hdr() { grep -i "^$1:" "$D/hdr" | tr -d '\r' | cut -d' ' -f2-; }
+[ "$(hdr content-type)" = image/png ] && echo "OK   image/png" || fail "content-type: $(hdr content-type)"
+[ "$(hdr content-disposition)" = "inline; filename=\"skhema.png\"; filename*=UTF-8''%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png" ] \
+  && echo "OK   inline, the Cyrillic name in filename*, a transliteration in filename" || fail "disposition: $(hdr content-disposition)"
+[ "$(hdr x-content-type-options)" = nosniff ] && [ "$(hdr content-security-policy)" = "sandbox; default-src 'none'" ] \
+  && [ "$(hdr cache-control)" = "private, no-cache" ] && echo "OK   nosniff, sandbox CSP, private no-cache" || fail "safety headers"
+ETAG=$(hdr etag)
+[[ $ETAG =~ ^\"[0-9a-f]{64}\"$ ]] && echo "OK   ETag \"<sha256>\"" || fail "etag: $ETAG"
+get "the same with If-None-Match"                     304 "$FILES/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png" -H "If-None-Match: $ETAG"
+[ "$(hdr x-content-type-options)" = nosniff ] && [ "$(hdr cache-control)" = "private, no-cache" ] && [ "$(hdr etag)" = "$ETAG" ] \
+  && echo "OK   304 carries the same headers" || fail "304 headers"
+get "a PNG under .jpg"                                200 "$FILES/photo.jpg"
+[ "$(hdr content-type)" = image/png ] && echo "OK   the type of the bytes" || fail "photo.jpg: $(hdr content-type)"
+get "HTML under .png"                                 200 "$FILES/fake.png"
+[ "$(hdr content-type)" = application/octet-stream ] && [[ $(hdr content-disposition) == attachment* ]] \
+  && echo "OK   not a picture: a download" || fail "fake.png: $(hdr content-type) $(hdr content-disposition)"
+c "no session: If-None-Match changes nothing"         401 GET "$FILES/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png" -H "If-None-Match: $ETAG"
+send "archive $PIC (test data)"                       200 POST "/api/admin/problems/$PIC/archive"
+
+echo "--- comments (4v.2): comments off and on, a shared and a private thread, read marks, deletion, the inbox"
+seed_comment() {  # seed_comment <label> <want exit> <grep or -> dev_seed args...: a student's comment on $CITEM
+  local label=$1 want=$2 needle=$3; shift 3
+  if [ -z "${SEED_CMD:-}" ]; then
+    echo "SKIP $label   ->  dev_seed --item $CITEM $*   (expect exit $want${needle:+, \"$needle\"})"
+    SKIPS=$((SKIPS + 1)); return 1
+  fi
+  local code
+  $SEED_CMD --item "$CITEM" "$@" > "$D/seed.out" 2> "$D/seed.err"; code=$?
+  if [ "$code" = "$want" ] && { [ "$needle" = - ] || grep -q -- "$needle" "$D/seed.out" "$D/seed.err"; }; then
+    echo "OK   $label (exit $code)"
+  else
+    fail "$label: exit $code, want $want $needle: $(tail -c 200 "$D/seed.err" | tr '\n' ' ')"
+  fi
+}
+get "who am I"                                        200 /api/admin/me
+ME=$(val 'd["user"]["id"]' 2>/dev/null || echo 0)
+G4="smoke $STAMP comments"
+send "a group for the comments"                       201 POST /api/admin/groups "{'name': '$G4'}"
+G4ID=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "an assignment for $G4, comments off"            201 POST /api/admin/items \
+     "{'kind': 'assignment', 'title': 'Вопросы $STAMP', 'grading': 'none', 'group_ids': [$G4ID]}"
+CITEM=$(val 'd["id"]' 2>/dev/null || echo 0)
+check "comments_enabled false by default"             "d['comments_enabled'] is False"
+send "a comment in a draft: refused"                  409 POST "/api/admin/items/$CITEM/comments" "{'body': 'рано'}"
+send "publish it"                                     200 POST "/api/admin/items/$CITEM/publish"
+get "an admin in the path of a private thread"        404 "/api/admin/items/$CITEM/students/$ME/comments"
+check "thread_not_found"                              "d['detail'] == 'thread_not_found'"
+send "delete a comment that does not exist"           404 POST /api/admin/comments/999999999/delete "{}"
+send "a body with NUL"                                422 POST "/api/admin/items/$CITEM/comments" "{'body': 'a\\x00'}"
+check "comment_invalid"                               "d['detail'] == 'comment_invalid'"
+c "a lone surrogate in the JSON body"                 422 POST "/api/admin/items/$CITEM/comments" -H "$O" -H @"$D/cookie" \
+                                                          -H @"$D/csrf" -H "$J" --data-binary '{"body": "a\ud800"}'
+check "invalid_request, not a 500"                    "d['detail'] == 'invalid_request'"
+send "a contest item (a draft) for the contest"       201 POST /api/admin/items "{'kind': 'contest', 'title': 'К', 'contest': '$SLUG'}"
+CLINK=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a private thread of a contest item"             409 POST "/api/admin/items/$CLINK/students/$ME/comments" "{'body': 'x'}"
+check "not_an_assignment"                             "d['detail'] == 'not_an_assignment'"
+send "delete that draft"                              204 POST "/api/admin/items/$CLINK/delete" "{'confirm_id': $CLINK}"
+if [ "$U1" != 0 ] && [ "$U2" != 0 ]; then
+  HOSTILE_C=$(printf '<script>alert(1)</script> \033[2J ответ %s' "$STAMP")
+  send "dev-student-1 and -2 into $G4"                200 POST "/api/admin/groups/$G4ID/members" "{'user_ids': [$U1, $U2]}"
+  seed_comment "dev-student-1, comments off: refused" 1 comments_disabled --user 1 --comment "можно?"
+  send "turn comments on"                             200 PUT "/api/admin/items/$CITEM" "{'comments_enabled': True}"
+  check "changed: comments_enabled"                   "d['changed'] == ['comments_enabled'] and d['item']['comments_enabled']"
+  seed_comment "dev-student-1 in the shared thread"   0 '"kind": "shared"' --user 1 --comment "вопрос $STAMP"
+  seed_comment "dev-student-2 privately: <script> and ESC" 0 '"kind": "private"' --user 2 --private --comment "$HOSTILE_C"
+  get "the inbox: awaiting reply"                     200 "/api/admin/comments/threads?awaiting=true&item_id=$CITEM"
+  check "both threads await, newest first"            "[(t['kind'], t['awaiting_reply']) for t in d['items']] == [('private', True), ('shared', True)] and all(t['last']['at'].endswith('Z') for t in d['items'])"
+  get "the private thread of dev-student-2"           200 "/api/admin/items/$CITEM/students/$U2/comments"
+  grep -qF '<script>alert(1)</script>' "$D/body" && echo "OK   <script> in the JSON as it is" || fail "<script> changed in the JSON"
+  check "the body byte for byte (ESC in it), unread 1" "d['comments'][0]['body'] == '<script>alert(1)</script> \\x1b[2J ответ $STAMP' and d['unread'] == 1 and d['comments'][0]['at'].endswith('Z')"
+  get "the same again: GET sets no mark"              200 "/api/admin/items/$CITEM/students/$U2/comments"
+  check "still unread 1"                              "d['unread'] == 1"
+  send "the teacher answers dev-student-2"            201 POST "/api/admin/items/$CITEM/students/$U2/comments" "{'body': 'Отвечаю <b>тут</b>'}"
+  REPLY=$(val 'd["id"]' 2>/dev/null || echo 0)
+  check "a private comment of the item"               "d['kind'] == 'private' and d['item'] == $CITEM and not d['deleted']"
+  get "the inbox: awaiting reply"                     200 "/api/admin/comments/threads?awaiting=true&item_id=$CITEM"
+  check "only the shared thread waits"                "[t['kind'] for t in d['items']] == ['shared']"
+  send "mark the private thread read"                 200 POST "/api/admin/items/$CITEM/students/$U2/comments/read" "{}"
+  check "unread 0"                                    "d == {'unread': 0}"
+  send "delete the answer, with a reason"             200 POST "/api/admin/comments/$REPLY/delete" "{'reason': 'не туда'}"
+  check "deleted, the reason and the text kept"       "d['deleted'] and d['delete_reason'] == 'не туда' and d['body'] == 'Отвечаю <b>тут</b>' and d['deleted_at'].endswith('Z')"
+  send "delete it again"                              409 POST "/api/admin/comments/$REPLY/delete" "{}"
+  check "already_deleted"                             "d['detail'] == 'already_deleted'"
+  get "the inbox: awaiting reply"                     200 "/api/admin/comments/threads?awaiting=true&item_id=$CITEM"
+  check "the private thread waits again"              "[t['kind'] for t in d['items']] == ['private', 'shared']"
+else
+  echo "SKIP the students' comments (dev-student-1/-2 do not exist yet: run with SEED_CMD twice)"
+  SKIPS=$((SKIPS + 1))
+fi
+send "archive the assignment"                         200 POST "/api/admin/items/$CITEM/archive"
+send "archive $G4"                                    200 POST "/api/admin/groups/$G4ID/archive"
+
+echo "--- files and links (4v.3): attachments, refused types, downloads with headers and 304, files of a work"
+seed_files() {  # seed_files <label> <want exit> <grep or -> dev_seed args...: a hand-in on $FITEM; output in $D/body
+  local label=$1 want=$2 needle=$3; shift 3
+  if [ -z "${SEED_CMD:-}" ]; then
+    echo "SKIP $label   ->  dev_seed --item $FITEM $*   (expect exit $want${needle:+, \"$needle\"})"
+    SKIPS=$((SKIPS + 1)); return 1
+  fi
+  local code
+  $SEED_CMD --item "$FITEM" "$@" > "$D/seed.out" 2> "$D/seed.err"; code=$?
+  if [ "$code" = "$want" ] && { [ "$needle" = - ] || grep -q -- "$needle" "$D/seed.out" "$D/seed.err"; }; then
+    echo "OK   $label (exit $code)"
+  else
+    fail "$label: exit $code, want $want $needle: $(tail -c 200 "$D/seed.err" | tr '\n' ' ')"
+  fi
+  cp "$D/seed.out" "$D/body" 2>/dev/null
+}
+up() {  # up <label> <want> <item> <percent-encoded name> <file>: an upload of the raw body
+  c "$1" "$2" POST "/api/admin/items/$3/attachments?name=$4" -H "$O" -H @"$D/cookie" -H @"$D/csrf" \
+    -H 'Content-Type: application/octet-stream' --data-binary @"$5"
+}
+# the files dev_seed hands in: readable by judge too (SEED_CMD=tools/seed-as-judge.sh runs dev_seed as judge)
+FD=$(mktemp -d); chmod 755 "$FD"; trap 'rm -rf "$D" "${TXT:-}" "${PICDIR:-}" "$FD"' EXIT
+printf '%%PDF-1.7\n%% smoke %s\n' "$STAMP" > "$FD/report.pdf"
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40)' "$FD/pic.png"
+printf '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>' > "$FD/x.svg"
+printf '<html><script>alert(1)</script></html>' > "$FD/fake.png"
+printf 'MZ\x90\x00' > "$FD/run.exe"
+printf 'print("smoke %s")\n' "$STAMP" > "$FD/main.py"
+printf 'Готово %s\n' "$STAMP" > "$FD/answer.txt"
+chmod 644 "$FD"/*
+G5="smoke $STAMP files"
+send "a group for the files"                          201 POST /api/admin/groups "{'name': '$G5'}"
+G5ID=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "an assignment with files or text for $G5"      201 POST /api/admin/items \
+     "{'kind': 'assignment', 'title': 'Проект $STAMP', 'grading': 'pass_fail', 'answer_kind': 'text_or_files', 'group_ids': [$G5ID]}"
+FITEM=$(val 'd["id"]' 2>/dev/null || echo 0)
+up "attach a PDF under a Cyrillic name"               201 "$FITEM" "%D0%A3%D1%81%D0%BB%D0%BE%D0%B2%D0%B8%D0%B5.pdf" "$FD/report.pdf"
+check "a file, the name decoded, its size"            "d['kind'] == 'file' and d['name'] == 'Условие.pdf' and d['size'] > 0 and len(d['sha256']) == 64"
+ATT=$(val 'd["id"]' 2>/dev/null || echo 0)
+up "attach a picture"                                 201 "$FITEM" "pic.png" "$FD/pic.png"
+PICATT=$(val 'd["id"]' 2>/dev/null || echo 0)
+up "SVG"                                              422 "$FITEM" "x.svg" "$FD/x.svg"
+check "file_type_not_allowed"                         "d['detail'] == 'file_type_not_allowed'"
+up "HTML under .png"                                  422 "$FITEM" "fake.png" "$FD/fake.png"
+check "file_content_mismatch"                         "d['detail'] == 'file_content_mismatch'"
+up ".exe"                                             422 "$FITEM" "run.exe" "$FD/run.exe"
+check "file_type_not_allowed"                         "d['detail'] == 'file_type_not_allowed'"
+up "a name that is not UTF-8"                         422 "$FITEM" "%FF.pdf" "$FD/report.pdf"
+check "invalid_request, not a 500"                    "d['detail'] == 'invalid_request'"
+up "the same name in another case"                    422 "$FITEM" "%D0%A3%D0%A1%D0%9B%D0%9E%D0%92%D0%98%D0%95.PDF" "$FD/report.pdf"
+check "duplicate_name"                                "d['detail'] == 'duplicate_name'"
+c "another Content-Type"                              415 POST "/api/admin/items/$FITEM/attachments?name=a.pdf" -H "$O" \
+                                                          -H @"$D/cookie" -H @"$D/csrf" -H 'Content-Type: application/pdf' --data-binary @"$FD/report.pdf"
+send "a link with an untrusted title"                 201 POST "/api/admin/items/$FITEM/links" "{'url': 'https://scratch.mit.edu/projects/1', 'title': '<b>пример</b>'}"
+check "stored as sent"                                "d['kind'] == 'link' and d['title'] == '<b>пример</b>'"
+LINK=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a javascript: link"                             422 POST "/api/admin/items/$FITEM/links" "{'url': 'javascript:alert(1)'}"
+check "link_invalid"                                  "d['detail'] == 'link_invalid'"
+get "download the PDF"                                200 "/api/admin/items/$FITEM/attachments/$ATT"
+cmp -s "$D/body" "$FD/report.pdf" && echo "OK   the same bytes" || fail "the PDF differs"
+[ "$(hdr content-type)" = application/octet-stream ] && [[ $(hdr content-disposition) == "attachment; filename=\"Uslovie.pdf\"; filename*=UTF-8''%D0%A3%D1%81%D0%BB%D0%BE%D0%B2%D0%B8%D0%B5.pdf" ]] \
+  && echo "OK   a download, the Cyrillic name in filename*" || fail "pdf: $(hdr content-type) $(hdr content-disposition)"
+[ "$(hdr x-content-type-options)" = nosniff ] && [ "$(hdr content-security-policy)" = "sandbox; default-src 'none'" ] \
+  && echo "OK   nosniff, sandbox CSP" || fail "safety headers of an attachment"
+ETAG=$(hdr etag)
+get "the same with If-None-Match"                     304 "/api/admin/items/$FITEM/attachments/$ATT" -H "If-None-Match: $ETAG"
+get "the picture"                                     200 "/api/admin/items/$FITEM/attachments/$PICATT"
+[ "$(hdr content-type)" = image/png ] && [[ $(hdr content-disposition) == inline* ]] && echo "OK   image/png inline" \
+  || fail "picture: $(hdr content-type) $(hdr content-disposition)"
+get "a link is not a file"                            404 "/api/admin/items/$FITEM/attachments/$LINK"
+check "attachment_not_found"                          "d['detail'] == 'attachment_not_found'"
+send "the new order"                                  200 PUT "/api/admin/items/$FITEM/attachments/order" "{'ids': [$LINK, $ATT, $PICATT]}"
+check "link first"                                    "[a['id'] for a in d['items']] == [$LINK, $ATT, $PICATT]"
+send "an order without the picture"                   422 PUT "/api/admin/items/$FITEM/attachments/order" "{'ids': [$LINK, $ATT]}"
+check "attachment_order_invalid, missing named"       "d['detail'] == 'attachment_order_invalid' and d['missing'] == [$PICATT]"
+send "remove the picture"                             204 POST "/api/admin/items/$FITEM/attachments/$PICATT/delete"
+get "the attachments"                                 200 "/api/admin/items/$FITEM/attachments"
+check "the link and the PDF are left"                 "[a['id'] for a in d['items']] == [$LINK, $ATT]"
+send "publish it"                                     200 POST "/api/admin/items/$FITEM/publish"
+if [ "$U1" != 0 ] && [ "$U2" != 0 ]; then
+  send "dev-student-1 and -2 into $G5"                200 POST "/api/admin/groups/$G5ID/members" "{'user_ids': [$U1, $U2]}"
+  seed_files "dev-student-1: .exe refused"            1 file_type_not_allowed --user 1 --file "$FD/run.exe"
+  seed_files "dev-student-1: files, a link and a text" 0 '"files"' --user 1 --text-file "$FD/answer.txt" \
+             --file "$FD/main.py" --file "$FD/report.pdf" --link https://github.com/smoke/x "репозиторий"
+  check "answer.md, main.py, report.pdf and the link" "[f['name'] for f in d['files']] == ['answer.md', 'main.py', 'report.pdf'] and d['links'][0]['title'] == 'репозиторий'"
+  PYID=$(val '[f["id"] for f in d["files"] if f["name"] == "main.py"][0]' 2>/dev/null || echo 0)
+  ANSID=$(val '[f["id"] for f in d["files"] if f["kind"] == "text"][0]' 2>/dev/null || echo 0)
+  get "the card of the work lists the files"          200 "/api/admin/items/$FITEM/works/$U1"
+  check "files and links of the hand-in"              "[f['name'] for f in d['events'][0]['files']] == ['answer.md', 'main.py', 'report.pdf'] and len(d['events'][0]['links']) == 1"
+  get "download main.py of the work"                  200 "/api/admin/items/$FITEM/works/$U1/files/$PYID"
+  cmp -s "$D/body" "$FD/main.py" && echo "OK   the same bytes" || fail "main.py differs"
+  [[ $(hdr content-type) == text/plain* ]] && [ "$(hdr x-content-type-options)" = nosniff ] && echo "OK   text, nosniff" \
+    || fail "main.py: $(hdr content-type)"
+  get "the same with If-None-Match"                   304 "/api/admin/items/$FITEM/works/$U1/files/$PYID" -H "If-None-Match: $(hdr etag)"
+  get "download answer.md"                            200 "/api/admin/items/$FITEM/works/$U1/files/$ANSID"
+  cmp -s "$D/body" "$FD/answer.txt" && echo "OK   the text answer as handed in" || fail "answer.md differs"
+  get "the same file as another student's"            404 "/api/admin/items/$FITEM/works/$U2/files/$PYID"
+  check "file_not_found"                              "d['detail'] == 'file_not_found'"
+  get "the same file under another item"              404 "/api/admin/items/$ITEM/works/$U1/files/$PYID"
+  check "file_not_found"                              "d['detail'] == 'file_not_found'"
+else
+  echo "SKIP the hand-ins with files (dev-student-1/-2 do not exist yet: run with SEED_CMD twice)"
+  SKIPS=$((SKIPS + 1))
+fi
+send "archive the assignment"                         200 POST "/api/admin/items/$FITEM/archive"
+up "an archived item is read only"                    409 "$FITEM" "late.pdf" "$FD/report.pdf"
+check "item_archived"                                 "d['detail'] == 'item_archived'"
+send "archive $G5"                                    200 POST "/api/admin/groups/$G5ID/archive"
+
+echo "--- materials (4v.4): versions, links and their warnings, the fixed slug, sections, search, files, archive"
+MS="smoke-$STAMP"
+mup() {  # mup <label> <want> <material id> <percent-encoded name> <file>: a file of a new version, the raw body
+  c "$1" "$2" POST "/api/admin/materials/$3/attachments?name=$4" -H "$O" -H @"$D/cookie" -H @"$D/csrf" \
+    -H 'Content-Type: application/octet-stream' --data-binary @"$5"
+}
+send "a material linking a slug nobody has yet"       201 POST /api/admin/materials \
+     "{'slug': '$MS-memo', 'title': 'Памятка $STAMP', 'body_md': 'См. [[памятка:$MS-later]]'}"
+check "version 1, one warning, the link unknown"      "d['version'] == 1 and len(d['warnings']) == 1 and d['links'] == [{'slug': '$MS-later', 'status': 'unknown'}]"
+MEMO=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a material for every student"                  201 POST /api/admin/materials \
+     "{'slug': '$MS-loops', 'title': 'Циклы $STAMP', 'library': 'all_students'}"
+LOOPS=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a new text linking it"                          200 POST "/api/admin/materials/$MEMO/versions" "{'body_md': 'См. [[памятка:$MS-loops|циклы]]'}"
+check "version 2, no warnings"                        "d['version'] == 2 and d['created'] and d['warnings'] == []"
+send "the same text again"                            200 POST "/api/admin/materials/$MEMO/versions" "{'body_md': 'См. [[памятка:$MS-loops|циклы]]'}"
+check "no new version"                                "d['version'] == 2 and d['created'] is False"
+send "another slug"                                   422 PATCH "/api/admin/materials/$MEMO" "{'slug': '$MS-other'}"
+check "slug_immutable"                                "d['detail'] == 'slug_immutable'"
+send "a new title in place"                           200 PATCH "/api/admin/materials/$MEMO" "{'title': 'Памятка $STAMP (2)'}"
+check "changed title, still version 2"                "d['changed'] == ['title'] and d['material']['versions'] == 2"
+send "an assignment linking it and an unknown slug"   201 POST /api/admin/items \
+     "{'kind': 'assignment', 'title': 'Памятки $STAMP', 'grading': 'none', 'body_md': '[[памятка:$MS-memo]] [[памятка:$MS-nope]]'}"
+check "saved, one link warning"                       "len(d['link_warnings']) == 1 and '$MS-nope' in d['link_warnings'][0]"
+MITEM=$(val 'd["id"]' 2>/dev/null || echo 0)
+get "where the material is used"                      200 "/api/admin/materials/$MEMO/where"
+check "the assignment links it"                       "[i['id'] for i in d['linking_items']] == [$MITEM]"
+send "delete the draft assignment"                    204 POST "/api/admin/items/$MITEM/delete" "{'confirm_id': $MITEM}"
+send "resolve a text"                                 200 POST /api/admin/materials/resolve "{'text': '[[памятка:$MS-memo]] [[памятка:$MS-nope]] [[памятка:]]'}"
+check "ok and unknown, two warnings, nothing written" "[r['status'] for r in d['links']] == ['ok', 'unknown'] and len(d['warnings']) == 2"
+send "a section"                                      201 POST /api/admin/library/sections "{'title': 'Smoke $STAMP'}"
+SEC=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a subsection"                                   201 POST /api/admin/library/sections "{'title': 'Циклы', 'parent_id': $SEC}"
+SUB=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "no third level"                                 409 POST /api/admin/library/sections "{'title': 'Глубже', 'parent_id': $SUB}"
+check "section_too_deep"                              "d['detail'] == 'section_too_deep'"
+send "the material into the subsection"               200 POST "/api/admin/library/sections/$SUB/materials" "{'material_id': $LOOPS}"
+get "the library"                                     200 /api/admin/library
+check "the section, its subsection, the material"     "[[m['slug'] for m in x['materials']] for s in d['sections'] if s['id'] == $SEC for x in s['sections']] == [['$MS-loops']]"
+get "search in lower case Cyrillic"                   200 /api/admin/library -G --data-urlencode "q=циклы $STAMP"
+check "finds «Циклы $STAMP»"                          "[m['slug'] for m in d['materials']] == ['$MS-loops']"
+mup "a PDF into a new version"                        201 "$MEMO" "%D0%BF%D0%B0%D0%BC%D1%8F%D1%82%D0%BA%D0%B0.pdf" "$FD/report.pdf"
+check "version 3 with the file"                       "d['version'] == 3 and [a['name'] for a in d['attachments']] == ['памятка.pdf']"
+MATT=$(val 'd["attachments"][0]["id"]' 2>/dev/null || echo 0)
+mup "SVG"                                             422 "$MEMO" "x.svg" "$FD/x.svg"
+check "file_type_not_allowed"                         "d['detail'] == 'file_type_not_allowed'"
+get "download the file of the version"                200 "/api/admin/materials/$MEMO/attachments/$MATT"
+cmp -s "$D/body" "$FD/report.pdf" && echo "OK   the same bytes" || fail "the file of the material differs"
+[ "$(hdr x-content-type-options)" = nosniff ] && echo "OK   nosniff" || fail "nosniff of a material's file"
+get "not a file of version 2"                         404 "/api/admin/materials/$MEMO/attachments/$MATT?version=2"
+check "attachment_not_found"                          "d['detail'] == 'attachment_not_found'"
+get "the history"                                     200 "/api/admin/materials/$MEMO/versions"
+check "versions 3, 2, 1"                              "[v['version'] for v in d['items']] == [3, 2, 1]"
+send "archive the material"                           200 POST "/api/admin/materials/$MEMO/archive"
+check "changed"                                       "d['changed'] is True"
+send "archive it again"                               200 POST "/api/admin/materials/$MEMO/archive"
+check "not changed"                                   "d['changed'] is False"
+mup "an archived material is read only"               409 "$MEMO" "late.pdf" "$FD/report.pdf"
+check "material_archived"                             "d['detail'] == 'material_archived'"
+send "archive the other one"                          200 POST "/api/admin/materials/$LOOPS/archive"
+send "delete the subsection"                          200 POST "/api/admin/library/sections/$SUB/delete" "{'confirm_id': $SUB}"
+send "delete the section"                             200 POST "/api/admin/library/sections/$SEC/delete" "{'confirm_id': $SEC}"
 
 echo "--- the rest: archive, profile, system, audit, languages"
 send "archive the contest"                            200 POST "/api/admin/contests/$SLUG/archive"

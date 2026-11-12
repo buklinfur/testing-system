@@ -173,6 +173,55 @@ class BodyLimitTests(unittest.TestCase):
                 self.assertEqual((status, seen[-1]), (200, 0))
 
 
+    def test_only_the_upload_pattern_itself_is_exempt(self):
+        """POST /api/admin/items/<id>/attachments and /api/admin/materials/<id>/attachments read their own body;
+        every neighbour keeps the 1 MB limit."""
+        from app.admin_api import UPLOAD_PATTERNS
+        self.assertEqual([(m, p.pattern) for m, p in UPLOAD_PATTERNS],
+                         [("POST", "/api/admin/items/[1-9][0-9]{0,9}/attachments"),
+                          ("POST", "/api/admin/materials/[1-9][0-9]{0,9}/attachments")])
+        seen = []
+
+        async def handler(scope, receive, send):
+            seen.append(body.taken)
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        layer = BodyLimitMiddleware(handler, exempt_patterns=UPLOAD_PATTERNS)
+        for kind in ("items", "materials"):
+            base = f"/api/admin/{kind}/5/attachments"
+            variants = [
+                ("POST", base + "/"), ("POST", "/" + base), ("POST", f"/api/admin//{kind}/5/attachments"),
+                ("POST", f"/api/admin/{kind}//5/attachments"), ("POST", f"/api/admin/{kind}/5//attachments"),
+                ("POST", f"/api/admin/{kind}/007/attachments"), ("POST", f"/api/admin/{kind}/0/attachments"),
+                ("POST", f"/api/admin/{kind}/-5/attachments"), ("POST", f"/api/admin/{kind}/+5/attachments"),
+                ("POST", f"/api/admin/{kind}/x/attachments"), ("POST", f"/api/admin/{kind}/12345678901/attachments"),
+                ("POST", base + "x"), ("POST", base + "/9"), ("POST", base + "/order"),
+                ("POST", f"/api/admin/{kind}/5/links"), ("POST", f"/api/admin/{kind}/5%2Fattachments"),
+                ("POST", base.replace("/api/", "/API/")), ("POST", base.replace("/attachments", "/Attachments")),
+                ("POST", base + "\n"), ("POST", base + "/9/delete"), ("POST", "/x" + base),
+                ("POST", f"/api/admin/{kind}/5/versions"), ("POST", f"/api/admin/{kind}/attachments"),
+                ("PUT", base), ("PATCH", base), ("DELETE", base), ("GET", base), ("PUT", base + "/order"),
+            ]
+            for method, path in variants:
+                with self.subTest(method=method, path=path):
+                    body = Body(40)
+                    status, _h, _out = call(self.app, method, path, body)
+                    self.assertEqual((status, body.taken), (413, JSON_LIMIT // CHUNK + 1))
+            for path in (f"/api/admin/{kind}/1/attachments", base, f"/api/admin/{kind}/2147483647/attachments",
+                         f"/api/admin/{kind}/9999999999/attachments"):
+                with self.subTest(exact=path):
+                    body = Body(40)
+                    status, _h, _out = call(layer, "POST", path, body)
+                    self.assertEqual((status, seen[-1]), (200, 0))
+        for path in ("/api/admin/library/sections", "/api/admin/materials", "/api/admin/materials/resolve",
+                     "/api/admin/materials/5/versions", "/api/admin/library/sections/5/materials"):
+            with self.subTest(json_route=path):
+                body = Body(40)
+                status, _h, _out = call(self.app, "POST", path, body)
+                self.assertEqual((status, body.taken), (413, JSON_LIMIT // CHUNK + 1))
+
+
 @unittest.skipUnless(HAVE_API, "needs fastapi and httpx")
 class ErrorFormatTests(unittest.TestCase):
     def setUp(self):

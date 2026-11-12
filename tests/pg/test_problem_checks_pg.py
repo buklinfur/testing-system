@@ -29,7 +29,10 @@ class ProblemCheckQueueTests(PgCase):
     def worker(self, name):
         return self.token_and_worker(name, caps=CAPS, token_caps=TOKEN_CAPS)[1]
 
-    def version(self, slug="extra", status=VersionStatus.pending_check):
+    def version(self, slug="extra", status=None):
+        # the default is resolved here: VersionStatus is imported only with a database, and a default in the
+        # signature is evaluated when the class is defined, so `tests` without one would fail to import this file
+        status = VersionStatus.pending_check if status is None else status
         problem = Problem(slug=slug, owner_id=self.seed["admin"].id)
         self.s.add(problem)
         self.s.flush()
@@ -39,7 +42,8 @@ class ProblemCheckQueueTests(PgCase):
         self.s.flush()
         return v
 
-    def check(self, version=None, reason=CheckReason.import_):
+    def check(self, version=None, reason=None):
+        reason = CheckReason.import_ if reason is None else reason  # imported only with a database, as above
         c = checks.enqueue_check(self.s, version or self.version(), reason)
         self.s.commit()
         return c
@@ -160,7 +164,9 @@ class ProblemCheckQueueTests(PgCase):
         student = self.student(1)
         _sub, j = self.submission(student)
         self.s.commit()
+        q.read_one_moment(self.s)
         snap = q.load_snapshot(self.s, self.settings, user_id=student.id)
+        self.s.commit()
         self.assertEqual((snap.queue_length, snap.my_position), (1, 1), "the check is not in the students' queue")
         self.assertEqual(snap.workers_online, 1, "the worker on the check is not capacity (D-050)")
         got = self.claim(free)
@@ -174,6 +180,8 @@ class ProblemCheckQueueTests(PgCase):
         w = self.worker("w0")
         self.worker("w1")
         self.claim(w)
+        self.s.commit()
+        q.read_one_moment(self.s)
         snap = q.load_snapshot(self.s, self.settings)
         self.assertEqual((snap.queue_length, snap.workers_online, snap.workers_busy), (0, 1, 0))
         metrics = q.collect_metrics(self.s, self.settings)
@@ -212,12 +220,12 @@ class ProblemCheckQueueTests(PgCase):
                 checks.finish(self.s, who, c.id, dict(payload, attempt=attempt), self.settings)
         self.s.rollback()
         reply = q.heartbeat(self.s, w, state="busy", judgement_id=None, attempt=2, phase=None, tests_done=1,
-                            tests_total=3, stats={}, check_id=c.id)
-        self.assertEqual(reply, {"cancel": True})
+                            tests_total=3, stats={}, settings=self.settings, check_id=c.id)
+        self.assertEqual(reply, {"cancel": True, "reclaimed": []})
         reply = q.heartbeat(self.s, w, state="busy", judgement_id=None, attempt=1, phase=None, tests_done=1,
-                            tests_total=3, stats={}, check_id=c.id)
+                            tests_total=3, stats={}, settings=self.settings, check_id=c.id)
         self.s.commit()
-        self.assertEqual(reply, {"cancel": False})
+        self.assertEqual(reply, {"cancel": False, "reclaimed": []})
         self.s.refresh(c)
         self.assertEqual((c.progress_done, c.progress_total), (1, 3))
         for bad in ({"attempt": 1}, {"attempt": 1, "outcome": "maybe", "report": {}},

@@ -4,11 +4,18 @@
 
 Builds a throw-away interactive problem (the interactor sends i, the solution answers i + 1, N times,
 each message flushed), judges a correct C++ solution `--repeat` times and prints the wall time of the
-interactive test (both sandboxes, without compilation) and the solution's CPU time per run, plus medians. The local backend needs JUDGE_ALLOW_UNSAFE_LOCAL=1.
+interactive test (both sandboxes, without compilation) and the solution's CPU time per run, plus medians.
+
+The local backend (no sandbox) runs only on a development machine (D-065, docs/RUNNER.md):
+
+    JUDGE_ALLOW_UNSAFE_LOCAL=1 JUDGE_DEV=1 python tools/bench_interactive.py --backend local --exchanges 1000
+
+and never under systemd (INVOCATION_ID set). Numbers worth comparing come from isolate.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import statistics
 import sys
 import tempfile
@@ -20,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from runner.config import MANUAL_BOX_BASE, RunnerConfig  # noqa: E402
 from runner.judge import Judge  # noqa: E402
 from runner.package import Problem  # noqa: E402
+from runner.sandbox.local import local_refusal  # noqa: E402
 
 INTERACTOR = r"""
 #include <cstdio>
@@ -82,6 +90,11 @@ def main() -> int:
     ap.add_argument("--repeat", type=int, default=5)
     ap.add_argument("--box-base", type=int, default=MANUAL_BOX_BASE)
     args = ap.parse_args()
+    if args.backend == "local":
+        refusal = local_refusal(os.environ)
+        if refusal:  # say it once, instead of an IE in every run
+            print(f"error: {refusal}", file=sys.stderr)
+            return 2
     judge = Judge(RunnerConfig(backend=args.backend, box_id_base=args.box_base))
     test_seconds = []
     run_interactive = judge._run_interactive

@@ -88,10 +88,29 @@ def main(argv=None) -> int:
         return 78
 
 
+def local_backend_refusal(env) -> str | None:
+    """Why backend=local may not start here, or None (D-065). The same rule as runner/sandbox/local.py, written again
+    on purpose: a worker that bypassed one check still meets the other. Names what is missing, never a value."""
+    missing = []
+    if env.get("JUDGE_ALLOW_UNSAFE_LOCAL") != "1":
+        missing.append("JUDGE_ALLOW_UNSAFE_LOCAL=1 is not set")
+    if env.get("JUDGE_DEV") != "1":
+        missing.append("JUDGE_DEV=1 is not set")
+    if "INVOCATION_ID" in env:
+        missing.append("it runs under systemd (INVOCATION_ID is set)")
+    if not missing:
+        return None
+    return "backend=local is UNSAFE (no sandbox) and runs only on a development machine: " + "; ".join(missing)
+
+
 def _dispatch(args, cfg: WorkerConfig) -> int:
     if args.command == "plan":
         return cmd_plan(cfg)
     if args.command == "check":
+        refusal = local_backend_refusal(os.environ) if cfg.backend == "local" else None
+        if refusal:
+            print(f"error: {refusal}", file=sys.stderr)
+            return 78
         return cmd_check(cfg)
     if args.command == "gc":
         removed = DiskCache(cfg.cache_dir).gc(cfg.max_cache_bytes, cfg.cache_min_age_s)
@@ -104,8 +123,9 @@ def _dispatch(args, cfg: WorkerConfig) -> int:
     except ValueError as exc:
         logging.getLogger("judge").error("bad configuration: %s", exc)
         return 78
-    if cfg.backend == "local" and os.environ.get("JUDGE_ALLOW_UNSAFE_LOCAL") != "1":
-        logging.getLogger("judge").error("backend=local is UNSAFE and needs JUDGE_ALLOW_UNSAFE_LOCAL=1")
+    refusal = local_backend_refusal(os.environ) if cfg.backend == "local" else None
+    if refusal:
+        logging.getLogger("judge").error("%s", refusal)
         return 78
 
     if args.command == "run":

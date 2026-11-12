@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -25,15 +26,30 @@ from .models import (
     ContestProblem, Judgement, JudgementReason, JudgementStatus, QueueEvent, Submission, TestCase,
     TestGroup, TestResult, Verdict, VersionCheck, Worker, WorkerToken,
 )
+from . import locks
 from .models import CheckStatus
 from .settings import QueueSettings
 
 PRIORITY_URGENT = -10
 PRIORITY_NORMAL = 0
 PRIORITY_REJUDGE = 10
-CLAIM_LOCK_KEY = 7_340_001  # pg_advisory_xact_lock key: claims are serialized (milliseconds), see docs/QUEUE.md
 ACTIVE = (JudgementStatus.queued, JudgementStatus.compiling, JudgementStatus.running)
 IN_FLIGHT = (JudgementStatus.compiling, JudgementStatus.running)
+log = logging.getLogger("judge.queue")
+# judgements.error of a judgement the server ended itself (gave up after max_attempts): a late result of its last
+# holder is refused (409), like a check whose report says by=server (D-069). A temporary mark in a text column: the
+# next migration of the queue replaces it with a column of its own (ROADMAP). Never compare it directly: only
+# server_gave_up() / _carries_server_mark() look at it (a test checks the code).
+SERVER_GAVE_UP = "the server gave up after "
+
+
+def _carries_server_mark(error: Optional[str]) -> bool:
+    return (error or "").startswith(SERVER_GAVE_UP)
+
+
+def server_gave_up(j: "Judgement") -> bool:
+    """The server ended this judgement itself (gave up after max_attempts), not a result of a worker (D-069)."""
+    return j.status == JudgementStatus.internal_error and _carries_server_mark(j.error)
 DONE = (JudgementStatus.finished, JudgementStatus.internal_error)
 
 
@@ -121,11 +137,16 @@ def _held_by(session: Session, worker_id: int) -> list:
 
 
 def deregister_worker(session: Session, worker: Worker) -> None:
+    """The worker process says goodbye: its jobs go back to the queue (not a failure) and its instance ends - every
+    later request of that instance is refused with 409 deregistered (worker_api.current_worker), so a late heartbeat
+    cannot turn `stopped` back into `idle` (D-068). A new process registers again and gets a new instance. The reaper
+    marks a silent worker `stopped` without ending its instance: that worker may come back by its next heartbeat."""
     for j in _held_by(session, worker.id):
         _release(session, j, "worker deregistered")
     for check in checks.held_by(session, worker.id):
         checks.release(session, check, "worker deregistered")
     worker.state = "stopped"
+    worker.instance_id = None
     _event(session, "worker_stopped", worker.id)
 
 
@@ -250,7 +271,7 @@ def claim(session: Session, worker: Worker, settings: QueueSettings) -> Optional
     simultaneous claims would both pick the same student's jobs (fairness is computed from a snapshot).
     FOR UPDATE SKIP LOCKED stays as the safety net against any other writer holding a queued row.
     """
-    session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": CLAIM_LOCK_KEY})
+    locks.take(session, locks.CLAIM)  # claims are serialized (milliseconds), see docs/QUEUE.md
     row = session.execute(CLAIM_SQL, {"worker_id": worker.id, "caps": json.dumps(list(worker.capabilities)),
                                       "window": settings.recent_window_s}).first()
     if row is None:
@@ -285,9 +306,10 @@ def queue_position(session: Session, settings: QueueSettings, judgement_id: Opti
 # ---------------------------------------------------------------------------------- heartbeat / release
 def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Optional[int], attempt: Optional[int],
               phase: Optional[str], tests_done: Optional[int], tests_total: Optional[int], stats: dict,
-              check_id: Optional[int] = None) -> dict:
+              settings: QueueSettings, check_id: Optional[int] = None) -> dict:
     """A heartbeat about the worker and the job it holds: a judgement (judgement_id) or a check (check_id; then
-    tests_done / tests_total count reference solutions)."""
+    tests_done / tests_total count reference solutions). Jobs this worker holds but does not name go back to
+    the queue (reclaim_orphans); the reply lists them in `reclaimed`."""
     worker.last_heartbeat = func.now()
     worker.state = state if state in ("idle", "busy", "draining", "stopped") else "idle"
     worker.stats = stats or {}
@@ -304,7 +326,46 @@ def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Opt
             Judgement.id == judgement_id, Judgement.worker_id == worker.id, Judgement.attempt == attempt,
             Judgement.status.in_(IN_FLIGHT)).values(**values))
         cancel = result.rowcount == 0  # taken away (reaper), finished elsewhere, or never ours
-    return {"cancel": cancel}
+    reclaimed = reclaim_orphans(session, worker, settings, judgement_id=judgement_id, check_id=check_id,
+                                attempt=attempt)
+    return {"cancel": cancel, "reclaimed": reclaimed}
+
+
+def reclaim_orphans(session: Session, worker: Worker, settings: QueueSettings, *, judgement_id: Optional[int],
+                    check_id: Optional[int], attempt: Optional[int]) -> list:
+    """The safety net «idle, but holding a job» (D-069): a judgement or a check the database says this worker holds,
+    which this heartbeat does not name (another id or attempt, or nothing) and which was handed out longer than
+    `heartbeat_timeout_s` ago by the database clock, goes back to the queue as a failed attempt (failures + 1, IE
+    after max_attempts). The grace covers a heartbeat sent just before a claim answered. The rows are taken FOR UPDATE
+    SKIP LOCKED: a job whose result is being recorded right now (finish holds the row) is left alone - and once the
+    result is in, it is not in flight any more. Returns [{"kind", "id", "attempt", "result"}]."""
+    cutoff = func.now() - timedelta(seconds=settings.heartbeat_timeout_s)
+    out = []
+    jobs = session.execute(select(Judgement).where(
+        Judgement.worker_id == worker.id, Judgement.status.in_(IN_FLIGHT), Judgement.started_at < cutoff)
+        .with_for_update(skip_locked=True)).scalars().all()
+    for j in jobs:
+        if j.id == judgement_id and j.attempt == attempt:
+            continue
+        held = j.attempt
+        result = _fail_attempt(session, j, "worker_idle_holding", settings)
+        _event(session, "orphan_reclaimed", worker.id, j.id, attempt=held, result=result)
+        log.warning("worker %s (%s) holds judgement %s attempt %s but its heartbeat does not name it: %s",
+                    worker.id, worker.name, j.id, held, result)
+        out.append({"kind": "judgement", "id": j.id, "attempt": held, "result": result})
+    for check in checks.orphans(session, worker, cutoff):
+        if check.id == check_id and check.attempt == attempt:
+            continue
+        held = check.attempt
+        result = checks.fail_attempt(session, check, "worker_idle_holding",
+                                     "the worker's heartbeat did not name the check it held", settings)
+        checks.record_orphan(session, check, worker, held, result)
+        log.warning("worker %s (%s) holds check %s attempt %s but its heartbeat does not name it: %s",
+                    worker.id, worker.name, check.id, held, result)
+        out.append({"kind": "check", "id": check.id, "attempt": held, "result": result})
+    if out and worker.state == "busy" and judgement_id is None and check_id is None:
+        worker.state = "idle"
+    return out
 
 
 def _free(worker: Worker) -> None:
@@ -334,7 +395,7 @@ def _fail_attempt(session: Session, j: Judgement, reason: str, settings: QueueSe
     j.failures += 1
     if j.failures >= settings.max_attempts:
         j.status, j.verdict, j.finished_at = JudgementStatus.internal_error, Verdict.IE, func.now()
-        j.error = f"gave up after {j.failures} failed attempts; last reason: {reason}"
+        j.error = f"{SERVER_GAVE_UP}{j.failures} failed attempts; last reason: {reason}"
         _event(session, "gave_up", j.worker_id, j.id, reason=reason, failures=j.failures)
         return "gave_up"
     _event(session, "requeued", j.worker_id, j.id, reason=reason, failures=j.failures, attempt=j.attempt)
@@ -381,6 +442,8 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
         raise LeaseLost("the judgement belongs to another worker or attempt")
     _free(worker)  # rolled back with everything else if the result turns out to be malformed
     if j.status in DONE:
+        if server_gave_up(j):
+            raise LeaseLost("the server already ended this judgement (gave up after max_attempts)")
         return "already_recorded"  # the same result delivered twice (network retry)
     if j.status not in IN_FLIGHT:
         raise LeaseLost("the judgement is not in progress")
@@ -392,6 +455,8 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
 
     if verdict == Verdict.IE:
         j.error = payload.get("error")
+        if _carries_server_mark(j.error):  # the server's mark is only ever the server's (D-069)
+            j.error = "worker: " + j.error
         if j.failures + 1 < settings.max_attempts:
             _fail_attempt(session, j, f"internal error: {payload.get('error')}", settings)
             return "requeued"
@@ -444,7 +509,7 @@ def _recent_durations(session: Session, limit: int = 50) -> list:
     return [(float(a), float(b)) for a, b in rows]
 
 
-def _workers_online(session: Session, settings: QueueSettings) -> tuple:
+def _workers_online(session: Session, settings: QueueSettings, now: datetime) -> tuple:
     """(capacity, busy, by_state) of workers with a fresh heartbeat.
 
     capacity counts idle and busy workers only: a draining worker takes no new jobs. A worker that holds a check of
@@ -452,7 +517,7 @@ def _workers_online(session: Session, settings: QueueSettings) -> tuple:
     itself is not counted anywhere the students see. busy counts the workers that actually hold a judgement in
     progress (the judgements table), not the state flag, which the heartbeat updates only every few seconds.
     """
-    cutoff = _now() - timedelta(seconds=settings.heartbeat_timeout_s)
+    cutoff = now - timedelta(seconds=settings.heartbeat_timeout_s)  # `now`: the moment of the snapshot (database)
     fresh = (Worker.last_heartbeat >= cutoff, Worker.state != "stopped")
     by_state = {state: n for state, n in session.execute(
         select(Worker.state, func.count()).where(*fresh).group_by(Worker.state)).all()}
@@ -465,21 +530,44 @@ def _workers_online(session: Session, settings: QueueSettings) -> tuple:
     return by_state.get("idle", 0) + by_state.get("busy", 0) - checking, busy, by_state
 
 
-def read_one_moment(session: Session) -> None:
-    """Make the following reads see one moment of the database (call before the first query of the transaction).
+MOMENT = "judge.moment"  # session.info key: (the transaction, its database time), set by read_one_moment
 
-    The load snapshot and the status page are several queries; under READ COMMITTED a judgement finished
-    between them is counted in one and not in the other (e.g. 5 busy workers but 4 holding a job).
+
+def read_one_moment(session: Session) -> datetime:
+    """Start a transaction whose reads all see one moment of the database, and mark it for the snapshot functions
+    (load_snapshot, collect_metrics, worker_table), which refuse without the mark (D-067).
+
+    The snapshot is several queries; under READ COMMITTED a judgement claimed or finished between them is counted in
+    one and not in the other (5 busy workers but 4 holding a job, a place behind the end of the queue). Here the
+    transaction is REPEATABLE READ, and every time in the snapshot is the database's now() of that transaction, read
+    once - never the clock of this process. It must be the first thing the transaction does: an endpoint that already
+    read (the session check) commits first. The mark belongs to this transaction: after a commit or a rollback the
+    snapshot functions refuse until read_one_moment is called again. Returns the moment.
     """
+    if session.in_transaction():
+        raise QueueError("read_one_moment must start the transaction: commit or roll back what was read before")
     session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+    at = session.execute(select(func.now())).scalar_one()
+    session.info[MOMENT] = (session.get_transaction(), at)
+    return at
+
+
+def _moment(session: Session) -> datetime:
+    """The database time of the snapshot's transaction; QueueError without read_one_moment in this transaction."""
+    mark = session.info.get(MOMENT)
+    if mark is None or mark[0] is not session.get_transaction() or not session.in_transaction():
+        raise QueueError("the load snapshot reads one moment of the database: call queue.read_one_moment() first, "
+                         "at the start of this transaction")
+    return mark[1]
 
 
 def load_snapshot(session: Session, settings: QueueSettings, user_id: Optional[int] = None,
                   judgement_id: Optional[int] = None) -> LoadSnapshot:
-    """Numbers for the students' load indicator: queue length, busy workers, expected wait."""
+    """Numbers for the students' load indicator: queue length, busy workers, expected wait. Needs read_one_moment."""
+    now = _moment(session)
     queued = session.execute(select(func.count()).select_from(Judgement).where(
         Judgement.status == JudgementStatus.queued)).scalar_one()
-    online, busy, _ = _workers_online(session, settings)
+    online, busy, _ = _workers_online(session, settings, now)
     typical = typical_judge_seconds([d for d, _w in _recent_durations(session)])
     snap = LoadSnapshot(queue_length=queued, workers_online=online, workers_busy=busy, typical_seconds=typical)
     if user_id is not None or judgement_id is not None:
@@ -490,36 +578,42 @@ def load_snapshot(session: Session, settings: QueueSettings, user_id: Optional[i
 
 
 def collect_metrics(session: Session, settings: QueueSettings) -> dict:
+    """Queue and worker metrics (/internal/metrics, /internal/status, /system). Needs read_one_moment."""
+    now = _moment(session)
     queued = session.execute(select(func.count(), func.min(Judgement.created_at)).where(
         Judgement.status == JudgementStatus.queued)).one()
     in_flight = session.execute(select(func.count()).select_from(Judgement).where(Judgement.status.in_(IN_FLIGHT))).scalar_one()
-    online, _busy, by_state = _workers_online(session, settings)
+    online, _busy, by_state = _workers_online(session, settings, now)
     durations = _recent_durations(session)
     finished = dict(session.execute(select(Judgement.verdict, func.count()).where(
         Judgement.status == JudgementStatus.finished).group_by(Judgement.verdict)).all())
     requeued = session.execute(select(func.coalesce(func.sum(Judgement.failures), 0))).scalar_one()
+    orphans = session.execute(select(func.count()).select_from(QueueEvent)
+                              .where(QueueEvent.kind == "orphan_reclaimed")).scalar_one()
     waits = sorted(w for _d, w in durations)
     return {
         "queue_length": queued[0],
-        "oldest_queued_age_s": (_now() - queued[1]).total_seconds() if queued[1] else 0.0,
+        "oldest_queued_age_s": (now - queued[1]).total_seconds() if queued[1] else 0.0,
         "in_flight": in_flight, "workers_online": online, "workers_by_state": by_state,
         "typical_seconds": typical_judge_seconds([d for d, _w in durations]),
         "median_wait_s": waits[len(waits) // 2] if waits else 0.0,
         "finished_by_verdict": {(v.value if v else "none"): n for v, n in finished.items()},
         "requeued_total": int(requeued),
+        "orphan_reclaims": orphans,  # the safety net «idle, but holding» (D-069), within the event retention
         "checks": checks.overview(session),  # problem checks: for admins only, never in the students' numbers
     }
 
 
 def worker_table(session: Session, settings: QueueSettings) -> list:
-    """One row per worker for the admin status page / CLI."""
-    now = _now()
+    """One row per worker for the admin status page / CLI. Needs read_one_moment."""
+    now = _moment(session)
     held = {r.worker_id: r.id for r in session.execute(select(Judgement.worker_id, Judgement.id).where(
         Judgement.status.in_(IN_FLIGHT))).all()}
     checking = {r.worker_id: r.id for r in session.execute(select(VersionCheck.worker_id, VersionCheck.id).where(
         VersionCheck.status == CheckStatus.running)).all()}
     rows = []
-    for w in session.execute(select(Worker).order_by(Worker.name)).scalars():
+    # populate_existing: the rows as this transaction's snapshot sees them, not objects an earlier one left in the session
+    for w in session.execute(select(Worker).order_by(Worker.name).execution_options(populate_existing=True)).scalars():
         age = (now - w.last_heartbeat).total_seconds() if w.last_heartbeat else None
         online = age is not None and age <= settings.heartbeat_timeout_s and w.state != "stopped"
         rows.append({"id": w.id, "name": w.name, "state": w.state if online else "offline", "heartbeat_age_s": age,

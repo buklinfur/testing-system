@@ -124,7 +124,7 @@ def get_file(slug: str, number: int, path: str, request: Request, db: Session = 
     sha = (version.files or {}).get(path)
     if sha is None:
         raise ApiError(404, "file_not_found", f"{slug}@{number} has no file {path!r}")
-    return file_response(BlobStore(request.app.state.settings.blob_dir), sha, path)
+    return file_response(BlobStore(request.app.state.settings.blob_dir), sha, path, request=request)
 
 
 def _archive(db: Session, slug: str, archived: bool, actor: audit.Actor, request: Request) -> dict:

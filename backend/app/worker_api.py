@@ -64,6 +64,9 @@ def current_worker(token: WorkerToken = Depends(token_auth), session: Session = 
     worker = session.get(Worker, x_worker_id)
     if worker is None or worker.token_id != token.id:
         raise HTTPException(403, "unknown worker")
+    if worker.instance_id is None:  # before superseded: this instance said goodbye itself (D-068)
+        raise HTTPException(409, {"code": "deregistered",
+                                  "message": "this worker deregistered: register again to start a new instance"})
     if worker.instance_id != x_worker_instance:
         raise HTTPException(409, {"code": "superseded", "message": "another process registered under this worker name"})
     worker.last_heartbeat = func.now()  # any authenticated call proves the worker is alive
@@ -197,10 +200,12 @@ def claim(worker: Worker = Depends(current_worker), session: Session = Depends(g
 
 
 @router.post("/heartbeat")
-def heartbeat(body: HeartbeatBody, worker: Worker = Depends(current_worker), session: Session = Depends(get_session)):
+def heartbeat(body: HeartbeatBody, worker: Worker = Depends(current_worker), session: Session = Depends(get_session),
+              settings=Depends(get_settings)):
+    """{cancel, reclaimed}: reclaimed lists the jobs this worker held without naming them, returned to the queue."""
     reply = q.heartbeat(session, worker, state=body.state, judgement_id=body.judgement_id, attempt=body.attempt,
                         phase=body.phase, tests_done=body.tests_done, tests_total=body.tests_total, stats=body.stats,
-                        check_id=body.check_id)
+                        check_id=body.check_id, settings=settings.queue)
     session.commit()
     return reply
 

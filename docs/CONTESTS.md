@@ -9,6 +9,8 @@
 | [`backend/app/contests/spec.py`](../backend/app/contests/spec.py) | разбор `contest.yaml` и правила, которых нет в схеме |
 | [`backend/app/contests/service.py`](../backend/app/contests/service.py) | `apply`, `pin`, состояния, коды приглашения, вступление, личный старт |
 | [`backend/app/contests/access.py`](../backend/app/contests/access.py) | правила доступа — чистые функции (Р25) |
+| [`backend/app/deadline_rules.py`](../backend/app/deadline_rules.py) | правила сроков — чистые функции, общие с лентой класса (D-059): `available_from`, эффективный срок, политики после срока; `access.py` их использует и реэкспортирует |
+| [`backend/app/contests/deadlines.py`](../backend/app/contests/deadlines.py), [`backend/app/extensions.py`](../backend/app/extensions.py) | продления (§5): ядро в `extensions.py` (общее с лентой), задача контеста как цель — в `deadlines.py` |
 | [`contests-examples/`](../contests-examples) | примеры: архив-тренировка, олимпиада с личным таймером, урок с заморозкой |
 
 Из веба — `PUT /api/admin/contests/<slug>` с тем же файлом в виде JSON ([`ADMIN_API.md`](ADMIN_API.md) §5.3).
@@ -150,6 +152,7 @@ problems:
 | `can_enter` | см. §3; ответы: `not_published`, `already_joined`, `rejoin_with_code`, `contest_over`, `wrong_code`, `no_access`; в `joined_via` — путь входа |
 | `can_start` | см. §3; ответы: `not_personal`, `not_participant`, `no_access`, `not_started_yet`, `contest_over`, `already_started` |
 | `problem_listed` | задачи нет вовсе (ни метки, ни названия), если она скрыта или раньше `available_from` |
+| `problem_visible` | ученик видит задачу в контесте: `can_view_contest`, `has_access` и `problem_listed`. Участие не нужно (режим `open`; `groups` / `code_or_groups` — через группу), окно, срок и скрытое условие не важны. По нему открываются материалы, на которые ссылается условие (`CLASSROOM.md` §11, D-083); само условие — `can_view_problem` |
 | `effective_due` | максимум из `due_at` и продлений; без `due_at` срока нет (продлевать нечего) |
 | `can_view_problem` | участнику с доступом, задача есть (`problem_listed`), его окно началось (после конца — при дорешивании); после срока — только при `after_due_statement: visible` |
 | `can_submit` | см. ниже |
@@ -205,10 +208,14 @@ problems:
 микросекунду»). Время сравнивается с точностью до микросекунды: `due_at: 2026-11-10 23:59` означает 23:59:00, и
 посылка в 23:59:30 уже с опозданием. «До конца дня» пишется как `23:59:59` или `00:00` следующего дня.
 
+Правила сроков (`available`, `effective_due`, `past_due`, `after_due_submit`, `statement_hidden_after_due`) — в
+`deadline_rules.py`, общем с ручными заданиями ленты (D-059): одна граница и одни политики для обоих; их собственные
+тесты — `tests/test_deadline_rules_units.py`.
+
 Таблица случаев — `tests/test_contest_access_units.py` (матрица «режим × ситуация ученика», смена режима, границы
 срока для `no` / `late` / `yes`, продления, личный таймер со сроком, конец контеста раньше срока).
 
-## 5. Продления сроков (D-023, `contests/deadlines.py`)
+## 5. Продления сроков (D-023, `contests/deadlines.py` поверх общего `extensions.py`)
 
 Продление — более поздний срок одной задачи контеста для **одного ученика** или **одной группы**. Эффективный срок
 ученика — максимум из `due_at`, его личного продления и продлений групп, в которых он **сейчас** состоит (архивная

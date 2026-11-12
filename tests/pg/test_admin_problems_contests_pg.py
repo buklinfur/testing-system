@@ -145,6 +145,10 @@ class AdminProblemsContestsTests(ApiCase):
         (root / "evil.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>')
         (root / "statement" / "evil.html").write_text("<script>alert(1)</script>")
         (root / "statement" / "pic.png").write_text("<html><script>alert(1)</script></html>")  # a lie inside
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40
+        (root / "statement" / "real.png").write_bytes(png)
+        (root / "statement" / "photo.jpg").write_bytes(png)  # a PNG under a .jpg name
+        (root / "statement" / "old.txt").write_bytes("Старое условие".encode("cp1251"))
         self.ok(self.upload(zipped(root)), 201)
         base = "/problems/sum-of-two/versions/1/files/"
 
@@ -159,10 +163,37 @@ class AdminProblemsContestsTests(ApiCase):
                 self.assertTrue(r.headers["content-disposition"].startswith("attachment;"))
                 self.assertEqual(r.headers["x-content-type-options"], "nosniff")
                 self.assertEqual(r.headers["content-security-policy"], "sandbox; default-src 'none'")
-        r = fetch("statement/pic.png")  # the type comes from the name, never from the content
+        # D-070: the bytes and the name together. HTML under a picture name is no picture at all
+        r = fetch("statement/pic.png")
+        self.assertEqual(r.headers["content-type"], "application/octet-stream")
+        self.assertTrue(r.headers["content-disposition"].startswith('attachment; filename="pic.png"'))
+        r = fetch("statement/real.png")
         self.assertEqual((r.headers["content-type"], r.headers["x-content-type-options"]), ("image/png", "nosniff"))
         self.assertTrue(r.headers["content-disposition"].startswith("inline;"))
         self.assertEqual(r.headers["content-security-policy"], "sandbox; default-src 'none'")
+        self.assertEqual(r.headers["cache-control"], "private, no-cache")
+        self.assertEqual(r.content, png)
+        tag = r.headers["etag"]
+        self.assertRegex(tag, r'^"[0-9a-f]{64}"$')
+        self.assertEqual(fetch("statement/photo.jpg").headers["content-type"], "image/png")  # the type of the bytes
+        r = fetch("statement/old.txt")  # cp1251: not shown as text
+        self.assertEqual((r.headers["content-type"], r.headers["content-disposition"][:11]),
+                         ("application/octet-stream", "attachment;"))
+        # If-None-Match: 304 with the same headers, an empty body
+        r = self.call("get", base + "statement/real.png", headers={"If-None-Match": tag})
+        self.assertEqual((r.status_code, r.content), (304, b""))
+        for name in ("x-content-type-options", "content-security-policy", "cache-control", "etag",
+                     "content-disposition"):
+            self.assertIn(name, r.headers)
+        self.assertEqual(self.call("get", base + "statement/real.png", headers={"If-None-Match": '"old"'}).status_code,
+                         200)
+        # without access the answer does not depend on If-None-Match: the file is never even looked at
+        stranger = self.browser()
+        for headers in ({}, {"If-None-Match": tag}, {"If-None-Match": "*"}):
+            with self.subTest(headers=headers):
+                r = stranger.get("/api/admin" + base + "statement/real.png", headers=headers)
+                self.assertEqual((r.status_code, r.json()["detail"]), (401, "not_authenticated"))
+                self.assertNotIn("etag", r.headers)
         for path in ("tests/small01.in", "problem.yaml", "solutions/ok.py"):
             with self.subTest(path=path):
                 r = fetch(path)
@@ -187,6 +218,35 @@ class AdminProblemsContestsTests(ApiCase):
 
     def put(self, spec, slug="olymp", dry_run=False):
         return self.call("put", f"/contests/{slug}" + ("?dry_run=true" if dry_run else ""), json=spec)
+
+    def test_statement_pictures_cyrillic_names_and_the_import_warning(self):
+        """statement/images: a real picture under a Cyrillic name is shown inline with its name intact in
+        filename*; a substituted one (HTML in .png) is imported with a warning (D-071) and served as a download."""
+        root = self.copy()
+        images = root / "statement" / "images"
+        images.mkdir(parents=True, exist_ok=True)
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40
+        (images / "схема 1.png").write_bytes(png)
+        (images / "подмена.png").write_bytes(b"<html><script>alert(1)</script></html>")
+        (images / "ok.jpg").write_bytes(png)  # a PNG under .jpg: shown as image/png, no warning
+        created = self.ok(self.upload(zipped(root)), 201)
+        warned = [w for w in created["warnings"] if w.startswith("statement/images/")]
+        self.assertEqual(len(warned), 1)
+        self.assertTrue(warned[0].startswith("statement/images/подмена.png:") and "save it as PNG" in warned[0])
+        base = "/problems/sum-of-two/versions/1/files/statement/images/"
+        r = self.call("get", base + "%D1%81%D1%85%D0%B5%D0%BC%D0%B0%201.png")
+        self.assertEqual((r.status_code, r.headers["content-type"]), (200, "image/png"))
+        self.assertEqual(r.headers["content-disposition"],
+                         "inline; filename=\"skhema_1.png\"; "
+                         "filename*=UTF-8''%D1%81%D1%85%D0%B5%D0%BC%D0%B0%201.png")
+        self.assertEqual((r.headers["x-content-type-options"], r.headers["cache-control"]), ("nosniff", "private, no-cache"))
+        self.assertEqual(r.content, png)
+        r304 = self.call("get", base + "%D1%81%D1%85%D0%B5%D0%BC%D0%B0%201.png", headers={"If-None-Match": r.headers["etag"]})
+        self.assertEqual((r304.status_code, r304.headers["content-security-policy"]), (304, "sandbox; default-src 'none'"))
+        r = self.call("get", base + "%D0%BF%D0%BE%D0%B4%D0%BC%D0%B5%D0%BD%D0%B0.png")
+        self.assertEqual((r.headers["content-type"], r.headers["content-disposition"][:11]),
+                         ("application/octet-stream", "attachment;"))
+        self.assertEqual(self.call("get", base + "ok.jpg").headers["content-type"], "image/png")
 
     def test_recheck_history_and_failed_pin_warnings(self):
         self.ok(self.upload(zipped(EXAMPLES / "sum-of-two")), 201)

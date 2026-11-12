@@ -1,4 +1,5 @@
 """Access rules of contests (R25), case by case: each row of a table is one situation (docs/CONTESTS.md)."""
+import itertools
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -188,6 +189,63 @@ class ViewJoinStartTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(access.can_view_problem(STUDENT, c, cp, part, now), want)
                 self.assertTrue(access.can_view_problem(ADMIN, c, cp, part, now))
+
+    def test_problem_visible_needs_no_participation(self):
+        """Materials linked from a statement (D-083): the problem is visible to a student the mode lets in, before
+        any participation and whatever the window, the deadline and a hidden statement."""
+        groups = contest(access_mode="groups")
+        hidden_after_due = problem(due_at=at(10), after_due_statement="hidden")
+        cases = [  # (name, contest, problem, participation, in_group, now, visible)
+            ("group member, not joined yet", groups, CP, None, True, DURING, True),
+            ("group member, before the window", groups, CP, None, True, BEFORE, True),
+            ("group member, statement hidden after due", groups, hidden_after_due, JOINED, True, AFTER, True),
+            ("not in the group", groups, CP, None, False, DURING, False),
+            ("personal contest, not started", personal(access_mode="groups"), CP, JOINED, True, DURING, True),
+            ("code mode without a participation", contest(access_mode="code"), CP, None, False, DURING, False),
+            ("hidden problem", groups, HIDDEN_CP, None, True, DURING, False),
+            ("draft contest", contest(state="draft", access_mode="groups"), CP, None, True, DURING, False),
+        ]
+        for name, c, cp, part, in_group, now, want in cases:
+            with self.subTest(name):
+                self.assertEqual(access.problem_visible(STUDENT, c, cp, part, now, in_group), want)
+                self.assertTrue(access.problem_visible(ADMIN, c, cp, part, now, in_group))
+
+    def test_problem_visible_agrees_with_the_statement(self):
+        """One source of truth: problem_visible is can_view_contest and has_access and problem_listed - the very
+        conditions can_view_problem starts with. Over every combination of contest state, mode, timing, participation,
+        group, moment, available_from, hidden problem and hidden statement: whoever sees the statement sees the
+        problem; and for a participant whose window has begun (or upsolving) with the statement not hidden, the two
+        are the same. They differ only by the participation, the window and the hidden statement."""
+        pf = problem(available_from=at(10, 30), due_at=at(11), after_due_statement="hidden")
+        problems = {"plain": CP, "hidden": HIDDEN_CP, "available later": problem(available_from=at(10, 30)),
+                    "hidden after due": pf}
+        contests = {f"{state} {mode} {timing}": (contest(state=state, access_mode=mode, invite_code="AC34KM")
+                                                  if timing == "fixed" else
+                                                  personal(state=state, access_mode=mode, invite_code="AC34KM"))
+                    for state in ("draft", "published", "archived")
+                    for mode in ("open", "code", "groups", "code_or_groups") for timing in ("fixed", "personal")}
+        participations = {"none": None, "open": JOINED, "code": NS(started_at=None, joined_via="code"),
+                          "group": NS(started_at=None, joined_via="group"), "started": started(at(9, 30), "group")}
+        moments = {"before": BEFORE, "during": DURING, "after available_from": at(10, 45), "after": AFTER}
+        compared = 0
+        for (cn, c), (pn, part), (gn, in_group), (mn, now), (prn, cp) in itertools.product(
+                contests.items(), participations.items(), (("in group", True), ("not", False)), moments.items(),
+                problems.items()):
+            visible = access.problem_visible(STUDENT, c, cp, part, now, in_group)
+            statement = access.can_view_problem(STUDENT, c, cp, part, now, in_group)
+            with self.subTest(contest=cn, participation=pn, group=gn, moment=mn, problem=prn):
+                self.assertEqual(visible, access.can_view_contest(STUDENT, c, part, now, in_group)
+                                 and access.has_access(STUDENT, c, part, in_group)
+                                 and access.problem_listed(STUDENT, cp, now))
+                if statement:
+                    self.assertTrue(visible)
+                window = access.contest_window_for(c, part)
+                begun = (window is not None and now >= window.start) or (
+                    access.contest_over(c, now) and c.allow_upsolving)
+                if part is not None and begun and not access.rules.statement_hidden_after_due(cp, now):
+                    compared += 1
+                    self.assertEqual(visible, statement)
+        self.assertGreater(compared, 100)
 
     def test_enter(self):
         coded = contest(access_mode="code", invite_code="AC34KM")

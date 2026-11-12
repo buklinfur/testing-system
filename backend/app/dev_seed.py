@@ -14,6 +14,20 @@
   personal contest, and every submission goes through service.submission_decision (access, window, upsolving,
   deadline and extensions, cooldown, limit, language) and keeps its `late`. A refusal stops dev_seed with its
   reason and exit code 1. Not with --package.
+* `--item ID [--text-file F]`: hand in work on manual assignment ID (the class feed, 4v.1) as student
+  `dev-student-N` would through the API of 4b.2: classroom.works.submit_work with the rules of
+  classroom/access.py (audience, available_from, deadline and extensions, already graded, the answer and its
+  limit); the text of F is the answer (none: just «сдано», for answer_kind mark). Prints {submission_id, work_id,
+  late, status}; a refusal stops with its code and exit code 1. Not with --package / --contest.
+* `--item ID [--file F]... [--link URL [TITLE]]...`: files and links of the hand-in (answer_kind files /
+  text_or_files), through the same service, rules, limits and quota as a student's (JUDGE_SUBMISSION_*,
+  JUDGE_STUDENT_QUOTA_MB): a file is written into <JUDGE_BLOB_DIR>/tmp and taken into the store only when the
+  hand-in is accepted. The output adds `files` (id, kind, name, size, sha256; the text answer is kind text) and
+  `links`: the ids for `judgectl work file`.
+* `--item ID --comment TEXT [--private]`: a comment of student `dev-student-N` as through the API of 4b.2:
+  classroom.comments.post_shared (the shared thread of the item) or, with --private, post_private (their own
+  private thread of an assignment), with the rules of comment_rules.py and the rate JUDGE_COMMENT_RATE_PER_MIN.
+  Prints {comment_id, thread_id, kind, login}; a refusal stops with its code and exit code 1. Not with --text-file.
 * `--user N`: the submissions belong to student `dev-student-N` (created on demand), default 1.
 * `--source` / `--archive` / `--entry`: the solution (a zip for `--archive`); without `--source` a correct
   Python a + b solution is sent. Code-less problems (choice, text_answer) are not supported here.
@@ -24,6 +38,7 @@ Prints a JSON list of {submission_id, judgement_id, problem_version_id, contest_
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -40,6 +55,9 @@ from protocol.problem_package import PackageError
 from . import queue as q
 from .auth import audit
 from .blobstore import BlobStore
+from .classroom import items as feed
+from .classroom import attachments as works_links
+from .classroom import comments, works
 from .contests import access, service
 from .db import session_scope
 from .models import AccessMode, Contest, ContestProblem, ContestState, Language, ProblemType, ProblemVersion, Role, \
@@ -155,6 +173,57 @@ def submit_to_contest(session: Session, blobs: BlobStore, args, student: User, s
     return out
 
 
+def hand_in(blobs: BlobStore, settings: Settings, args) -> int:
+    """--item: one hand-in as the student would make it (the receipt time is taken before the text and the files are
+    read): the text, the files (each written into the blob store's tmp as it would be received, taken into the store
+    only when the hand-in is accepted) and the links, under the limits and the quota of JUDGE_* (Settings.files)."""
+    now = datetime.now(timezone.utc)
+    text = args.text_file.read_text(encoding="utf-8") if args.text_file else None
+    with contextlib.ExitStack() as stack:
+        uploads = []
+        for path in args.file or []:
+            upload = stack.enter_context(blobs.incoming(path.name))
+            with open(path, "rb") as source:
+                upload.copy_from(source)
+            uploads.append(upload)
+        links = [works_links.LinkIn(link[0], link[1] if len(link) > 1 else None) for link in args.link or []]
+        with session_scope() as session:
+            student = _student(session, args.user)
+            try:
+                item = feed.get_item(session, args.item)
+                sub, decision = works.submit_work(session, student, item, now, blobs=blobs, text=text,
+                                                  text_limit=settings.assignment_text_max_bytes, files=uploads,
+                                                  links=links, limits=works_links.hand_in_limits(settings.files),
+                                                  quota=settings.files.student_quota_bytes)
+            except feed.FeedError as exc:
+                print(f"dev_seed: refused: {exc.code} ({exc})", file=sys.stderr)
+                session.rollback()
+                return 1
+            work = works.work_of(session, item, student)
+            print(json.dumps({"submission_id": sub.id, "work_id": work.id, "late": decision.late,
+                              "status": work.status.value, "login": student.login,
+                              **works.submission_files(session, sub)}, ensure_ascii=False))
+    return 0
+
+
+def comment(settings: Settings, args) -> int:
+    """--item --comment: one comment as the student would write it."""
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        student = _student(session, args.user)
+        try:
+            item = feed.get_item(session, args.item)
+            post = comments.post_private if args.private else comments.post_shared
+            row = post(session, student, item, now, args.comment, limit=settings.comment_rate_per_min)
+        except feed.FeedError as exc:
+            print(f"dev_seed: refused: {exc.code} ({exc})", file=sys.stderr)
+            session.rollback()
+            return 1
+        print(json.dumps({"comment_id": row.id, "thread_id": row.thread_id,
+                          "kind": "private" if args.private else "shared", "login": student.login}))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="dev_seed")
     parser.add_argument("--package", type=Path, help="problem package directory (default: built-in dev-sum)")
@@ -166,7 +235,27 @@ def main(argv=None) -> int:
     parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--contest", help="slug of a published contest (with --label): through the access rules")
     parser.add_argument("--label", help="the problem's label in --contest")
+    parser.add_argument("--item", type=int, help="id of a manual assignment of the class feed: hand in work")
+    parser.add_argument("--text-file", type=Path, help="with --item: the text answer")
+    parser.add_argument("--file", type=Path, action="append",
+                        help="with --item: a file handed in (its base name is the name); repeat for more")
+    parser.add_argument("--link", nargs="+", action="append", metavar=("URL", "TITLE"),
+                        help="with --item: a link handed in, with an optional title; repeat for more")
+    parser.add_argument("--comment", help="with --item: write this comment instead of handing in work")
+    parser.add_argument("--private", action="store_true", help="with --comment: in the student's private thread")
     args = parser.parse_args(argv)
+    if args.comment is not None and (args.item is None or args.text_file or args.file or args.link):
+        parser.error("--comment goes with --item, not with --text-file, --file or --link")
+    if any(len(link) > 2 for link in args.link or []):
+        parser.error("--link takes a URL and at most one title")
+    if (args.file or args.link) and args.item is None:
+        parser.error("--file and --link go with --item")
+    if args.private and args.comment is None:
+        parser.error("--private goes with --comment")
+    if args.text_file and args.item is None:
+        parser.error("--text-file goes with --item")
+    if args.item is not None and (args.contest or args.package):
+        parser.error("--item hands in work on an assignment: not with --contest or --package")
     if (args.contest is None) != (args.label is None):
         parser.error("--contest and --label go together")
     if args.contest and args.package:
@@ -176,7 +265,12 @@ def main(argv=None) -> int:
         return 2
     if args.archive and not args.source:
         parser.error("--archive needs --source")
-    blobs = BlobStore(Settings.from_env().blob_dir)
+    settings = Settings.from_env()
+    blobs = BlobStore(settings.blob_dir)
+    if args.comment is not None:
+        return comment(settings, args)
+    if args.item is not None:
+        return hand_in(blobs, settings, args)
     source = args.source.read_bytes() if args.source else DEFAULT_SOURCE
     out = []
     with session_scope() as session:

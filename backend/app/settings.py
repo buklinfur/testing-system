@@ -53,23 +53,48 @@ class ImportSettings:
 
 
 @dataclass(frozen=True)
+class FileSettings:
+    """Files and links of the class feed (4v.3, docs/CLASSROOM.md §10): limits of a hand-in, the student's quota,
+    a teacher's attachments. The defaults are classroom/attachment_rules.py's (a test compares)."""
+
+    submission_files_max: int = 10  # JUDGE_SUBMISSION_FILES_MAX: files and links of one hand-in (answer.md apart)
+    submission_file_max_bytes: int = 20 * 1024 * 1024  # JUDGE_SUBMISSION_FILE_MAX_MB
+    submission_total_max_bytes: int = 50 * 1024 * 1024  # JUDGE_SUBMISSION_TOTAL_MAX_MB: the files of one hand-in
+    student_quota_bytes: int = 200 * 1024 * 1024  # JUDGE_STUDENT_QUOTA_MB: distinct blobs of a student; 0 = none
+    item_attachments_max: int = 20  # JUDGE_ITEM_ATTACHMENTS_MAX: files and links of one feed item
+    attachment_max_bytes: int = 50 * 1024 * 1024  # JUDGE_ATTACHMENT_MAX_MB: one file of a teacher
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = "postgresql+psycopg://judge:judge@127.0.0.1:5432/judge"
     blob_dir: str = "/var/lib/judge/blobs"
     queue: QueueSettings = QueueSettings()
     auth: AuthSettings = AuthSettings()
     imports: ImportSettings = ImportSettings()
+    files: FileSettings = FileSettings()
     metrics_token: Optional[str] = None  # if set, /internal/metrics needs "Authorization: Bearer <it>"
     public_origin: Optional[str] = None  # JUDGE_PUBLIC_ORIGIN, e.g. https://judge.example.ru: the only Origin accepted
     public_port: int = 8000  # the public app (app.public_main), proxied by Caddy
     internal_port: int = 8001  # the internal worker API; must match --port of judge-api-internal.service
     timezone: str = "UTC"  # JUDGE_TIMEZONE: judgectl tables and contest.yaml times without an offset; the API is UTC
+    assignment_text_max_bytes: int = 64 * 1024  # JUDGE_ASSIGNMENT_TEXT_MAX_KB: the text answer of a manual assignment
+    comment_rate_per_min: int = 10  # JUDGE_COMMENT_RATE_PER_MIN: comments of one student per minute; 0 = no limit
 
     @classmethod
     def from_env(cls, env: Optional[Mapping] = None) -> "Settings":
         env = os.environ if env is None else env
-        d, q, a, i = cls(), QueueSettings(), AuthSettings(), ImportSettings()
+        d, q, a, i, f = cls(), QueueSettings(), AuthSettings(), ImportSettings(), FileSettings()
         mib = 1024 * 1024
+        rate = int(env.get("JUDGE_COMMENT_RATE_PER_MIN", d.comment_rate_per_min))
+        if rate < 0:
+            raise ValueError("JUDGE_COMMENT_RATE_PER_MIN is 0 (no limit) or more")
+
+        def positive(name: str, default: int, unit: int = 1, zero_ok: bool = False) -> int:
+            value = int(env.get(name, default // unit))
+            if value < 0 or (value == 0 and not zero_ok):
+                raise ValueError(f"{name} is {'0 (no limit) or more' if zero_ok else 'at least 1'}")
+            return value * unit
         return cls(
             database_url=env.get("DATABASE_URL", d.database_url),
             blob_dir=env.get("JUDGE_BLOB_DIR", d.blob_dir),
@@ -78,6 +103,18 @@ class Settings:
             public_port=int(env.get("JUDGE_PUBLIC_PORT", d.public_port)),
             internal_port=int(env.get("JUDGE_INTERNAL_PORT", d.internal_port)),
             timezone=env.get("JUDGE_TIMEZONE") or d.timezone,
+            assignment_text_max_bytes=int(env.get("JUDGE_ASSIGNMENT_TEXT_MAX_KB",
+                                                  d.assignment_text_max_bytes // 1024)) * 1024,
+            comment_rate_per_min=rate,
+            files=FileSettings(
+                submission_files_max=positive("JUDGE_SUBMISSION_FILES_MAX", f.submission_files_max),
+                submission_file_max_bytes=positive("JUDGE_SUBMISSION_FILE_MAX_MB", f.submission_file_max_bytes, mib),
+                submission_total_max_bytes=positive("JUDGE_SUBMISSION_TOTAL_MAX_MB", f.submission_total_max_bytes,
+                                                    mib),
+                student_quota_bytes=positive("JUDGE_STUDENT_QUOTA_MB", f.student_quota_bytes, mib, zero_ok=True),
+                item_attachments_max=positive("JUDGE_ITEM_ATTACHMENTS_MAX", f.item_attachments_max),
+                attachment_max_bytes=positive("JUDGE_ATTACHMENT_MAX_MB", f.attachment_max_bytes, mib),
+            ),
             queue=QueueSettings(
                 heartbeat_timeout_s=float(env.get("JUDGE_HEARTBEAT_TIMEOUT_S", q.heartbeat_timeout_s)),
                 max_attempts=int(env.get("JUDGE_MAX_ATTEMPTS", q.max_attempts)),

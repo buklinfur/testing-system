@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.pg.pgbase import HAVE_SA, ROOT, URL, PgCase, requires_pg
+from tests.unsafe_local import unsafe_local
 
 EXAMPLES = ROOT / "problems-examples"
 
@@ -74,7 +75,7 @@ class DevSeedTests(PgCase):
                                .where(ProblemVersion.problem_id == first.problem_id)).scalar_one()
         self.assertEqual(count, 2, "the first version is kept unchanged")
 
-    @mock.patch.dict(os.environ, {"JUDGE_ALLOW_UNSAFE_LOCAL": "1"})
+    @unsafe_local()
     def test_reference_solutions_get_their_expected_verdicts(self):
         store = ProblemStore(DiskCache(self.tmp / "cache"), _BlobClient(self.s, self.blobs))
         judge = Judge(RunnerConfig(backend="local"))

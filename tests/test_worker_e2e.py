@@ -19,7 +19,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend"))
-os.environ["JUDGE_ALLOW_UNSAFE_LOCAL"] = "1"
 
 import worker.process as worker_process  # noqa: E402
 from tests.fakebackend import TOKEN, FakeBackend  # noqa: E402
@@ -27,6 +26,11 @@ from worker.client import ApiClient  # noqa: E402
 from worker.config import WorkerConfig  # noqa: E402
 from worker.process import WorkerProcess  # noqa: E402
 from worker.topology import WorkerSlot  # noqa: E402
+from tests.unsafe_local import child_env, enable_for_module  # noqa: E402
+
+
+def setUpModule():
+    enable_for_module()  # JUDGE_ALLOW_UNSAFE_LOCAL / JUDGE_DEV for this module's tests only (tests/unsafe_local.py)
 
 EX = ROOT / "problems-examples"
 OK_SUM = (EX / "sum-of-two/solutions/ok.py").read_bytes()
@@ -215,6 +219,71 @@ class WorkerE2E(unittest.TestCase):
         self.assertEqual(h.job(j)["failures"], 0)
         self.assertEqual(h.codes[0], 0)
         self.assertEqual(h.backend.workers["t-w0"]["state"], "stopped")
+
+    # ---------------------------------------------------------------- after deregister (D-068)
+    def test_no_heartbeat_after_the_goodbye(self):
+        """The worker waits for its heartbeat thread before it deregisters: a slow heartbeat in flight at the stop
+        ends first, so nothing shows the worker alive after the goodbye."""
+        h = WorkerHarness(self)
+        w = h.start_worker()
+        wait_for(lambda: "t-w0" in h.backend.workers and h.backend.workers["t-w0"].get("state") == "idle")
+        order = []
+        real_beat, real_bye = w.hb_client.heartbeat, w.client.deregister
+
+        def slow_beat(*args, **kw):
+            time.sleep(0.6)  # still on its way when the worker is told to stop
+            try:
+                return real_beat(*args, **kw)
+            finally:
+                order.append("heartbeat")
+
+        def bye():
+            order.append("deregister")
+            return real_bye()
+        w.hb_client.heartbeat, w.client.deregister = slow_beat, bye
+        time.sleep(0.3)  # a slow heartbeat has started
+        w.stop.set()
+        h.threads[0].join(20)
+        self.assertEqual(h.codes[0], 0)
+        self.assertEqual(order[-1], "deregister", order)
+        self.assertIn("heartbeat", order)
+        worker = h.backend.workers["t-w0"]
+        self.assertEqual((worker["state"], worker["instance"]), ("stopped", None))
+
+    def test_deregistered_while_running_exits_75_to_register_again(self):
+        h = WorkerHarness(self)
+        h.start_worker()
+        wait_for(lambda: "t-w0" in h.backend.workers)
+        with h.backend.lock:
+            h.backend.workers["t-w0"]["instance"] = None  # the server ended this instance
+        h.threads[0].join(15)
+        self.assertFalse(h.threads[0].is_alive())
+        self.assertEqual(h.codes[0], 75)
+
+    def test_an_old_worker_sees_deregistered_as_a_plain_409(self):
+        """An old worker (before 4b.0) knows no `deregistered`: the client raises the same ApiConflict as for any
+        409, which an old worker treats as before - claim: exit 75 and register again a minute later; heartbeat:
+        lease lost; result: rejected. The code only lets a new worker tell the cases apart."""
+        from worker.client import ApiConflict
+        h = WorkerHarness(self)
+        h.backend.add_problem(EX / "sum-of-two", 1)
+        c = ApiClient(h.url, TOKEN)
+        c.register("old", ["cpu"], {})
+        j = h.backend.submit(user=1, version_id=1, source=OK_SUM)
+        job = c.claim()
+        c.deregister()
+        calls = [lambda: c.claim(), lambda: c.heartbeat("idle", None, None, None, None, None, {}),
+                 lambda: c.submit_result(j, {"attempt": job["attempt"], "verdict": "OK", "score": "100", "tests": []},
+                                         retry_for_s=0),
+                 lambda: c.release(j, job["attempt"], "stopping"), lambda: c.deregister()]
+        for call in calls:
+            with self.assertRaises(ApiConflict) as caught:
+                call()
+            self.assertEqual(caught.exception.code, "deregistered")
+        self.assertEqual((h.backend.workers["old"]["state"], h.job(j)["status"], h.job(j)["failures"]),
+                         ("stopped", "queued", 0), "the goodbye gave the job back without a failure")
+        c.register("old", ["cpu"], {})  # register again: a new instance works
+        self.assertEqual(c.claim()["judgement_id"], j)
 
     def test_graceful_stop_finishes_the_current_job_first(self):
         h = WorkerHarness(self)
@@ -470,10 +539,10 @@ class CheckE2E(unittest.TestCase):
 
 class SupervisorE2E(unittest.TestCase):
     def start_supervisor(self, h: WorkerHarness, workers: int = 2) -> subprocess.Popen:
-        env = dict(os.environ, JUDGE_API_URL=h.url, JUDGE_WORKER_TOKEN=TOKEN, JUDGE_BACKEND="local",
-                   JUDGE_ALLOW_UNSAFE_LOCAL="1", JUDGE_PIN_CPUS="0", JUDGE_WORKERS=str(workers),
-                   JUDGE_MACHINE_NAME="sup", JUDGE_CACHE_DIR=str(Path(h.tmp.name) / "supcache"),
-                   JUDGE_POLL_INTERVAL_S="0.05", JUDGE_HEARTBEAT_INTERVAL_S="0.2", JUDGE_DRAIN_TIMEOUT_S="20")
+        env = child_env(JUDGE_API_URL=h.url, JUDGE_WORKER_TOKEN=TOKEN, JUDGE_BACKEND="local",
+                        JUDGE_PIN_CPUS="0", JUDGE_WORKERS=str(workers),
+                        JUDGE_MACHINE_NAME="sup", JUDGE_CACHE_DIR=str(Path(h.tmp.name) / "supcache"),
+                        JUDGE_POLL_INTERVAL_S="0.05", JUDGE_HEARTBEAT_INTERVAL_S="0.2", JUDGE_DRAIN_TIMEOUT_S="20")
         proc = subprocess.Popen([sys.executable, "-m", "worker", "run"], cwd=ROOT, env=env)
         self.addCleanup(lambda: proc.poll() is None and (proc.kill(), proc.wait()))
         return proc

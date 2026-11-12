@@ -116,8 +116,9 @@ def get_source(submission_id: int, request: Request, db: Session = Depends(get_d
         raise ApiError(404, "no_source", "this submission has answers, not a source")
     name = view.source_name(sub)
     if sub.is_archive:
-        return file_response(blobs(request), sub.source_sha256, name, media_type="application/zip", kind="attachment")
-    return file_response(blobs(request), sub.source_sha256, name, text=True)
+        return file_response(blobs(request), sub.source_sha256, name, media_type="application/zip", kind="attachment",
+                             request=request)
+    return file_response(blobs(request), sub.source_sha256, name, text=True, request=request)
 
 
 @router.post("/submissions/{submission_id}/rejudge")

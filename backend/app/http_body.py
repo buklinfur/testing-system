@@ -4,11 +4,14 @@ Uvicorn does not limit request bodies, so:
 * BodyLimitMiddleware reads the body of every request itself, up to `limit` bytes, before the app sees it: a larger
   Content-Length is refused at once (nothing is read), a chunked body is counted and refused as soon as it passes the
   limit (the rest is never read). The app then gets the body replayed from memory (at most `limit` bytes).
-* Upload routes (raw zip or CSV) are exempt; they call save_body, which streams into a file with its own limit.
+* Upload routes (raw zip, CSV or a file) are exempt; they call save_body, which streams into a file with its own
+  limit. An upload route is named by its exact (method, path), or - when the path holds an id - by its method and a
+  regular expression the whole path must match (re.fullmatch): /items/<id>/attachments, never a neighbour of it.
 """
 from __future__ import annotations
 
 import json
+import re
 from typing import BinaryIO, Iterable
 
 from starlette.requests import Request
@@ -34,10 +37,17 @@ def declared_length(headers: Iterable) -> int | None:
 
 
 class BodyLimitMiddleware:
-    def __init__(self, app, limit: int = JSON_LIMIT, exempt: frozenset = frozenset()):
-        """exempt: exact (method, path) pairs that read their body themselves (uploads). The path is scope["path"],
+    def __init__(self, app, limit: int = JSON_LIMIT, exempt: frozenset = frozenset(),
+                 exempt_patterns: Iterable[tuple[str, re.Pattern]] = ()):
+        """exempt: exact (method, path) pairs that read their body themselves (uploads); exempt_patterns: (method,
+        compiled pattern) for upload paths with an id, matched against the whole path. The path is scope["path"],
         the one the router matches, so an exempt request always reaches its upload handler and nothing else."""
         self.app, self.limit, self.exempt = app, limit, exempt
+        self.exempt_patterns = tuple(exempt_patterns)
+
+    def is_exempt(self, method: str, path: str) -> bool:
+        return (method, path) in self.exempt or any(
+            method == m and pattern.fullmatch(path) is not None for m, pattern in self.exempt_patterns)
 
     async def _refuse(self, send) -> None:
         err = _too_large(self.limit)
@@ -48,7 +58,7 @@ class BodyLimitMiddleware:
         await send({"type": "http.response.body", "body": body})
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or (scope["method"], scope["path"]) in self.exempt:
+        if scope["type"] != "http" or self.is_exempt(scope["method"], scope["path"]):
             await self.app(scope, receive, send)
             return
         length = declared_length(scope.get("headers", []))

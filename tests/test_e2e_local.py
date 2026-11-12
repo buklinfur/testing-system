@@ -14,7 +14,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ["JUDGE_ALLOW_UNSAFE_LOCAL"] = "1"
 
 from runner.common import Verdict as V  # noqa: E402
 from runner.config import RunnerConfig  # noqa: E402
@@ -22,6 +21,11 @@ from runner.explain import student_view  # noqa: E402
 from runner.judge import Judge  # noqa: E402
 from runner.package import Problem  # noqa: E402
 from runner.quiz import grade_choice, grade_text  # noqa: E402
+from tests.unsafe_local import child_env, enable_for_module  # noqa: E402
+
+
+def setUpModule():
+    enable_for_module()  # JUDGE_ALLOW_UNSAFE_LOCAL / JUDGE_DEV for this module's tests only (tests/unsafe_local.py)
 
 EXAMPLES = ROOT / "problems-examples"
 
@@ -296,7 +300,7 @@ class SelfcheckTests(unittest.TestCase):
         import subprocess
         out = subprocess.run([sys.executable, "-m", "runner.cli", "--backend", "local", "selfcheck",
                               str(EXAMPLES / "sum-of-two")], cwd=ROOT, capture_output=True, text=True, timeout=120,
-                             env=dict(os.environ, JUDGE_ALLOW_UNSAFE_LOCAL="1"))
+                             env=child_env())
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(out.stdout.splitlines(), [
             "ok   solutions/ok.py: expected OK, got OK, score 100.0 ",

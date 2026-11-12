@@ -15,8 +15,10 @@ from ..settings import Settings
 from ..timeutil import TimezoneError
 from protocol.problem_package import PackageError
 from ..groups import GroupError
-from . import accounts, contests, extensions, groups as group_cmds, ops, problems, submissions
-from .core import CliError, Context
+from ..classroom.items import FeedError
+from . import (accounts, attachments, comments, contests, extensions, feed, groups as group_cmds, materials, ops,
+               problems, submissions)
+from .core import CliError, Context, UsageError, terminal_text
 from ..auth.csvimport import CsvImportError
 
 
@@ -230,6 +232,11 @@ def build_parser() -> argparse.ArgumentParser:
     late.add_argument("--not-late", dest="late", action="store_false", help="only the ones on time")
     p.add_argument("--last", type=int, default=50)
 
+    item, work = feed.add_parsers(groups, command)
+    attachments.add_parsers(item, work, command)
+    comments.add_parsers(groups, command)
+    materials.add_parsers(groups, command)
+
     p = groups.add_parser("status", help="database, migrations, workers, queue, configuration, blob store",
                           parents=[common])
     p.set_defaults(func=ops.status)
@@ -250,9 +257,15 @@ def main(argv: Optional[list] = None, ctx: Optional[Context] = None) -> int:
     ctx.json = getattr(args, "json", False)
     try:
         return args.func(ctx, args)
+    except FeedError as exc:  # the code too: scripts tell refusals apart by it
+        print(f"judgectl: {terminal_text(str(exc), multiline=True)} ({exc.code})", file=ctx.err)
+        return 1
+    except UsageError as exc:
+        print(f"judgectl: {terminal_text(str(exc), multiline=True)}", file=ctx.err)
+        return 2
     except (CliError, UserError, LoginError, TotpConfigError, CsvImportError, PackageError, ContestError,
             ContestSpecError, TimezoneError, GroupError) as exc:
-        print(f"judgectl: {exc}", file=ctx.err)
+        print(f"judgectl: {terminal_text(str(exc), multiline=True)}", file=ctx.err)
         return 1
     except (KeyboardInterrupt, EOFError):
         print("\njudgectl: interrupted", file=ctx.err)

@@ -14,11 +14,15 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ["JUDGE_ALLOW_UNSAFE_LOCAL"] = "1"
 
 from runner.common import Verdict as V  # noqa: E402
 from runner.interact import BUFFER_BYTES, INTERACTOR, SOLUTION, Relay  # noqa: E402
 from tests.test_e2e_local import EXAMPLES, copy_problem, judge  # noqa: E402
+from tests.unsafe_local import enable_for_module  # noqa: E402
+
+
+def setUpModule():
+    enable_for_module()  # JUDGE_ALLOW_UNSAFE_LOCAL / JUDGE_DEV for this module's tests only (tests/unsafe_local.py)
 
 PY = sys.executable
 

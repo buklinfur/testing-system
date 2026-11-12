@@ -230,13 +230,13 @@ class QueueTests(PgCase):
         j = q.claim(self.s, w, self.settings)
         self.s.commit()
         reply = q.heartbeat(self.s, w, state="busy", judgement_id=j.id, attempt=j.attempt, phase="running",
-                            tests_done=3, tests_total=10, stats={})
+                            tests_done=3, tests_total=10, stats={}, settings=self.settings)
         self.s.commit()
         self.assertFalse(reply["cancel"])
         j = self.s.get(Judgement, j.id, populate_existing=True)
         self.assertEqual((j.status, j.tests_done, j.tests_total), (JudgementStatus.running, 3, 10))
         wrong = q.heartbeat(self.s, w, state="busy", judgement_id=j.id, attempt=99, phase="running",
-                            tests_done=None, tests_total=None, stats={})
+                            tests_done=None, tests_total=None, stats={}, settings=self.settings)
         self.assertTrue(wrong["cancel"])
 
     def test_register_requeues_what_the_previous_instance_held(self):
@@ -376,8 +376,9 @@ class LoadTests(PgCase):
             self.submission(a)
         _sb, jb = self.submission(b)
         self.s.commit()
-        q.heartbeat(self.s, w, state="idle", judgement_id=None, attempt=None, phase=None, tests_done=None, tests_total=None, stats={})
+        q.heartbeat(self.s, w, state="idle", judgement_id=None, attempt=None, phase=None, tests_done=None, tests_total=None, stats={}, settings=self.settings)
         self.s.commit()
+        q.read_one_moment(self.s)  # every number below is of this one moment
         snap = q.load_snapshot(self.s, self.settings, user_id=b.id)
         self.assertEqual((snap.queue_length, snap.workers_online, snap.workers_busy), (4, 1, 0))
         self.assertEqual(snap.my_position, 4, "equal counters: age decides, student 2 came last")
@@ -391,11 +392,14 @@ class LoadTests(PgCase):
 
     def beat(self, w, state="idle"):
         q.heartbeat(self.s, w, state=state, judgement_id=None, attempt=None, phase=None, tests_done=None,
-                    tests_total=None, stats={})
+                    tests_total=None, stats={}, settings=self.settings)
         self.s.commit()
 
     def counters(self):
+        self.s.commit()
+        q.read_one_moment(self.s)
         snap = q.load_snapshot(self.s, self.settings)
+        self.s.commit()
         return snap.workers_online, snap.workers_busy, snap.level
 
     def test_busy_follows_the_jobs_without_waiting_for_a_heartbeat(self):
@@ -438,6 +442,7 @@ class LoadTests(PgCase):
             self.submission(student)
         self.s.commit()
         self.assertEqual(self.counters(), (1, 0, "overloaded"), "two jobs, one worker that will take them")
+        q.read_one_moment(self.s)
         metrics_out = q.collect_metrics(self.s, self.settings)
         self.assertEqual(metrics_out["workers_by_state"], {"idle": 1, "draining": 1}, "metrics still show both")
 

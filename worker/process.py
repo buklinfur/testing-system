@@ -81,6 +81,7 @@ class WorkerProcess:
         self._toolchain = getattr(self.judge.config, "toolchain_id", "")
         self._last_hb_ok = time.monotonic()
         self._hb_stop = threading.Event()
+        self._hb_thread: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------------ state shared with the heartbeat
     def _set(self, **changes) -> None:
@@ -111,6 +112,15 @@ class WorkerProcess:
                 if self._loaded is not None and (st["judgement_id"] is not None or st["check_id"] is not None):
                     self.problems.touch(self._loaded)
             except ApiConflict as exc:
+                if exc.code == "deregistered":
+                    if self.stop.is_set() or self._hb_stop.is_set():
+                        return  # stopping anyway: the main loop deregistered (or is about to); nothing to report
+                    log.error("the server says this worker deregistered, but it was not stopping: exiting to register "
+                              "again")
+                    self.fatal = EXIT_SUPERSEDED
+                    self.stop.set()
+                    self.abort.set()
+                    return
                 if exc.code == "superseded":
                     log.error("superseded by another process with the same name: stopping")
                     self.fatal = EXIT_SUPERSEDED
@@ -164,7 +174,8 @@ class WorkerProcess:
             return 1
         self.hb_client.worker_id, self.hb_client.instance = self.client.worker_id, self.client.instance
         log.info("registered as %s (id %s), cpus=%s boxes=%s", self.name, self.client.worker_id, info["cpus"], info["boxes"])
-        threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True).start()
+        self._hb_thread = threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True)
+        self._hb_thread.start()
         threading.Thread(target=self._drain_watchdog, name="drain", daemon=True).start()
         delay = 1.0
         try:
@@ -174,8 +185,8 @@ class WorkerProcess:
                 except ApiAuthError as exc:
                     log.error("authentication failed: %s", exc)
                     return EXIT_FATAL
-                except ApiConflict as exc:
-                    log.error("superseded: %s", exc)
+                except ApiConflict as exc:  # superseded (another process took the name) or deregistered
+                    log.error("the server ended this instance (%s): exiting to register again", exc.code or exc)
                     return EXIT_SUPERSEDED
                 except ApiError as exc:
                     log.warning("claim failed: %s (retry in %.0fs)", exc, delay)
@@ -190,6 +201,10 @@ class WorkerProcess:
         finally:
             self._hb_stop.set()
             self._set(state="stopped", judgement_id=None, check_id=None)
+            # no heartbeat may arrive after the goodbye (it would show the worker alive again): wait for the thread,
+            # at most one request timeout; the server refuses a late one anyway (409 deregistered, D-068)
+            if self._hb_thread is not None:
+                self._hb_thread.join(self.cfg.request_timeout_s + 5)
             try:
                 self.client.deregister()
             except ApiError:

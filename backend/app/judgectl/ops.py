@@ -107,6 +107,7 @@ def queue_events(ctx: Context, args) -> int:
 # ----------------------------------------------------------------------------- worker
 def worker_list(ctx: Context, args) -> int:
     with ctx.session() as db:
+        q.read_one_moment(db)  # the heartbeat ages are of the database's moment, like /system
         rows = q.worker_table(db, ctx.settings.queue)
     if ctx.json:
         emit_json(ctx, rows)
