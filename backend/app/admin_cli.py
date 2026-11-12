@@ -1,6 +1,6 @@
 """Deprecated alias of judgectl (module 3 syntax), kept until module 6 for deploy scripts and judge-dev.
 
-    python -m app.admin_cli create-worker-token NAME [--caps cpu,gpu]   -> judgectl worker token create
+    python -m app.admin_cli create-worker-token NAME --out FILE         -> judgectl worker token create
     python -m app.admin_cli revoke-worker-token NAME                    -> judgectl worker token revoke
     python -m app.admin_cli status                                      -> judgectl queue status + worker list
     python -m app.admin_cli reap | judgements [--last N] | events [--last N]                    -> judgectl queue ...

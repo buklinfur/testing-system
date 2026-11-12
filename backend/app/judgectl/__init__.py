@@ -2,7 +2,7 @@
 
     sudo -u judge ... python -m app.judgectl admin add boss --name "Иван Петрович"
     python -m app.judgectl user import class-7b.csv --out 7b-passwords.csv
-    python -m app.judgectl queue status | worker list | worker token create main
+    python -m app.judgectl queue status | worker list | worker token create main --out FILE
 
 It works through the service layer directly on the database (no HTTP); being able to run it as `judge`
 with /etc/judge/backend.env is the authentication. Every change goes to audit_log as `cli:<unix user>`

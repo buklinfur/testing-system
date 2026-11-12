@@ -78,7 +78,9 @@ sudo $P ./deploy/install-wsl.sh                       # 2-й раз: тепер�
 ```
 
 Ожидаемый конец второго запуска: строки alembic `Running upgrade ...`, затем
-`worker token '<host>-<время>' created and written to /etc/judge/worker.env (not shown)` и `installed.`
+`worker token '<host>-<время>' created and written to /tmp/tmp.…/token (0600, not shown)`,
+`worker token '<host>-<время>' written to /etc/judge/worker.env (not shown)` и `installed.` (временный файл токена
+удаляется сразу, D-089).
 
 Модуль 4а добавил пакеты (`argon2-cffi`, `cryptography`, `pyotp`, `segno`): первый `install-wsl.sh` после обновления
 качает их, поэтому нужен прокси и `$P`.
@@ -91,7 +93,7 @@ sudo $P ./deploy/install-wsl.sh                       # 2-й раз: тепер�
 | Код | `rsync --delete` в `/opt/judge` с владельцем root и без записи для группы и остальных; `__pycache__` не копируется, байткод собирается заранее (`judge` не может его писать) |
 | venv | `/opt/judge/.venv`, точные версии из `requirements.txt`; сеть только если чего-то не хватает |
 | Env и юниты | шаблоны `/etc/judge/*.env` только если файлов нет; юниты в `/etc/systemd/system`, `daemon-reload`; ничего не включает и не запускает |
-| База | от `judge`: `alembic upgrade head`; если в `worker.env` `JUDGE_WORKER_TOKEN=CHANGE_ME` — создаёт токен и записывает его, не показывая |
+| База | от `judge`: `alembic upgrade head`; если в `worker.env` `JUDGE_WORKER_TOKEN=CHANGE_ME` — создаёт токен и записывает его, не показывая (`deploy/lib/worker-token.sh`, D-089: `judgectl worker token create --out` в личный каталог `mktemp -d` 0700, оттуда его читает `awk`; ни в командной строке, ни в переменной, ни в выводе токена нет; новый `worker.env` — под `umask 077`, итог `root:judge 0640`; каталог удаляет `trap` на `EXIT`, и при сбое тоже) |
 
 Если в venv не хватает закреплённых пакетов, скрипт проверяет доступ к PyPI **до** копирования кода: при недоступной
 сети `/opt/judge` остаётся прежним, а не с новым кодом при старых пакетах. В конце он перечисляет переменные, которые
@@ -274,7 +276,8 @@ ERROR [sup] judge.supervisor: worker 0 exited with code 78 (a configuration erro
 ```
 
 Причину называет строка `ERROR` перед ней: токен (`JUDGE_WORKER_TOKEN` в `/etc/judge/worker.env` отозван или неверен —
-новый: `judgectl worker token create`), настройка (`bad configuration: …`) или dev-бэкенд (`backend=local is UNSAFE …`,
+новый: вписать `JUDGE_WORKER_TOKEN=CHANGE_ME` и запустить `sudo ./deploy/install-wsl.sh`, он создаст и запишет токен,
+не показывая), настройка (`bad configuration: …`) или dev-бэкенд (`backend=local is UNSAFE …`,
 D-065). Исправить и `sudo systemctl start judge-worker`. Код **75** (вытеснение процессом с тем же именем) так не
 выглядит: supervisor перезапускает воркер через минуту, служба остаётся `active`.
 
@@ -556,7 +559,8 @@ smoke), а ключ `JUDGE_SECRET_KEY` остаётся на месте — ег
 
 Порядок: проверки (ничего не меняется) → остановка `judge-worker`, `judge-reaper`, `judge-api-internal` → проверка, что
 к базе никто не подключён (публичное приложение или `psql`, запущенные вручную, — остановить и повторить; `FORCE` не
-используется, D-064) → пересоздание базы → `alembic upgrade head` под `judge` → удаление файлов → новый токен воркера.
+используется, D-064) → пересоздание базы → `alembic upgrade head` под `judge` → удаление файлов → новый токен воркера
+(та же `deploy/lib/worker-token.sh`, что у `install-wsl.sh`, D-089).
 База пересоздаётся **той же функцией**, которой её создаёт `deploy/setup-postgres.sh` (`judge_db_create` из
 `deploy/lib/pg-database.sh`): владелец базы и схемы `public` — `judge`, у `PUBLIC` нет `CONNECT` и `TEMP`. Отката
 миграций (`downgrade base`) больше нет: откаты 4а.3, 4а.4, 4в.1 и 4в.2 отказывают при их данных (группы, сроки задач,
@@ -620,15 +624,14 @@ uvicorn app.internal_main:app --host 127.0.0.1 --port 8002 --timeout-keep-alive 
 JUDGE_DEV=1 python -m app.dev_seed --count 3                     # посылки в очередь без публичного API
 JUDGE_DEV=1 python -m app.dev_seed --package problems-examples/sum-of-two --source sol.cpp --language cpp --user 2
 python -m app.judgectl queue judgements --last 20
-(umask 077; python -m app.judgectl worker token create smoke | tail -1 > ~/.config/judge/smoke-worker-token)
+python -m app.judgectl worker token create smoke --out ~/.config/judge/smoke-worker-token   # новый файл 0600
 tools/smoke-internal-api.sh ~/.config/judge/smoke-worker-token http://127.0.0.1:8002   # протокол воркера curl-ом, код выхода = число провалов
 ```
 Токен воркера для проверок — в `~/.config/judge/smoke-worker-token` (каталог 700, файл 600), не в `/tmp`.
-**Токен создаётся только этой строкой:** вывод `worker token create` целиком уходит в файл (под `umask 077`, через
-`tail -1`: токен — последняя строка) и в терминал не попадает. Нельзя запускать команду без перенаправления и нельзя
-«отфильтровать» её вывод для показа (`grep -v`, `head`): в сессии 4в.4b такой фильтр пропустил строку с токеном, и токен
-пришлось отозвать. Если токен всё же оказался на экране — сразу `judgectl worker token revoke <имя>` и новый той же
-строкой. То же — в любом сценарии smoke со своим стеком.
+`worker token create` пишет токен **только в новый файл** `--out` (0600, существующий не перезаписывается) и не
+печатает его нигде — ни в stdout, ни в stderr, ни в `--json` (D-089; раньше токен был последней строкой вывода, и в
+сессии 4в.4b фильтр вывода показал его). Перед новым smoke старый файл удалить (`shred -u`) или взять другое имя.
+Если токен всё же оказался на экране — сразу `judgectl worker token revoke <имя>` и новый.
 
 **Уборка после smoke** (приватный стек разработчика: публичное приложение, внутреннее API, воркер, админ smoke).
 Остановить процессы стека по их PID (не `pkill -f` по шаблону: он находит и собственную оболочку команды). Отзыв токена

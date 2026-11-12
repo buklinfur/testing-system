@@ -225,8 +225,9 @@ def show(ctx: Context, rows: list[dict], columns: list[tuple[str, str]]) -> None
         table(ctx, rows, columns)
 
 
-def open_private_new(path: str) -> TextIO:
-    """A new file only this user can read (0600); an existing file is never overwritten."""
+def create_private_new(path: str) -> int:
+    """A descriptor of a new file only this user can read (0600): O_EXCL - an existing file (or a symlink, O_NOFOLLOW)
+    is never overwritten or followed, CliError instead."""
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError as exc:
@@ -234,7 +235,12 @@ def open_private_new(path: str) -> TextIO:
     except OSError as exc:
         raise CliError(f"cannot create {path}: {exc.strerror}") from exc
     os.fchmod(fd, 0o600)  # in case of an unusual umask
-    return os.fdopen(fd, "w", encoding="utf-8-sig", newline="")  # BOM + ';': Excel on Windows opens it as is
+    return fd
+
+
+def open_private_new(path: str) -> TextIO:
+    """A new text file only this user can read (0600), for the CSV of passwords; never overwrites."""
+    return os.fdopen(create_private_new(path), "w", encoding="utf-8-sig", newline="")  # BOM + ';': Excel opens it
 
 
 # ----------------------------------------------------------------------------- secrets typed in

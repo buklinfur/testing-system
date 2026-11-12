@@ -1,6 +1,7 @@
 """judgectl queue ..., judgectl worker ... (what app.admin_cli did in module 3, R33) and judgectl status."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -13,7 +14,7 @@ from ..auth import audit
 from ..blobstore import valid_sha256
 from ..models import (Blob, Judgement, Problem, ProblemVersion, QueueEvent, Submission, TestResult, User, Worker,
                       WorkerToken)
-from .core import CliError, Context, emit_json, show
+from .core import CliError, Context, UsageError, create_private_new, emit_json, show
 
 
 # ----------------------------------------------------------------------------- queue
@@ -122,16 +123,39 @@ def worker_list(ctx: Context, args) -> int:
 
 
 def worker_token_create(ctx: Context, args) -> int:
+    """The token goes only into a new file of --out (0600, O_EXCL), never to stdout, stderr or --json (D-089): a
+    filter of the output, a terminal log or a pipeline into a chat showed it before. The file is created first (an
+    existing one refuses before anything is made); a failure of the database or of the write - the commit included -
+    removes it, so there is never a file with a token the database does not have, nor a token without its file."""
+    if not args.out:
+        raise UsageError("worker token create needs --out FILE: the token is written only into a new file (0600), "
+                         "never printed")
+    if args.out == "-":
+        raise UsageError("--out takes a file, not -: the token is never printed")
     caps = [c.strip() for c in args.caps.split(",") if c.strip()]
-    with ctx.session() as db:
-        token = q.create_worker_token(db, args.name, caps)
-        audit.record(db, ctx.actor, "worker.token_create", ctx.clock(), object_type="worker_token",
-                     object_id=args.name, details={"capabilities": caps})
+    fd = create_private_new(args.out)
+    try:
+        with ctx.session() as db:
+            if db.execute(select(WorkerToken.id).where(WorkerToken.name == args.name)).first():
+                raise CliError(f"a worker token named {args.name!r} already exists (revoked ones keep their name): "
+                               "choose another name")
+            token = q.create_worker_token(db, args.name, caps)
+            audit.record(db, ctx.actor, "worker.token_create", ctx.clock(), object_type="worker_token",
+                         object_id=args.name, details={"capabilities": caps})
+            data = (token + "\n").encode("ascii")
+            while data:
+                data = data[os.write(fd, data):]
+            os.fsync(fd)
+        # committed: the session closed without an error
+    except BaseException:
+        os.close(fd)
+        os.unlink(args.out)
+        raise
+    os.close(fd)
     if ctx.json:
-        emit_json(ctx, {"name": args.name, "capabilities": caps, "token": token})
-    else:  # the token stays the LAST line: deploy scripts take it with `| tail -1`
-        ctx.print("Token (shown once, put it into /etc/judge/worker.env as JUDGE_WORKER_TOKEN):")
-        ctx.print(token)
+        emit_json(ctx, {"name": args.name, "capabilities": caps, "out": args.out})
+    else:
+        ctx.print(f"worker token {args.name!r} created and written to {args.out} (0600, not shown)")
     return 0
 
 

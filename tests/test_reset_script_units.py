@@ -53,7 +53,7 @@ class ResetScriptTests(unittest.TestCase):
         steps = ['[ "${1:-}" = --yes-wipe-production ]', "[ -x /opt/judge/.venv/bin/alembic ]",
                  'systemctl --no-pager stop', 'judge_db_connections "$DB"', 'judge_db_recreate "$DB"',
                  "alembic.ini upgrade head", 'find "$BLOBS" "$CACHE" -mindepth 1 -delete',
-                 "worker token create"]
+                 'judge_worker_token_new main "$f" j']
         where = [reset.find(step) for step in steps]
         self.assertNotIn(-1, where, dict(zip(steps, where)))
         self.assertEqual(where, sorted(where), dict(zip(steps, where)))

@@ -102,7 +102,7 @@ judgectl submission show <id>
                            | --problem-version <slug>@<версия>) [--verdicts WA,TL]
 judgectl queue  status | reap | judgements [--last N] | events [--last N]
                 | rejudge (--submission <id> | --contest-problem <id>) [--verdicts WA,TL]     # устарело
-judgectl worker list | token create <имя> [--caps cpu,gpu] | token revoke <имя>
+judgectl worker list | token create <имя> --out <новый-файл> [--caps cpu,gpu] | token revoke <имя>
 judgectl status [--details]
 ```
 
@@ -205,7 +205,7 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | Команда | Что делает |
 |---|---|
 | `list` | Воркеры: состояние, возраст heartbeat, текущее задание, ядра, число проверок, capabilities |
-| `token create <имя> [--caps cpu,gpu]` | Новый токен воркера (по умолчанию `cpu,problem_check`: `problem_check` — проверки версий задач, 4а.4). Токен — **последняя строка** stdout (скрипты берут его `| tail -1`), показывается один раз |
+| `token create <имя> --out <новый-файл> [--caps cpu,gpu]` | Новый токен воркера (по умолчанию `cpu,problem_check`: `problem_check` — проверки версий задач, 4а.4). Токен пишется **только** в новый файл `--out` (0600, `O_EXCL`, символическая ссылка не открывается) и **не печатается нигде** — ни в stdout, ни в stderr, ни в `--json` (там `{name, capabilities, out}`), D-089. Без `--out` или с `--out -` — код 2; существующий файл — отказ, файл не тронут, токен не создан; занятое имя (отозванные токены его хранят) — отказ. Сбой базы или записи после создания файла (и `commit` тоже) удаляет файл: файла с токеном, которого нет в базе, не бывает. В `/etc/judge/worker.env` его пишут `install-wsl.sh` и `reset-production.sh` (`deploy/lib/worker-token.sh`) |
 | `token revoke <имя>` | Отозвать живой токен; если такого нет — ошибка |
 
 ### problem — задачи ([`PROBLEM_IMPORT.md`](PROBLEM_IMPORT.md))
@@ -426,7 +426,7 @@ stderr и выход 1.
 
 | admin_cli | judgectl |
 |---|---|
-| `create-worker-token <имя> [--caps]` | `worker token create <имя> [--caps]` |
+| `create-worker-token <имя> --out <файл> [--caps]` | `worker token create <имя> --out <файл> [--caps]` |
 | `revoke-worker-token <имя>` | `worker token revoke <имя>` |
 | `status` | `queue status` + `worker list` |
 | `reap`, `judgements`, `events` | `queue reap`, `queue judgements`, `queue events` |

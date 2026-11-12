@@ -120,9 +120,12 @@ def build_parser() -> argparse.ArgumentParser:
     command(worker, "list", ops.worker_list, "workers with state and heartbeat", json=True)
     token = worker.add_parser("token", help="worker API tokens").add_subparsers(dest="token_cmd", required=True,
                                                                               metavar="COMMAND")
-    p = command(token, "create", ops.worker_token_create, "new worker token (shown once, last line)", json=True)
+    p = command(token, "create", ops.worker_token_create, "new worker token, written only into a new file",
+                json=True)
     p.add_argument("name")
     p.add_argument("--caps", default="cpu,problem_check")
+    p.add_argument("--out", metavar="FILE", help="required: a new file (0600, never overwritten) to write the token "
+                   "into; the token is never printed")
     command(token, "revoke", ops.worker_token_revoke, "revoke a worker token").add_argument("name")
 
     problem = groups.add_parser("problem", help="problems and their versions").add_subparsers(
