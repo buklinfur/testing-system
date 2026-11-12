@@ -127,7 +127,7 @@ class ClassroomServiceTests(PgCase):
         contest = self.s.get(Contest, self.seed["cp"].contest_id)
         cases = [
             ("title_invalid", dict(kind="assignment", title="  ", grading="none")),
-            ("kind_not_available", dict(kind="material", title="Памятка")),
+            ("material_required", dict(kind="material", title="Памятка")),  # 4v.4: kind_not_available is gone
             ("contest_required", dict(kind="contest", title="К")),
             ("item_invalid", dict(kind="assignment", title="З", grading="none", contest=contest)),
             ("grading_invalid", dict(kind="assignment", title="З")),

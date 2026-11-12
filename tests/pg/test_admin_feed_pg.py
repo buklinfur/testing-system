@@ -24,7 +24,7 @@ if URL and HAVE_SA and HAVE_API:
     from app.admin_api.feed import COMMENT_STUDENT_ONLY, DEFENSIVE, HAND_IN_ONLY, NO_ROUTE_YET, RESULT_ONLY, STATUS
     from app.blobstore import BlobStore
     from app.classroom import works
-    from app.models import AssignmentReview, AuditLog, Contest, FeedItem, User
+    from app.models import AssignmentReview, AuditLog, Contest, FeedItem, Material, User
     from app.settings import AuthSettings, Settings
 
 
@@ -310,7 +310,12 @@ class AdminFeedTests(ApiCase):
             self.refused(P("/items", json=body), code)
 
         create("title_invalid", title="  ", grading="none")
-        create("kind_not_available", kind="material")
+        create("material_required", kind="material")
+        create("material_not_found", kind="material", material="no-such")
+        self.s.add(Material(slug="old-memo", title="Старая", archived_at=self.now, created_at=self.now,
+                            updated_at=self.now))
+        self.s.commit()
+        create("material_archived", kind="material", material="old-memo")
         create("contest_required", kind="contest")
         create("item_invalid", kind="lesson")
         create("grading_invalid")

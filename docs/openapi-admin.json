@@ -249,10 +249,23 @@
             "type": "array"
           },
           "kind": {
-            "description": "assignment | contest (material: from 4v.4)",
+            "description": "assignment | contest | material",
             "maxLength": 20,
             "title": "Kind",
             "type": "string"
+          },
+          "material": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "slug, for kind material (4v.4)",
+            "title": "Material"
           },
           "max_points": {
             "anyOf": [
@@ -273,6 +286,7 @@
             "title": "Max Points"
           },
           "title": {
+            "description": "for kind material: empty takes the material's title",
             "maxLength": 1000,
             "title": "Title",
             "type": "string"

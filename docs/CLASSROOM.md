@@ -246,7 +246,8 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 
 **Элементы** (`items.py`):
 * `create_item`, `update_item` — те же ограничения, что `CHECK` таблицы, но с кодами: `title_invalid`,
-  `kind_not_available` (материал — с 4в.4), `contest_required`, `grading_invalid`, `max_points_invalid`,
+  `material_required` и `material_archived` (элемент-материал, с 4в.4; прежний `kind_not_available` больше не
+  выдаётся), `contest_required`, `grading_invalid`, `max_points_invalid`,
   `answer_kind_invalid`, `deadline_invalid`, `item_invalid`. Смена шкалы — одно правило для API и judgectl
   (`update_item`): `pass_fail` / `none` без `max_points` очищает его, с `max_points` не `null` — `max_points_invalid`;
   `points` без `max_points` — `max_points_invalid`. После первой оценки шкала (`grading`, `max_points`) не
@@ -805,3 +806,84 @@ judgectl и админский API — этапы 4 и 5. Коды сервис�
 Выкладка материала группам и ученикам: адресаты и отложенная публикация — как у остальных элементов, срока, сдачи и
 оценки нет. Общая ветка комментариев — как у задания (`comments_enabled`), без личных веток. Вложения элемента
 видны по `access.item_listed`, как у контест-элемента.
+
+### Сервисы (этап 3, D-085)
+
+[`materials/service.py`](../backend/app/materials/service.py) (материалы, версии, вложения, доступ),
+[`materials/library.py`](../backend/app/materials/library.py) (Справочник),
+[`materials/refs.py`](../backend/app/materials/refs.py) (ссылки при сохранении текста). Общие правила §7: `flush` без
+`commit`, отказ — `FeedError` с кодом, действия преподавателя — в аудит **без содержимого** (длина текста, имя, sha256
+и размер файла, URL и заголовок ссылки). Тесты — `tests/pg/test_materials_pg.py`.
+
+**Материал.**
+* `create_material(slug, title, body_md, library)` — материал и версия 1. Отказы: `slug_invalid`, `slug_taken` (и у
+  архивного; два создания сразу — второе получает `slug_taken` от уникального индекса), `title_invalid`,
+  `body_invalid`, `body_too_long`, `library_invalid`. Аудит `material.create`.
+* `update_material(title=…, library=…)` — правка на месте; аудит `material.update` с `changes`. Ключ `slug`, отличный
+  от текущего, — **`slug_immutable`**, ничего не меняется; тот же slug допустим. Прочие поля — `material_invalid`.
+* `archive` / `unarchive` — `True`, если изменилось. Архивный материал только читается: правки, вложения, группы
+  Справочника, место в разделе, новый элемент ленты — `material_archived`.
+* `set_library_groups` / `add_library_groups` / `remove_library_groups` — группы Справочника; новая группа не
+  архивная (`group_archived`); аудит `material.library_groups` (`before`, `after`).
+
+**Версии.** Все изменения содержимого идут под блокировкой строки материала (`FOR UPDATE`), поэтому две правки сразу
+дают две версии подряд, без пропусков и повторов номера, и вторая строится поверх первой (тест на двух соединениях).
+* `new_version(body_md)` — новый текст: версия + 1 с вложениями последней. Тот же текст — версии нет (`created`
+  ложно). Аудит `material.version` (`version`, `from`, `body_chars`).
+* Вложения версии — правила и лимиты 4в.3 (`attachment_rules`, `teacher_limits`, `JUDGE_ITEM_ATTACHMENTS_MAX`,
+  `JUDGE_ATTACHMENT_MAX_MB`):
+  - `precheck_file(name)` — до тела, без блокировки и записи: архивный, лимит числа, тип по имени, повтор имени;
+  - `add_file(upload)` — после тела решает всё заново под блокировкой материала (архив, лимит, имя, пустой, размер,
+    содержимое); блоб принимается в хранилище последним шагом, отказ не оставляет ни блоба, ни файла в `tmp`;
+  - `add_link`, `remove(id)`, `reorder(ids)` (`attachment_order_invalid` с `missing` / `extra` / `repeated`; тот же
+    порядок — версии нет);
+  - каждое изменение — новая версия: строки вложений копируются (новые id, блобы общие), прежние версии не
+    меняются. Id вложений — у последней версии; удалить или переставить вложение старой версии нельзя
+    (`attachment_not_found`). Аудит `material.attachment_add` / `_remove` / `_order` с номером версии.
+* `versions(material)` — история без текстов (длина, число вложений); `version_detail(material, n)` — одна версия для
+  админа (`version_not_found`).
+
+**Доступ.** `open_inputs` собирает для `rules.open_basis` всё из базы: группы Справочника и текущие группы ученика;
+опубликованные элементы `material` этого материала и опубликованные элементы, текст которых на него ссылается
+(`material_refs`), с тем, что нужно `item_listed` (`items.view_inputs`); задачи контестов, чья закреплённая версия
+ссылается на slug, с участием и признаком группы контеста (`contests.access_inputs`).
+* `material_view(viewer, material)` — последняя версия: текст как хранится, вложения (без содержимого), ссылки текста,
+  разрешённые для читателя (`resolve`). Ученику без основания — `material_not_found`, по любой причине. Админ
+  получает ещё slug, аудиторию, группы, разделы, число версий.
+* `material_file(viewer, material, id, version=None)` — файл для `content_files.file_response` после проверки. Ученик:
+  только последняя версия и только с основанием (`material_not_found`); номер версии от ученика не принимается. Админ:
+  любая версия. Ссылка, вложение другой версии, нет такого — `attachment_not_found`.
+* `resolve(viewer, texts)` — ссылки текстов, по одной на slug: ученику «нет такого», «архивный без оснований» и «нет
+  доступа» дают один и тот же ответ `{slug, available: false}` (тест сравнивает ответы целиком).
+* `where_used(material)` — элементы `material` этого материала, элементы со ссылкой, версии задач (`slug@v`),
+  материалы, **последняя** версия которых ссылается на него.
+
+**Ссылки при сохранении** (`refs.replace`, `refs.warnings`): строки `material_refs` источника пишутся заново при каждом
+сохранении его текста — версия задачи (все условия, при импорте), элемент ленты (`create_item`, `update_item` при
+смене `body_md`), версия материала. Предупреждения (неверная запись, нет такого материала, архивный) — никогда не
+отказ:
+* `import_package` добавляет их к `warnings` результата — и в `created`, и в `exists`, и в `dry_run` (`new`), ключ —
+  путь условия (`statement/ru.md: …`); строки `material_refs` пишутся **только** у созданной версии;
+* элемент ленты — `items.link_warnings(item)`, в `item_detail` — поле `link_warnings`;
+* материал — `warnings` результата `create_material` / `new_version`.
+
+Неизвестный slug «оживает»: ссылка хранится по slug, и материал, созданный позже, сразу открывается по ней (тест).
+
+**Справочник** (`library.py`). Изменения разделов и материалов в них идут по одной под advisory-блокировкой
+`locks.LIBRARY`.
+* `create_section(title, parent=None)` — в конец уровня; `rename_section`; `move_section(parent)` — в конец нового
+  уровня (`section_too_deep`, `section_invalid`); `delete_section` — только без подразделов (`section_not_empty`),
+  материалы лишь покидают раздел, в аудите — их slug.
+* `place(material, section)` — в конец раздела (архивный — `material_archived`; уже там — `False`); `unplace`.
+* `reorder_sections(ids, parent=None)`, `reorder_materials(section, ids)` — ровно текущий набор, иначе
+  `order_invalid` (`missing`, `extra`, `repeated`).
+* `library_view(viewer, now, q=None)` — разделы по порядку с материалами и подразделами плюс `unsorted` (материалы
+  Справочника вне разделов). Ученик видит только материалы по `rules.in_library`, пустые для него разделы опущены;
+  админ — всё, архивные с пометкой. С `q` — только поиск: `{query, materials}`.
+* `search(viewer, q)` — `ILIKE` по названию без учёта регистра, кириллица тоже («циклы» находит «Циклы» и «ЦИКЛЫ»: базы
+  в `C.UTF-8`); `%`, `_` и `\` ищутся буквально (экранирование, `ESCAPE '\'`).
+
+**Элемент `material`** (`items.create_item(kind="material", material=…)`): без материала — `material_required`,
+архивный — `material_archived`, материал у другого вида — `item_invalid`; пустое название — название материала.
+Админский `POST /items` принимает `material` (slug) уже на этом этапе: иначе новые коды элемента не достигались бы
+запросом (тест D-063). Остальные коды сервисов материалов войдут в `STATUS` на этапе 5.

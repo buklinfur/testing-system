@@ -23,7 +23,7 @@ COMMENT_RULE_CODES = {"comments_disabled", "comments_teacher_only", "not_your_co
 REFUSAL_CODES = {"too_many_files", "too_many_attachments", "duplicate_name", "submission_too_large"}
 # codes the endpoints raise themselves (ApiError) rather than the services
 API_ONLY = {"work_not_found", "confirmation_mismatch", "due_at_invalid", "available_from_invalid", "user_not_found",
-            "group_not_found", "contest_not_found"}
+            "group_not_found", "contest_not_found", "material_not_found"}
 
 try:
     from app.admin_api.feed import COMMENT_STUDENT_ONLY, HAND_IN_ONLY, NO_ROUTE_YET, RESULT_ONLY, STATUS

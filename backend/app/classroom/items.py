@@ -20,7 +20,8 @@ from ..contests import access as contest_access
 from ..contests import service as contests
 from ..models import (AfterDueStatement, AfterDueSubmit, AnswerKind, AssignmentReview, AssignmentWork, Contest,
                       ContestGroup, DeadlineExtension, FeedItem, FeedItemAudience, FeedItemKind, FeedItemState,
-                      GradesRelease, GradingScale, Group, GroupMember, ReviewAction, Role, User)
+                      GradesRelease, GradingScale, Group, GroupMember, Material, ReviewAction, Role, User)
+from ..materials import refs as material_refs
 from ..timeutil import iso_utc
 from . import access
 from . import grading as grading_rules
@@ -207,7 +208,8 @@ def _validate(kind: str, f: dict) -> None:
         problems.append(("item_invalid", "comments_enabled is true or false"))
     elif f["comments_enabled"] and kind == "contest":
         problems.append(("item_invalid", "students never write in the thread of a contest item "
-                                          "(comments_teacher_only): comments_enabled is for assignments"))
+                                          "(comments_teacher_only): comments_enabled is for assignments and "
+                                          "material items"))
     if kind == "assignment":
         grading = f["grading"]
         if grading not in {m.value for m in GradingScale}:
@@ -251,21 +253,41 @@ def _apply(item: FeedItem, f: dict) -> list:
 
 def _details(item: FeedItem) -> dict:
     return {"kind": item.kind.value, "title": item.title,
-            **({"contest_id": item.contest_id} if item.contest_id is not None else {})}
+            **({"contest_id": item.contest_id} if item.contest_id is not None else {}),
+            **({"material_id": item.material_id} if item.material_id is not None else {})}
+
+
+def _write_links(db: Session, item: FeedItem) -> None:
+    """material_refs of the item's body, written again (the links of a feed item, 4v.4)."""
+    material_refs.replace(db, [item.body_md or ""], feed_item_id=item.id)
+
+
+def link_warnings(db: Session, item: FeedItem) -> list[str]:
+    """Warnings about the links [[памятка:slug]] of the body (malformed, no such material, archived): never a
+    refusal; the API and judgectl show them with the item."""
+    return material_refs.warnings(db, {"body": item.body_md or ""})
 
 
 # ----------------------------------------------------------------------------- changes
-def create_item(db: Session, actor: audit.Actor, now: datetime, *, kind: str, title: str, body_md: str = "",
-                contest: Optional[Contest] = None, **fields) -> FeedItem:
-    """A new item, a draft. kind contest needs `contest`; an assignment takes the deadline, grading and answer
-    fields (grading is required; answer_kind text and grades_release manual by default)."""
-    if kind == "material":
-        raise FeedError("materials come with session 4v.4", "kind_not_available")
-    if kind not in ("contest", "assignment"):
-        raise FeedError(f"kind is contest or assignment, not {kind!r}", "item_invalid")
+def create_item(db: Session, actor: audit.Actor, now: datetime, *, kind: str, title: Optional[str], body_md: str = "",
+                contest: Optional[Contest] = None, material: Optional[Material] = None, **fields) -> FeedItem:
+    """A new item, a draft. kind contest needs `contest`; kind material needs `material` (not archived), its title
+    by default; an assignment takes the deadline, grading and answer fields (grading is required; answer_kind text
+    and grades_release manual by default). The links of the body are written to material_refs."""
+    if kind not in ("contest", "assignment", "material"):
+        raise FeedError(f"kind is contest, assignment or material, not {kind!r}", "item_invalid")
     if (kind == "contest") != (contest is not None):
-        raise FeedError("a contest item names its contest; an assignment names none",
+        raise FeedError("a contest item names its contest; the other kinds name none",
                         "contest_required" if kind == "contest" else "item_invalid")
+    if kind == "material" and material is None:
+        raise FeedError("a material item names its material", "material_required")
+    if kind != "material" and material is not None:
+        raise FeedError("only a material item names a material", "item_invalid")
+    if material is not None:
+        if material.archived_at is not None:
+            raise FeedError(f"the material {material.slug} is archived: unarchive it first", "material_archived")
+        if not (title or "").strip():
+            title = material.title
     unknown = sorted(set(fields) - set(EDITABLE))
     if unknown:
         raise FeedError(f"unknown fields: {', '.join(unknown)}", "item_invalid")
@@ -274,11 +296,13 @@ def create_item(db: Session, actor: audit.Actor, now: datetime, *, kind: str, ti
     f = _fields(None, kind, {"title": title, "body_md": body_md, **fields})
     _validate(kind, f)
     item = FeedItem(kind=FeedItemKind(kind), state=FeedItemState.draft,
-                    contest_id=contest.id if contest is not None else None, created_by=actor.user_id, created_at=now,
-                    updated_at=now)
+                    contest_id=contest.id if contest is not None else None,
+                    material_id=material.id if material is not None else None, created_by=actor.user_id,
+                    created_at=now, updated_at=now)
     _apply(item, f)
     db.add(item)
     db.flush()
+    _write_links(db, item)
     audit.record(db, actor, "item.create", now, object_type="feed_item", object_id=item.id, details=_details(item))
     return item
 
@@ -313,6 +337,8 @@ def update_item(db: Session, actor: audit.Actor, item: FeedItem, now: datetime, 
         return []
     item.updated_at = now
     db.flush()
+    if "body_md" in changed:
+        _write_links(db, item)
     audit.record(db, actor, "item.update", now, object_type="feed_item", object_id=item.id,
                  details={**_details(item), "changes": {n: [_show(before[n]), _show(_v(getattr(item, n)))]
                                                         for n in changed if n != "body_md"},
@@ -503,7 +529,8 @@ def item_summary(db: Session, item: FeedItem) -> dict:
                        .group_by(AssignmentWork.status)).all()
     rows = audience_rows(db, item)
     return {"id": item.id, "kind": item.kind, "state": item.state, "title": item.title,
-            "contest_id": item.contest_id, "available_from": item.available_from, "due_at": item.due_at,
+            "contest_id": item.contest_id, "material_id": item.material_id, "available_from": item.available_from,
+            "due_at": item.due_at,
             "published_at": item.published_at, "created_at": item.created_at,
             "comments_enabled": item.comments_enabled,
             "audience": {"groups": [r.group_id for r in rows if r.group_id is not None],
@@ -522,6 +549,7 @@ def item_detail(db: Session, item: FeedItem) -> dict:
     groups = [db.get(Group, r.group_id) for r in rows if r.group_id is not None]
     users = [db.get(User, r.user_id) for r in rows if r.user_id is not None]
     contest = db.get(Contest, item.contest_id) if item.contest_id is not None else None
+    material = db.get(Material, item.material_id) if item.material_id is not None else None
     extensions = db.execute(select(func.count()).select_from(DeadlineExtension)
                             .where(DeadlineExtension.feed_item_id == item.id)).scalar_one()
     out.update({
@@ -535,5 +563,9 @@ def item_detail(db: Session, item: FeedItem) -> dict:
                                 for gr in groups],
                      "users": [{"id": u.id, "login": u.login, "display_name": u.display_name} for u in users]},
         "extensions": extensions,
+        "material": None if material is None else {"id": material.id, "slug": material.slug,
+                                                   "title": material.title,
+                                                   "archived": material.archived_at is not None},
+        "link_warnings": link_warnings(db, item),
     })
     return out

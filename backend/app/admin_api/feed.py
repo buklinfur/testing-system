@@ -24,6 +24,7 @@ from ..classroom.items import FeedError
 from ..contests import service as contests
 from ..contests.service import ContestError
 from ..jsonable import plain
+from ..materials import service as materials
 from ..models import FeedItem, Group, User
 from ..timeutil import TimezoneError, parse_local, zone
 from .deps import Page, admin_actor, page, paginate, users_by_id
@@ -38,9 +39,9 @@ STATUS = {
     # 404
     "item_not_found": 404, "user_not_found": 404, "group_not_found": 404, "contest_not_found": 404,
     "extension_not_found": 404, "work_not_found": 404, "thread_not_found": 404, "comment_not_found": 404,
-    "file_not_found": 404, "attachment_not_found": 404,
+    "file_not_found": 404, "attachment_not_found": 404, "material_not_found": 404,
     # 422: the input
-    "title_invalid": 422, "kind_not_available": 422, "contest_required": 422, "item_invalid": 422,
+    "title_invalid": 422, "material_required": 422, "contest_required": 422, "item_invalid": 422,
     "grading_invalid": 422, "max_points_invalid": 422, "answer_kind_invalid": 422, "deadline_invalid": 422,
     "score_invalid": 422, "score_required": 422, "score_out_of_range": 422, "grade_kind_mismatch": 422,
     "passed_required": 422, "grade_not_expected": 422, "comment_too_long": 422, "comment_required": 422,
@@ -57,7 +58,7 @@ STATUS = {
     "item_not_draft": 409, "item_has_works": 409, "item_has_extensions": 409, "group_archived": 409,
     "not_published": 409, "not_addressed": 409, "not_an_assignment": 409, "no_deadline": 409,
     "nothing_to_return": 409, "already_returned": 409, "release_not_needed": 409, "already_deleted": 409,
-    "too_many_attachments": 409,
+    "too_many_attachments": 409, "material_archived": 409,
     # the results of a bulk release per student (in a 200 answer), never a refusal of an admin request
     "nothing_to_release": 409, "already_released": 409,
     # a student's hand-in only: no admin endpoint hands work in (the student endpoints of 4b.2 use these)
@@ -162,9 +163,10 @@ class ItemFields(Body):
 
 
 class CreateBody(ItemFields):
-    kind: str = Field(max_length=20, description="assignment | contest (material: from 4v.4)")
-    title: str = Field(max_length=1000)
+    kind: str = Field(max_length=20, description="assignment | contest | material")
+    title: str = Field(max_length=1000, description="for kind material: empty takes the material's title")
     contest: Optional[str] = Field(None, max_length=64, description="slug, for kind contest")
+    material: Optional[str] = Field(None, max_length=64, description="slug, for kind material (4v.4)")
     group_ids: list[int] = Field(default_factory=list, max_length=200)
     user_ids: list[int] = Field(default_factory=list, max_length=200)
 
@@ -218,15 +220,20 @@ def create_item(body: CreateBody, request: Request, db: Session = Depends(get_db
     body_md = fields.pop("body_md", None) or ""
     groups = _groups(db, body.group_ids)
     users = users_by_id(db, body.user_ids) if body.user_ids else []
-    contest = None
+    contest = material = None
     if body.contest is not None:
         try:
             contest = contests.get_contest(db, body.contest)
         except ContestError as exc:
             raise ApiError(404, "contest_not_found") from exc
+    if body.material is not None:
+        try:
+            material = materials.by_slug(db, body.material)
+        except FeedError as exc:
+            raise ApiError(404, "material_not_found") from exc
     try:
         item = items.create_item(db, actor, at, kind=body.kind, title=body.title, body_md=body_md, contest=contest,
-                                 **fields)
+                                 material=material, **fields)
         if groups or users:
             items.set_audience(db, actor, item, at, groups=groups, users=users)
     except FeedError as exc:

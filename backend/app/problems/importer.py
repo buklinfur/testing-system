@@ -33,6 +33,7 @@ from .. import problem_checks as checks
 from ..auth import audit
 from ..blobstore import BlobStore
 from ..manifest_db import build_manifest
+from ..materials import refs as material_refs
 from ..models import (Blob, CheckReason, Feedback, Problem, ProblemType, ProblemVersion, Program, ProgramRole, Scoring,
                       TestCase, TestGroup, Verdict, VersionCheck, VersionStatus, Visibility)
 from ..settings import ImportSettings
@@ -121,6 +122,9 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
         hashes = {rel: sha256_file(root / rel) for rel in files}
         digest = content_digest(hashes)
         statements = _statements(pkg)
+        # links [[памятка:slug]] of the statements: warnings only, never a refusal (D-083); rows for a created version
+        warnings = list(pkg.warnings) + material_refs.warnings(
+            db, {pkg.statements[lang]: text for lang, text in sorted(statements.items())})
 
         # one import of a slug at a time: version numbers and "exists" stay right under concurrency
         locks.take_named(db, locks.PROBLEM_IMPORT, pkg.slug)
@@ -132,11 +136,11 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
             same = db.execute(select(ProblemVersion).where(ProblemVersion.problem_id == problem.id,
                                                            ProblemVersion.content_sha256 == digest)).scalar_one_or_none()
             if same is not None:
-                return ImportResult("exists", pkg.slug, same.version, digest, problem, same, pkg.warnings)
+                return ImportResult("exists", pkg.slug, same.version, digest, problem, same, warnings)
         if dry_run:
             last = db.execute(select(func.max(ProblemVersion.version))
                               .where(ProblemVersion.problem_id == problem.id)).scalar() if problem is not None else None
-            return ImportResult("new", pkg.slug, (last or 0) + 1, digest, problem, None, pkg.warnings)
+            return ImportResult("new", pkg.slug, (last or 0) + 1, digest, problem, None, warnings)
         if problem is None:
             problem = Problem(slug=pkg.slug, owner_id=owner_id if owner_id is not None else actor.user_id)
             db.add(problem)
@@ -167,6 +171,7 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
                            language_key=ref.language, source_sha256=sha_of[ref.path],
                            expected_verdict=Verdict(ref.expect) if ref.expect else None))
         db.flush()
+        material_refs.replace(db, [statements[lang] for lang in sorted(statements)], problem_version_id=version.id)
         db.expire(version, ["groups", "programs"])  # rows were added by id: let the manifest query load them
         _manifest, version.manifest_sha256 = build_manifest(db, version.id)
         check = None
@@ -181,4 +186,4 @@ def import_package(db: Session, blobs: BlobStore, limits: ImportSettings, actor:
                               "package_sha256": package_sha, "status": version.status.value,
                               "check_id": check.id if check is not None else None})
         db.flush()
-        return ImportResult("created", pkg.slug, number, digest, problem, version, pkg.warnings, check)
+        return ImportResult("created", pkg.slug, number, digest, problem, version, warnings, check)
