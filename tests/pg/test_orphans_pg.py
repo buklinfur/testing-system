@@ -2,7 +2,7 @@
 does not name a job its worker holds since longer than the grace (JUDGE_HEARTBEAT_TIMEOUT_S, by the database clock)
 returns it to the queue as a failed attempt - for submissions and for checks of problem versions - while a job just
 handed out, a job the heartbeat names and a job whose result is being recorded right now are left alone; the old
-holder is refused afterwards; a judgement the server gave up on refuses a late result (judgements.error marks it)
+holder is refused afterwards; a judgement the server gave up on refuses a late result (judgements.server_gave_up_at marks it, D-090)
 and keeps who judged it in every view.
 
 Skipped unless JUDGE_TEST_DATABASE_URL is set.
@@ -20,6 +20,7 @@ if URL and HAVE_SA:
     from app import metrics
     from app import problem_checks as checks
     from app import queue as q
+    from app import scores
     from app.auth import audit
     from app.models import (CheckReason, CheckStatus, Judgement, JudgementStatus, Problem, ProblemType,
                             ProblemVersion, QueueEvent, VersionCheck, VersionStatus, Worker)
@@ -188,7 +189,10 @@ class OrphanTests(PgCase):
         got = self.judgement(j.id)
         self.assertEqual((got.status, got.verdict.value, got.failures, got.worker_id, got.attempt),
                          (JudgementStatus.internal_error, "IE", 3, w.id, 3))
-        self.assertTrue(q.server_gave_up(got), got.error)  # the mark: judgements.error
+        self.assertTrue(q.server_gave_up(got), got.error)  # the mark: judgements.server_gave_up_at (D-090)
+        self.assertIsNotNone(got.server_gave_up_at)
+        self.assertTrue(got.error.startswith("3 failed attempts; last reason: "), got.error)
+        self.assertEqual((got.score, got.max_score), (0, scores.version_max_score(self.s, got.problem_version_id)))
         # the last holder, same worker and attempt, delivers late: 409, not already_recorded
         with self.assertRaises(q.LeaseLost):
             q.finish(self.s, self.s.get(Worker, w.id), j.id, dict(self.ok_payload(got), attempt=3), self.settings)
@@ -204,12 +208,15 @@ class OrphanTests(PgCase):
         _sid, j = self.job(w)
         j.failures = settings.max_attempts - 1  # this IE is the last attempt: recorded as given up by the worker
         self.s.commit()
-        payload = {"attempt": j.attempt, "verdict": "IE", "score": "0", "error": q.SERVER_GAVE_UP + "3 (worker text)"}
+        text = "the server gave up after 3 (worker text)"  # what the old text mark looked like (D-069)
+        payload = {"attempt": j.attempt, "verdict": "IE", "score": "0", "error": text}
         self.assertEqual(q.finish(self.s, self.s.get(Worker, w.id), j.id, payload, settings), "recorded")
         self.s.commit()
         recorded = self.judgement(j.id)
-        self.assertTrue(recorded.error.startswith("worker: "))
+        self.assertEqual(recorded.error, text)  # kept as the worker wrote it: the mark is a column now
         self.assertFalse(q.server_gave_up(recorded))
+        self.assertIsNone(recorded.server_gave_up_at)
+        self.assertEqual(recorded.max_score, scores.version_max_score(self.s, recorded.problem_version_id))
         self.assertEqual(q.finish(self.s, self.s.get(Worker, w.id), j.id, payload, settings), "already_recorded",
                          "the same result again is a network retry, not a late result")
 

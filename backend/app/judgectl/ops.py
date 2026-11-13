@@ -9,12 +9,12 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from .. import queue as q
-from .. import system
+from .. import scores, system
 from ..auth import audit
 from ..blobstore import valid_sha256
-from ..models import (Blob, Judgement, Problem, ProblemVersion, QueueEvent, Submission, TestResult, User, Worker,
-                      WorkerToken)
-from .core import CliError, Context, UsageError, create_private_new, emit_json, show
+from ..models import (Blob, ContestProblem, Judgement, Problem, ProblemVersion, QueueEvent, Submission, TestResult,
+                      User, Worker, WorkerToken)
+from .core import CliError, Context, UsageError, create_private_new, emit_json, points_text, show
 
 
 # ----------------------------------------------------------------------------- queue
@@ -66,28 +66,34 @@ def queue_judgements(ctx: Context, args) -> int:
     """Newest judgements first (admin view: internal errors included)."""
     with ctx.session() as db:
         rows = db.execute(
-            select(Judgement, Submission, User.login, Problem.slug, ProblemVersion.version, Worker.name)
+            select(Judgement, Submission, User.login, Problem.slug, ProblemVersion.version, Worker.name,
+                   ContestProblem.points)
             .join(Submission, Submission.id == Judgement.submission_id)
+            .join(ContestProblem, ContestProblem.id == Submission.contest_problem_id)
             .join(User, User.id == Submission.user_id)
             .join(ProblemVersion, ProblemVersion.id == Judgement.problem_version_id)
             .join(Problem, Problem.id == ProblemVersion.problem_id)
             .outerjoin(Worker, Worker.id == Judgement.worker_id)
             .order_by(Judgement.id.desc()).limit(args.last)).all()
         out = []
-        for j, sub, login, slug, version, worker in rows:
+        for j, sub, login, slug, version, worker, points in rows:
             kinds = db.execute(select(TestResult.tl_kind).where(TestResult.judgement_id == j.id,
                                                                 TestResult.tl_kind.is_not(None))).scalars().all()
             took = (j.finished_at - j.started_at).total_seconds() if j.finished_at and j.started_at else None
             out.append({"id": j.id, "submission": sub.id, "user": login, "problem": f"{slug}@{version}",
                         "language": (sub.language_key or "-") + ("+zip" if sub.is_archive else ""),
                         "status": j.status.value, "verdict": j.verdict.value if j.verdict else None,
-                        "score": j.score, "attempt": j.attempt, "failures": j.failures,
+                        "score": j.score, **scores.shown(j.score, j.max_score, points),
+                        "attempt": j.attempt, "failures": j.failures,
                         "first_fail": (j.summary or {}).get("first_fail"),
                         "tl_kind": ",".join(sorted(set(kinds))) or None,
                         "judge_s": None if took is None else round(took, 2), "worker": worker,
+                        "gave_up": q.server_gave_up(j),
                         "error": (j.error or "").replace("\n", " ")[:60] or None})
+        for row in out:
+            row["points"] = points_text(row)
     show(ctx, out, [("id", "ID"), ("submission", "SUB"), ("user", "USER"), ("problem", "PROBLEM"),
-                    ("language", "LANG"), ("status", "STATUS"), ("verdict", "VERDICT"), ("score", "SCORE"),
+                    ("language", "LANG"), ("status", "STATUS"), ("verdict", "VERDICT"), ("points", "POINTS"),
                     ("attempt", "ATT"), ("failures", "FAIL"), ("first_fail", "FIRST"), ("tl_kind", "TL"),
                     ("judge_s", "JUDGE_S"), ("worker", "WORKER"), ("error", "ERROR")])
     return 0

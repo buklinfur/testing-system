@@ -258,3 +258,11 @@ def ask_new_password(ctx: Context, login: str, role: Role) -> str:
             continue
         return first
     raise CliError(f"no acceptable password after {PASSWORD_ATTEMPTS} attempts, nothing changed")
+
+
+def points_text(j: dict):
+    """The points in the contest as a table shows them: «50.00/100.00» (scores.contest_score / contest_max of the
+    view), nothing while the judgement is not finished (no max_score yet)."""
+    if not j or j.get("max_score") is None:
+        return None
+    return f"{j['contest_score']}/{j['contest_max']}"

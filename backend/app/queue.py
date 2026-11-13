@@ -21,6 +21,7 @@ from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from . import problem_checks as checks
+from . import scores
 from .loadinfo import LoadSnapshot, estimate_wait_seconds, typical_judge_seconds
 from .models import (
     ContestProblem, Judgement, JudgementReason, JudgementStatus, QueueEvent, Submission, TestCase,
@@ -36,20 +37,16 @@ PRIORITY_REJUDGE = 10
 ACTIVE = (JudgementStatus.queued, JudgementStatus.compiling, JudgementStatus.running)
 IN_FLIGHT = (JudgementStatus.compiling, JudgementStatus.running)
 log = logging.getLogger("judge.queue")
-# judgements.error of a judgement the server ended itself (gave up after max_attempts): a late result of its last
-# holder is refused (409), like a check whose report says by=server (D-069). A temporary mark in a text column: the
-# next migration of the queue replaces it with a column of its own (ROADMAP). Never compare it directly: only
-# server_gave_up() / _carries_server_mark() look at it (a test checks the code).
-SERVER_GAVE_UP = "the server gave up after "
-
-
-def _carries_server_mark(error: Optional[str]) -> bool:
-    return (error or "").startswith(SERVER_GAVE_UP)
+# The score of a result: Numeric(8, 2), as the points of a problem version (protocol/problem_package.POINTS_MAX)
+SCORE_MAX = Decimal("999999.99")
 
 
 def server_gave_up(j: "Judgement") -> bool:
-    """The server ended this judgement itself (gave up after max_attempts), not a result of a worker (D-069)."""
-    return j.status == JudgementStatus.internal_error and _carries_server_mark(j.error)
+    """The server ended this judgement itself (gave up after max_attempts), not a result of a worker (D-069). The mark
+    is the column judgements.server_gave_up_at (D-090), written only by _fail_attempt."""
+    return j.server_gave_up_at is not None
+
+
 DONE = (JudgementStatus.finished, JudgementStatus.internal_error)
 
 
@@ -395,7 +392,9 @@ def _fail_attempt(session: Session, j: Judgement, reason: str, settings: QueueSe
     j.failures += 1
     if j.failures >= settings.max_attempts:
         j.status, j.verdict, j.finished_at = JudgementStatus.internal_error, Verdict.IE, func.now()
-        j.error = f"{SERVER_GAVE_UP}{j.failures} failed attempts; last reason: {reason}"
+        j.server_gave_up_at = func.now()
+        j.score, j.max_score = Decimal(0), scores.version_max_score(session, j.problem_version_id)
+        j.error = f"{j.failures} failed attempts; last reason: {reason}"
         _event(session, "gave_up", j.worker_id, j.id, reason=reason, failures=j.failures)
         return "gave_up"
     _event(session, "requeued", j.worker_id, j.id, reason=reason, failures=j.failures, attempt=j.attempt)
@@ -450,21 +449,23 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
     try:
         verdict = Verdict(payload["verdict"])
         score = Decimal(str(payload.get("score", "0")))
+        maximum = Decimal(str(payload.get("max_score", "0")))
     except (KeyError, ValueError, ArithmeticError) as exc:
         raise BadResult(f"bad verdict or score: {exc}") from exc
 
     if verdict == Verdict.IE:
-        j.error = payload.get("error")
-        if _carries_server_mark(j.error):  # the server's mark is only ever the server's (D-069)
-            j.error = "worker: " + j.error
+        j.error = payload.get("error")  # never the server's mark: that is a column of its own (D-090)
         if j.failures + 1 < settings.max_attempts:
             _fail_attempt(session, j, f"internal error: {payload.get('error')}", settings)
             return "requeued"
         j.failures += 1
         j.status, j.verdict, j.finished_at, j.score = JudgementStatus.internal_error, Verdict.IE, func.now(), Decimal(0)
+        j.max_score = scores.version_max_score(session, j.problem_version_id)
         _event(session, "gave_up", worker.id, j.id, reason=payload.get("error"), failures=j.failures)
         return "recorded"  # a rejudge that ends this way stays non-current: the old verdict is kept
 
+    if not (score.is_finite() and maximum.is_finite() and 0 <= score <= maximum <= SCORE_MAX):
+        raise BadResult(f"score {score} of {maximum}: not within 0 <= score <= max_score <= {SCORE_MAX}")
     tests = payload.get("tests") or []
     if tests:
         valid = set(session.execute(
@@ -482,7 +483,7 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
             stderr_excerpt=t.get("stderr_excerpt") or None, output_excerpt=t.get("output_excerpt") or None,
             visible_to_student=bool(t.get("visible_to_student")),
         ))
-    j.verdict, j.score = verdict, score
+    j.verdict, j.score, j.max_score = verdict, score, maximum
     j.compile_log = payload.get("compile_log")
     j.summary = payload.get("summary") or None
     j.error = None

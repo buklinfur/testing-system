@@ -396,3 +396,30 @@ auth_failures, auth_lockouts — неудачные попытки входа и
 * Откат отказывает, ничего не меняя, пока есть материал, раздел Справочника, элемент `material`, вложение версии
   материала или ссылка (`material_refs`, в том числе заполненная миграцией); сообщение называет число каждого. Иначе
   он ничего не теряет и возвращает `CHECK material_after_4v4` и `attachments.item_id NOT NULL`, удаляет таблицы и тип.
+
+## Изменения 4б.1 (миграция `f2e12ff59f1c`)
+
+Решение — D-090 в [`DECISIONS.md`](DECISIONS.md). Миграцию и перенос данных туда и обратно проверяет
+`tests/pg/test_migrations_pg.py`.
+
+* `judgements.max_score Numeric(8,2)` — сколько могла дать проверка, **в баллах версии задачи**, на которой она шла:
+  сумма `test_groups.points`, у `choice` / `text_answer` — баллы вопросов из `config` (1, если не указаны, как считает
+  `runner/quiz.py`). `NULL` — только у незавершённой проверки; `CHECK max_score_non_negative`. Пишет `queue.finish`
+  (присланный воркером, при `0 ≤ score ≤ max_score`) или, у внутренней ошибки, сервер по версии
+  (`scores.version_max_score`). Миграция заполняет его у **всех** завершённых проверок (`finished` и `internal_error`)
+  по версии проверки — правило переписано в ней на SQL, тест сверяет копию с `scores.version_max_score` на версиях
+  всех видов.
+* **Баллы контеста** — одна функция `scores.contest_score(score, max_score, points)`: без `contest_problems.points` —
+  балл как есть, иначе `score × points / max_score`, округление до сотых вверх от половины; `max_score` пуст или 0 —
+  0 баллов, деления на ноль нет. Максимум задачи в контесте — `scores.contest_max` (`points` или `max_score`). Через
+  них показывают баллы все виды: `submissions/view.py` (список и посылка в `/api/admin`), `judgectl submission
+  list/show`, `judgectl queue judgements`; таблица результатов и вид посылки ученика в 4б.1 — тоже. Пример: группы на
+  60, `points: 100` — полное решение 100, половина групп 50.
+* `judgements.server_gave_up_at timestamptz` — проверку завершил сервер (сдался после `max_attempts`, D-069). Заменяет
+  текстовую отметку — префикс `the server gave up after ` в `error`: миграция ставит у таких строк (`internal_error`)
+  `server_gave_up_at = finished_at` и убирает префикс; текст воркера, сохранённый как `worker: the server gave up…`,
+  остаётся как был. `CHECK gave_up_is_internal_error`. Пишет только `queue._fail_attempt`.
+* `ix_participations_user` (`participations.user_id`) — «мои контесты» ученика.
+* Откат ничего не теряет из того, что держит старая схема: префикс возвращается в `error` строк с
+  `server_gave_up_at`; сообщение воркера, записанное после обновления и начинающееся как старая отметка, получает
+  `worker: ` (как делал старый `finish`), чтобы старый код не принял его за отметку сервера; `max_score` удаляется.

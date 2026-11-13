@@ -15,6 +15,7 @@ from typing import Optional
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session, aliased
 
+from .. import scores
 from ..blobstore import BlobStore
 from ..ids import parse_id
 from ..models import (Contest, ContestProblem, Group, GroupMember, Judgement, JudgementStatus, Problem, ProblemVersion,
@@ -141,7 +142,8 @@ def summary(row) -> dict:
             "contest": contest.slug, "label": cp.label, "problem": problem.slug, "version": version.version,
             "language": sub.language_key, "archive": sub.is_archive, "created_at": sub.created_at, "late": sub.late,
             "judgement": None if current is None else {"id": current.id, "status": current.status,
-                                                       "verdict": current.verdict, "score": current.score}}
+                                                       "verdict": current.verdict, "score": current.score,
+                                                       **scores.shown(current.score, current.max_score, cp.points)}}
 
 
 # ----------------------------------------------------------------------------- one submission
@@ -188,17 +190,21 @@ def tests_of(db: Session, judgement_id: int) -> list[dict]:
 
 def judgements_of(db: Session, submission_id: int) -> list[dict]:
     requester = aliased(User)
-    rows = db.execute(select(Judgement, ProblemVersion.version, Worker.name, requester.login)
+    rows = db.execute(select(Judgement, ProblemVersion.version, Worker.name, requester.login, ContestProblem.points)
                       .join(ProblemVersion, ProblemVersion.id == Judgement.problem_version_id)
+                      .join(Submission, Submission.id == Judgement.submission_id)
+                      .join(ContestProblem, ContestProblem.id == Submission.contest_problem_id)
                       .outerjoin(Worker, Worker.id == Judgement.worker_id)
                       .outerjoin(requester, requester.id == Judgement.requested_by)
                       .where(Judgement.submission_id == submission_id).order_by(Judgement.id)).all()
     return [{"id": j.id, "reason": j.reason, "status": j.status, "verdict": j.verdict, "score": j.score,
-             "version": version, "current": j.is_current, "attempt": j.attempt, "failures": j.failures,
+             **scores.shown(j.score, j.max_score, points), "version": version, "current": j.is_current,
+             "attempt": j.attempt, "failures": j.failures,
              "priority": j.priority, "worker": worker, "requested_by": who, "created_at": j.created_at,
              "started_at": j.started_at, "finished_at": j.finished_at, "tests_done": j.tests_done,
-             "tests_total": j.tests_total, "compile_log": j.compile_log, "error": j.error, "summary": j.summary}
-            for j, version, worker, who in rows]
+             "tests_total": j.tests_total, "compile_log": j.compile_log, "error": j.error,
+             "server_gave_up_at": j.server_gave_up_at, "summary": j.summary}
+            for j, version, worker, who, points in rows]
 
 
 def get_row(db: Session, submission_id: int):

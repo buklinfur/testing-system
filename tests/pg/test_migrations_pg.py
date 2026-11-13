@@ -885,6 +885,7 @@ class MigrationTests(PgCase):
             self.assertEqual(self.refs(conn), self.BACKFILLED)
             self.assertEqual((self.feed_rows(conn), self.attachment_rows(conn), self.answers(conn)),
                              (feed, attachments, answers))
+            self.alembic(conn, "upgrade", "head")  # models.py is the head, not this revision
             diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
             self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
 
@@ -918,7 +919,7 @@ class MigrationTests(PgCase):
             self.alembic(conn, "upgrade", "b8e0cbcc4cda")
             self.assertEqual(self.refs(conn), [])
             self.alembic(conn, "downgrade", "32cd8723a2bc")
-            self.alembic(conn, "upgrade", "b8e0cbcc4cda")
+            self.alembic(conn, "upgrade", "head")  # models.py is the head
             diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
             self.assertEqual(diff, [])
 
@@ -966,3 +967,100 @@ class MigrationTests(PgCase):
             conn.execute(text("DELETE FROM material_versions"))
             conn.execute(text("DELETE FROM materials"))
             self.alembic(conn, "downgrade", "32cd8723a2bc")
+
+    # -------------------------------------------------------------- f2e12ff59f1c: judgements.max_score, gave-up (D-090)
+    BEFORE_SCORES = """
+        INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
+          (1, 'admin', '!', 'A', 'admin', true), (2, 'pupil', '!', 'P', 'student', true);
+        INSERT INTO problems (id, slug, owner_id) VALUES (1, 'sum', 1), (2, 'quiz', 1), (3, 'words', 1), (4, 'none', 1);
+        INSERT INTO problem_versions (id, problem_id, version, status, type, titles, statements, config) VALUES
+          (1, 1, 1, 'ready', 'batch', '{}', '{}', '{}'),
+          (2, 2, 1, 'ready', 'choice', '{}', '{}',
+           '{"questions": [{"id": "a", "correct": ["x"], "points": 2.5}, {"id": "b", "correct": ["y"]}]}'),
+          (3, 3, 1, 'ready', 'text_answer', '{}', '{}',
+           '{"answers": [{"id": "c", "accept": ["1"]}, {"id": "d", "accept": ["2"], "points": 3}]}'),
+          (4, 4, 1, 'ready', 'batch', '{}', '{}', '{}'),
+          (5, 1, 2, 'ready', 'batch', '{}', '{}', '{}');
+        INSERT INTO test_groups (version_id, position, name, points, scoring, visibility, show_in_statement, depends_on)
+          VALUES (1, 0, 'g1', 30, 'sum', 'open', false, '[]'), (1, 1, 'g2', 30.5, 'sum', 'hidden', false, '[]'),
+                 (5, 0, 'g1', 100, 'sum', 'open', false, '[]');
+        INSERT INTO contests (id, slug, title, starts_at, access_mode, state, timing_mode, scoring_mode,
+                              icpc_penalty_minutes, leaderboard, allow_upsolving, submit_cooldown_sec, tests_after_end,
+                              plagiarism_enabled, description_md)
+          VALUES (1, 'lesson', 'L', '2026-11-01 09:00+00', 'open', 'published', 'fixed', 'points', 20, 'hidden', true,
+                  15, false, false, '');
+        INSERT INTO contest_problems (id, contest_id, problem_id, problem_version_id, label, position, points) VALUES
+          (1, 1, 1, 1, 'A', 0, 100), (2, 1, 2, 2, 'B', 1, NULL), (3, 1, 3, 3, 'C', 2, NULL), (4, 1, 4, 4, 'D', 3, NULL);
+        INSERT INTO submissions (id, user_id, contest_problem_id, is_archive) VALUES
+          (1, 2, 1, false), (2, 2, 2, false), (3, 2, 3, false), (4, 2, 4, false), (5, 2, 1, false), (6, 2, 1, false),
+          (7, 2, 1, false), (8, 2, 1, false);
+        INSERT INTO judgements (id, submission_id, problem_version_id, reason, status, is_current, priority, requires,
+                                attempt, failures, verdict, score, error, finished_at) VALUES
+          (1, 1, 1, 'initial', 'finished', true, 0, '["cpu"]', 1, 0, 'OK', 60.5, NULL, '2026-11-02 10:00+00'),
+          (2, 2, 2, 'initial', 'finished', true, 0, '["cpu"]', 1, 0, 'PARTIAL', 1, NULL, '2026-11-02 10:00+00'),
+          (3, 3, 3, 'initial', 'finished', true, 0, '["cpu"]', 1, 0, 'OK', 4, NULL, '2026-11-02 10:00+00'),
+          (4, 4, 4, 'initial', 'finished', true, 0, '["cpu"]', 1, 0, 'OK', 0, NULL, '2026-11-02 10:00+00'),
+          (5, 5, 1, 'initial', 'internal_error', true, 0, '["cpu"]', 3, 3, 'IE', 0,
+           'the server gave up after 3 failed attempts, last reason: worker lost (no heartbeat)', '2026-11-02 11:00+00'),
+          (6, 6, 1, 'initial', 'internal_error', true, 0, '["cpu"]', 3, 3, 'IE', 0,
+           'worker: the server gave up after 3 (worker text)', '2026-11-02 11:00+00'),
+          (7, 7, 1, 'initial', 'internal_error', true, 0, '["cpu"]', 3, 3, 'IE', 0, 'checker crashed',
+           '2026-11-02 11:00+00'),
+          (8, 8, 1, 'initial', 'queued', true, 0, '["cpu"]', 0, 0, NULL, 0, NULL, NULL),
+          (9, 1, 5, 'rejudge', 'running', false, 10, '["cpu"]', 1, 0, NULL, 0, NULL, NULL)
+    """
+    SCORES_TRANSFERRED = {1: ("60.50", None, None), 2: ("3.50", None, None), 3: ("4.00", None, None),
+                          4: ("0.00", None, None),
+                          5: ("60.50", "2026-11-02 11:00", "3 failed attempts, last reason: worker lost (no heartbeat)"),
+                          6: ("60.50", None, "worker: the server gave up after 3 (worker text)"),
+                          7: ("60.50", None, "checker crashed"), 8: (None, None, None), 9: (None, None, None)}
+
+    def judgement_rows(self, conn, upgraded=True):
+        if not upgraded:
+            return [tuple(r) for r in conn.execute(text("SELECT id, status::text, score, error FROM judgements "
+                                                        "ORDER BY id"))]
+        rows = conn.execute(text("SELECT id, max_score, to_char(server_gave_up_at AT TIME ZONE 'UTC', "
+                                 "'YYYY-MM-DD HH24:MI'), error FROM judgements ORDER BY id"))
+        return {r[0]: (None if r[1] is None else str(r[1]), r[2], r[3] if r[0] >= 5 else None) for r in rows}
+
+    def test_scores_migration_fills_max_score_and_moves_the_mark_up_down_up(self):
+        from sqlalchemy.orm import Session
+
+        from app import queue as q
+        from app import scores
+        from app.models import Judgement
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "b8e0cbcc4cda")
+            self.run_sql(conn, self.BEFORE_SCORES)
+            before = self.judgement_rows(conn, upgraded=False)
+            self.alembic(conn, "upgrade", "f2e12ff59f1c")
+            self.assertEqual(self.judgement_rows(conn), self.SCORES_TRANSFERRED)
+            diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+            self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
+            # the SQL copy of the rule == scores.version_max_score, for every kind of version
+            with Session(bind=conn) as db:
+                for version_id, expect in ((1, "60.50"), (2, "3.50"), (3, "4.00"), (4, "0.00"), (5, "100.00")):
+                    with self.subTest(version=version_id):
+                        self.assertEqual(str(scores.version_max_score(db, version_id)), expect)
+                self.assertEqual([q.server_gave_up(db.get(Judgement, i)) for i in (5, 6, 7)], [True, False, False])
+            self.assertIsNotNone(conn.execute(text("SELECT to_regclass('ix_participations_user')")).scalar_one())
+            for bad in ("UPDATE judgements SET max_score = -1 WHERE id = 1",
+                        "UPDATE judgements SET server_gave_up_at = now() WHERE id = 1"):  # finished, not IE
+                with self.subTest(bad=bad), self.assertRaises(Exception), conn.begin_nested():
+                    conn.execute(text(bad))
+            # after the upgrade a worker may write an error that looks like the old mark: the downgrade keeps it apart
+            conn.execute(text("UPDATE judgements SET error = 'the server gave up after (worker)' WHERE id = 7"))
+
+            self.alembic(conn, "downgrade", "b8e0cbcc4cda")
+            after = dict((r[0], r) for r in self.judgement_rows(conn, upgraded=False))
+            self.assertEqual([r for r in before if r[0] != 7], [after[r[0]] for r in before if r[0] != 7])
+            self.assertEqual(after[7][3], "worker: the server gave up after (worker)")
+            self.assertIsNone(conn.execute(text("SELECT to_regclass('ix_participations_user')")).scalar_one())
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM information_schema.columns WHERE table_name = "
+                                               "'judgements' AND column_name IN ('max_score', 'server_gave_up_at') "
+                                               "AND table_schema = current_schema()")).scalar_one(), 0)
+
+            conn.execute(text("UPDATE judgements SET error = 'checker crashed' WHERE id = 7"))
+            self.alembic(conn, "upgrade", "head")
+            self.assertEqual(self.judgement_rows(conn), self.SCORES_TRANSFERRED)

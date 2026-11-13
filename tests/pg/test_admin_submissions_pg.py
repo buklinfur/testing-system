@@ -7,7 +7,7 @@ import unittest
 import zipfile
 
 from tests.pg.apibase import HAVE_API, ORIGIN, ApiCase
-from tests.pg.pgbase import HAVE_SA, URL, requires_pg
+from tests.pg.pgbase import HAVE_SA, URL, PgCase, requires_pg
 
 if URL and HAVE_SA and HAVE_API:
     from cryptography.fernet import Fernet
@@ -240,3 +240,80 @@ class AdminSubmissionsTests(ApiCase):
         self.assertIn("a label needs its contest", err.getvalue())
         self.assertEqual(main(["submission", "rejudge", "--contest", "c", "--problem", "A", "--dry-run"], ctx), 0)
         self.assertIn("4 submission(s) would be rejudged", out.getvalue())
+
+
+    # -------------------------------------------------------------- points of the contest (scores.contest_score, D-090)
+    def held(self, sub, worker):
+        """The judgement of `sub` as if `worker` had claimed it (the other queued submissions stay queued)."""
+        j = self.s.execute(select(Judgement).where(Judgement.submission_id == sub.id)).scalar_one()
+        j.status, j.worker_id, j.attempt = JudgementStatus.running, worker.id, 1
+        self.s.commit()
+        return j
+
+    def test_every_view_shows_the_points_of_the_contest(self):
+        """Groups worth 60, the contest gives the problem 100: a full solution shows 100, half of it 50 - in the list
+        and the view of the admin API, judgectl submission list / show and judgectl queue judgements."""
+        from decimal import Decimal
+
+        from app.models import TestGroup
+        version, cp = self.seed["version"], self.seed["cp"]
+        self.s.execute(text("UPDATE test_groups SET points = 30 WHERE version_id = :v"), {"v": version.id})
+        self.s.add(TestGroup(version_id=version.id, position=1, name="extra", points=30))
+        self.s.execute(text("UPDATE contest_problems SET points = 100 WHERE id = :c"), {"c": cp.id})
+        self.s.commit()
+        _token, worker = self.token_and_worker()
+        full, half = self.add(self.a, b"print(60)\n"), self.add(self.other, b"print(30)\n")
+        for sub, score in ((full, "60"), (half, "30")):
+            j = self.held(sub, worker)
+            verdict = "OK" if score == "60" else "PARTIAL"
+            self.assertEqual(q.finish(self.s, worker, j.id, {"attempt": j.attempt, "verdict": verdict, "score": score,
+                                                             "max_score": "60", "tests": []}, PgCase.settings),
+                             "recorded")
+            self.s.commit()
+        expect = {full.id: ("100.00", "100.00"), half.id: ("50.00", "100.00")}
+        raw = {full.id: "60.00", half.id: "30.00"}
+
+        listed = {r["id"]: r["judgement"] for r in self.ok(self.get("/submissions?contest=c"))["items"]}
+        for sid, (points, top) in expect.items():
+            with self.subTest(view="api list", sid=sid):
+                self.assertEqual((listed[sid]["contest_score"], listed[sid]["contest_max"], listed[sid]["score"],
+                                  listed[sid]["max_score"]), (points, top, raw[sid], "60.00"))
+            detail = self.ok(self.get(f"/submissions/{sid}"))
+            with self.subTest(view="api detail", sid=sid):
+                self.assertEqual((detail["judgement"]["contest_score"], detail["judgements"][0]["contest_score"],
+                                  detail["judgements"][0]["contest_max"]), (points, points, top))
+
+        out, err = io.StringIO(), io.StringIO()
+        ctx = Context(session_factory=self.Session, settings=Settings(blob_dir=self.blob_tmp.name),
+                      actor=audit.Actor(cli="cli:judge"), out=out, err=err, interactive=lambda: False,
+                      clock=lambda: self.now)
+
+        def run(*argv):
+            out.truncate(0), out.seek(0)
+            self.assertEqual(main(list(argv), ctx), 0, err.getvalue())
+            return out.getvalue()
+
+        rows = {r["id"]: r for r in json.loads(run("submission", "list", "--contest", "c", "--json"))}
+        jrows = {r["submission"]: r for r in json.loads(run("queue", "judgements", "--json"))}
+        for sid, (points, top) in expect.items():
+            with self.subTest(view="judgectl", sid=sid):
+                self.assertEqual((rows[sid]["contest_score"], rows[sid]["points"]), (points, f"{points}/{top}"))
+                self.assertEqual((jrows[sid]["contest_score"], jrows[sid]["points"]), (points, f"{points}/{top}"))
+                shown = json.loads(run("submission", "show", str(sid), "--json"))
+                self.assertEqual(shown["judgements"][0]["contest_score"], points)
+                self.assertIn(f" {points}/{top} ", run("submission", "show", str(sid)))
+        self.assertIn(" 50.00/100.00 ", run("submission", "list", "--contest", "c"))
+        self.assertIn(" 100.00/100.00 ", run("queue", "judgements"))
+        self.assertEqual(self.s.get(Judgement, self.s.execute(select(Judgement.id).where(
+            Judgement.submission_id == half.id)).scalar_one()).max_score, Decimal(60))
+
+    def test_a_result_out_of_its_bounds_is_refused(self):
+        _token, worker = self.token_and_worker()
+        j = self.held(self.add(self.a, b"print(1)\n"), worker)
+        for score, maximum in (("61", "60"), ("-1", "60"), ("NaN", "60"), ("1", "Infinity"), ("1", "1000000")):
+            with self.subTest(score=score, maximum=maximum), self.assertRaises(q.BadResult):
+                q.finish(self.s, worker, j.id, {"attempt": j.attempt, "verdict": "OK", "score": score,
+                                                "max_score": maximum}, PgCase.settings)
+            self.s.rollback()
+            self.s.expire_all()
+            worker = self.s.get(type(worker), worker.id)

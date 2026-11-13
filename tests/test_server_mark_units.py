@@ -1,63 +1,70 @@
-"""The mark «the server ended this judgement» (D-069) lives in judgements.error behind one constant and one check:
-queue.SERVER_GAVE_UP is the only place the text is written down, and only queue._carries_server_mark (through
-queue.server_gave_up) compares anything with it. Everything else - finish, views, tests - calls the function, so the
-temporary text mark can be replaced by a column in one place (ROADMAP)."""
+"""The mark «the server ended this judgement» (D-069) is the column judgements.server_gave_up_at (D-090).
+
+Its only writer is queue._fail_attempt (the server giving up after max_attempts): nothing a worker sends can set it,
+so a late result of the last holder is refused by queue.finish and an error text of a worker is never read as the
+server's mark. Everything else reads it through queue.server_gave_up. The old text mark in judgements.error lives on
+only in the migration that moved it into the column.
+"""
 import ast
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FOLDERS = ("backend", "worker", "runner", "protocol", "tools", "tests")
-TEXT = "gave up after"
+FOLDERS = ("backend", "worker", "runner", "protocol", "tools")
+COLUMN = "server_gave_up_at"
 
 
 def python_files():
     for folder in FOLDERS:
         for path in sorted((ROOT / folder).rglob("*.py")):
-            if ".venv" not in path.parts and "__pycache__" not in path.parts:
+            if ".venv" not in path.parts and "__pycache__" not in path.parts and "migrations" not in path.parts:
                 yield path
 
 
-def mentions_mark(node) -> bool:
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Name) and sub.id == "SERVER_GAVE_UP":
-            return True
-        if isinstance(sub, ast.Attribute) and sub.attr == "SERVER_GAVE_UP":
-            return True
-        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and TEXT in sub.value:
-            return True
-    return False
+def owners(tree) -> dict:
+    owner = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for sub in ast.walk(fn):
+                owner.setdefault(id(sub), fn.name)
+    return owner
+
+
+def writers(tree) -> list:
+    """Names of the functions that assign the column (`x.server_gave_up_at = ...`, also in a tuple) or pass it as a
+    keyword (`values(server_gave_up_at=...)`, `Judgement(server_gave_up_at=...)`)."""
+    owner, found = owners(tree), []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Attribute) and t.attr == COLUMN for top in targets for t in ast.walk(top)):
+                found.append(owner.get(id(node), "<module>"))
+        if isinstance(node, ast.Call) and any(kw.arg == COLUMN for kw in node.keywords):
+            found.append(owner.get(id(node), "<module>"))
+    return found
 
 
 class ServerMarkTests(unittest.TestCase):
-    def test_only_one_function_compares_the_mark(self):
-        found = []
-        for path in python_files():
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            owner = {}
-            for fn in ast.walk(tree):
-                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    for sub in ast.walk(fn):
-                        owner.setdefault(id(sub), fn.name)
-            for node in ast.walk(tree):
-                compare = isinstance(node, ast.Compare) and mentions_mark(node)
-                method = (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                          and node.func.attr in ("startswith", "endswith", "find", "index", "count", "__contains__")
-                          and mentions_mark(node))
-                if compare or method:
-                    found.append((str(path.relative_to(ROOT)), owner.get(id(node), "<module>")))
-        self.assertEqual(found, [("backend/app/queue.py", "_carries_server_mark")])
+    def test_only_the_server_giving_up_writes_the_column(self):
+        writes = [(str(path.relative_to(ROOT)), name) for path in python_files()
+                  for name in writers(ast.parse(path.read_text(encoding="utf-8")))]
+        self.assertEqual(writes, [("backend/app/queue.py", "_fail_attempt")])
 
-    def test_the_text_is_written_down_once(self):
+    def test_the_old_text_mark_is_gone_from_the_code(self):
         places = []
         for path in python_files():
-            if path.name == Path(__file__).name:
-                continue
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith(
-                        "the server " + TEXT):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and "the server gave up after " in node.value:
                     places.append(str(path.relative_to(ROOT)))
-        self.assertEqual(places, ["backend/app/queue.py"])
+                if isinstance(node, (ast.Name, ast.Attribute)) and "SERVER_GAVE_UP" in (
+                        getattr(node, "id", None) or getattr(node, "attr", "")):
+                    places.append(str(path.relative_to(ROOT)))
+        self.assertEqual(places, [])
+
+    def test_the_check_sees_a_write(self):
+        tree = ast.parse("def f(j):\n    j.server_gave_up_at = 1\n\ndef g(s):\n    s.values(server_gave_up_at=None)\n"
+                         "\ndef h(j):\n    j.a, j.server_gave_up_at = 1, 2\n\ndef k(j):\n    return j.server_gave_up_at\n")
+        self.assertEqual(sorted(writers(tree)), ["f", "g", "h"])
 
 
 if __name__ == "__main__":

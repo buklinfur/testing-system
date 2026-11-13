@@ -671,7 +671,10 @@ class Participation(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # personal timing: "start"
     joined_via: Mapped[JoinedVia] = mapped_column(pg_enum(JoinedVia, "joined_via"), nullable=False)
 
-    __table_args__ = (UniqueConstraint("contest_id", "user_id", name="uq_participations_contest_user"),)
+    __table_args__ = (
+        UniqueConstraint("contest_id", "user_id", name="uq_participations_contest_user"),
+        Index("ix_participations_user", "user_id"),  # "my contests" of a student (4b.1)
+    )
 
 
 # --------------------------------------------------------------------------- groups (classes, D-020)
@@ -1232,8 +1235,14 @@ class Judgement(Base):
     failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     verdict: Mapped[Optional[Verdict]] = mapped_column(VERDICT_T)
     score: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False, default=0)
+    # the most this judgement could give, in the points of the problem version (sum of the groups / of the quiz
+    # questions); null only while it is not finished (D-090). Points of a contest: scores.contest_score, never here
+    max_score: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2))
     compile_log: Mapped[Optional[str]] = mapped_column(Text)
     error: Mapped[Optional[str]] = mapped_column(Text)  # internal error text: teachers only
+    # the server ended it itself (gave up after max_attempts, D-069, D-090): a late result of its holder is refused.
+    # Written only by queue._fail_attempt, read through queue.server_gave_up
+    server_gave_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     summary: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB)  # {"groups": [...], "first_fail": ...} / {"quiz": ...}
     tests_done: Mapped[Optional[int]] = mapped_column(Integer)  # live progress while running
     tests_total: Mapped[Optional[int]] = mapped_column(Integer)
@@ -1262,6 +1271,8 @@ class Judgement(Base):
             unique=True,
             postgresql_where=text("status IN ('queued', 'compiling', 'running')"),
         ),
+        CheckConstraint("max_score IS NULL OR max_score >= 0", name="max_score_non_negative"),
+        CheckConstraint("server_gave_up_at IS NULL OR status = 'internal_error'", name="gave_up_is_internal_error"),
     )
 
 

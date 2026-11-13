@@ -8,7 +8,7 @@ from ..blobstore import BlobStore
 from ..models import Submission
 from ..submissions import rejudge, view
 from ..submissions.view import Filters, ViewError
-from .core import CliError, Context, emit_json, show
+from .core import CliError, Context, emit_json, points_text, show
 
 SELECTORS = ("id", "contest", "contest_problem_id", "problem_version")
 
@@ -40,9 +40,11 @@ def submission_list(ctx: Context, args) -> int:
             item = view.summary(row)
             j = item.pop("judgement") or {}
             rows.append({**item, "user": item["user"]["login"], "where": f"{item['contest']} {item['label']}",
-                         "status": j.get("status"), "verdict": j.get("verdict"), "score": j.get("score")})
+                         "status": j.get("status"), "verdict": j.get("verdict"), "score": j.get("score"),
+                         "max_score": j.get("max_score"), "contest_score": j.get("contest_score"),
+                         "contest_max": j.get("contest_max"), "points": points_text(j)})
     show(ctx, rows, [("id", "ID"), ("created_at", "AT"), ("user", "USER"), ("where", "PROBLEM"),
-                     ("language", "LANG"), ("status", "STATUS"), ("verdict", "VERDICT"), ("score", "SCORE"),
+                     ("language", "LANG"), ("status", "STATUS"), ("verdict", "VERDICT"), ("points", "POINTS"),
                      ("late", "LATE")])
     return 0
 
@@ -59,9 +61,10 @@ def submission_show(ctx: Context, args) -> int:
     ctx.print(f"submission {data['id']}: {data['user']['login']}, {data['contest']} {data['label']} ({data['problem']}), "
               f"{data['language'] or 'answers'}{' archive' if data['archive'] else ''}, {ctx.time(data['created_at'])}"
               + (", late" if data["late"] else ""))
-    show(ctx, data["judgements"], [("id", "JUDGEMENT"), ("reason", "REASON"), ("status", "STATUS"),
-                                   ("verdict", "VERDICT"), ("score", "SCORE"), ("version", "V"), ("current", "CURRENT"),
-                                   ("attempt", "ATT"), ("worker", "WORKER"), ("error", "ERROR")])
+    rows = [{**j, "points": points_text(j)} for j in data["judgements"]]
+    show(ctx, rows, [("id", "JUDGEMENT"), ("reason", "REASON"), ("status", "STATUS"), ("verdict", "VERDICT"),
+                     ("points", "POINTS"), ("version", "V"), ("current", "CURRENT"), ("attempt", "ATT"),
+                     ("worker", "WORKER"), ("error", "ERROR")])
     if data["tests"]:
         ctx.print("tests of the current judgement (admin view: hidden tests included):")
         rows = [{**t, "checker_message": (t["checker_message"] or "")[:60] or None} for t in data["tests"]]
