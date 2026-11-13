@@ -100,7 +100,9 @@ class WorkerApiTests(PgCase):
         url = f"{base}/judgements/{job['judgement_id']}/result"
         bad = {"attempt": 1, "verdict": "TL", "tests": [{"test_case_id": ids[0], "verdict": "TL", "tl_kind": "moon"}]}
         self.assertEqual(self.client.post(url, headers=h, json=bad).status_code, 422)
-        body = {"attempt": 1, "verdict": "TL", "score": "0", "max_score": "100", "summary": {"groups": []},
+        job = self.client.post(f"{base}/claim", headers=h).json()["job"]  # the refused attempt failed: back in the queue
+        self.assertEqual((job["judgement_id"], job["attempt"]), (self.j.id, 2))
+        body = {"attempt": 2, "verdict": "TL", "score": "0", "max_score": "100", "summary": {"groups": []},
                 "tests": [{"test_case_id": ids[0], "verdict": "TL", "tl_kind": "wall"},
                           {"test_case_id": ids[1], "verdict": "OK", "tl_kind": "cpu"}]}  # a kind on OK is ignored
         self.assertEqual(self.client.post(url, headers=h, json=body).json(), {"status": "recorded"})
@@ -108,6 +110,55 @@ class WorkerApiTests(PgCase):
             kinds = dict(s.execute(select(TestResult.test_case_id, TestResult.tl_kind)
                                    .where(TestResult.judgement_id == job["judgement_id"])).all())
         self.assertEqual(kinds, {ids[0]: "wall", ids[1]: None})
+
+    def test_a_refused_result_fails_the_attempt_and_ends_as_internal_error(self):
+        """422 to the worker never leaves the job held: the attempt fails with the reason (requeued at once), and after
+        max_attempts the submission ends as internal_error with the reason in judgements.error (D-090)."""
+        base = "/internal/worker/v1"
+        h = self.headers(self.register())
+        bads = [{"verdict": "OK", "score": "101", "max_score": "100"},                  # queue.finish: BadResult
+                {"verdict": "OK", "score": "1", "max_score": "1", "tests": [{"test_case_id": "x", "verdict": "OK"}]},
+                {"verdict": "WA", "score": "NaN", "max_score": "100"}]
+        for attempt, bad in enumerate(bads, 1):
+            job = self.client.post(f"{base}/claim", headers=h).json()["job"]
+            self.assertEqual((job["judgement_id"], job["attempt"]), (self.j.id, attempt))
+            r = self.client.post(f"{base}/judgements/{self.j.id}/result", headers=h, json={"attempt": attempt, **bad})
+            self.assertEqual(r.status_code, 422, r.text)
+            self.assertEqual(r.json()["detail"]["judgement"], "requeued" if attempt < 3 else "gave_up")
+            with self.Session() as s:
+                j = s.get(Judgement, self.j.id)
+                worker = s.get(Worker, j.worker_id) if j.worker_id else None
+                self.assertEqual(j.failures, attempt)
+                if attempt < 3:
+                    self.assertEqual((j.status, j.worker_id), (JudgementStatus.queued, None))
+        with self.Session() as s:
+            j = s.get(Judgement, self.j.id)
+            self.assertEqual((j.status, j.verdict.value, j.score), (JudgementStatus.internal_error, "IE", 0))
+            self.assertIsNotNone(j.server_gave_up_at)
+            self.assertIn("result rejected: score NaN", j.error)
+            self.assertEqual(worker.state, "idle")
+            events = s.execute(text("SELECT kind, details->>'reason' FROM queue_events WHERE judgement_id = :j "
+                                    "AND kind IN ('requeued', 'gave_up') ORDER BY id"), {"j": self.j.id}).all()
+        self.assertEqual([k for k, _ in events], ["requeued", "requeued", "gave_up"])
+        self.assertIn("result rejected: score 101", events[0][1])
+        self.assertIn("result rejected: malformed result: tests.0.test_case_id", events[1][1])
+        self.assertEqual(self.client.post(f"{base}/claim", headers=h).json(), {"job": None})  # not queued again
+        late = self.client.post(f"{base}/judgements/{self.j.id}/result", headers=h,
+                                json={"attempt": 3, "verdict": "OK", "score": "100", "max_score": "100"})
+        self.assertEqual(late.status_code, 409)
+
+    def test_a_refused_result_of_another_attempt_changes_nothing(self):
+        base = "/internal/worker/v1"
+        h = self.headers(self.register())
+        self.client.post(f"{base}/claim", headers=h)
+        for attempt in (2, None, "x", 1.5):
+            with self.subTest(attempt=attempt):
+                r = self.client.post(f"{base}/judgements/{self.j.id}/result", headers=h,
+                                     json={"attempt": attempt, "verdict": "OK", "score": "7", "max_score": "1"})
+                self.assertEqual(r.status_code, 409 if attempt == 2 else 422, r.text)
+        with self.Session() as s:
+            j = s.get(Judgement, self.j.id)
+            self.assertEqual((j.status, j.failures, j.attempt), (JudgementStatus.compiling, 0, 1))
 
     def test_stale_attempt_gets_409(self):
         base = "/internal/worker/v1"

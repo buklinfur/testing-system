@@ -270,6 +270,23 @@ def can_see_leaderboard(user, contest, participation, now: datetime, in_group: b
     return False
 
 
+def standings_open_for(user, contest, participation, now: datetime, in_group: bool = False) -> Decision:
+    """Whether the user may see the leaderboard now (4b.1, D-091): can_see_leaderboard, and with timing personal a
+    student only once their own window is over, or - never started - once the contest is over: the results of others
+    must not help while their own time runs. Admins always. A student's own submissions and points are
+    can_see_own_results, never this."""
+    if is_admin(user):
+        return Decision(True)
+    if not can_see_leaderboard(user, contest, participation, now, in_group):
+        return Decision(False, "standings_closed")
+    if _personal(contest):
+        window = contest_window_for(contest, participation)
+        done = contest_over(contest, now) if window is None else window.over(now)
+        if not done:
+            return Decision(False, "standings_closed")
+    return Decision(True)
+
+
 def leaderboard_cutoff(user, contest, now: datetime) -> Optional[datetime]:
     """The moment the leaderboard a student sees is frozen at, or None for the live one. Admins always see it live;
     the freeze lasts from freeze_at until the end of the contest."""

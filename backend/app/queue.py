@@ -499,6 +499,25 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
     return "recorded"
 
 
+def reject_result(session: Session, worker: Worker, judgement_id: int, attempt, reason: str,
+                  settings: QueueSettings) -> Optional[str]:
+    """A result this worker sent for its judgement was refused (malformed, out of bounds): the attempt failed. The
+    judgement goes back to the queue, or after max_attempts ends as internal_error with the reason in `error`; it never
+    stays held by a worker that has already moved on. Returns "requeued" | "gave_up", or None when the worker does not
+    hold that attempt (nothing to do: the 409 path). The caller rolled back whatever finish() had done."""
+    if not isinstance(attempt, int) or isinstance(attempt, bool):
+        return None
+    j = session.execute(select(Judgement).where(Judgement.id == judgement_id).with_for_update()).scalar_one_or_none()
+    if j is None or j.worker_id != worker.id or j.attempt != attempt or j.status not in IN_FLIGHT:
+        return None
+    _free(worker)
+    reason = f"result rejected: {reason}"[:500]
+    outcome = _fail_attempt(session, j, reason, settings)
+    log.error("judgement %s attempt %s of worker %s (%s): %s -> %s", j.id, attempt, worker.id, worker.name, reason,
+              outcome)
+    return outcome
+
+
 # ---------------------------------------------------------------------------------- load and metrics
 def _recent_durations(session: Session, limit: int = 50) -> list:
     rows = session.execute(

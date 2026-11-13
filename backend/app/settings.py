@@ -66,6 +66,18 @@ class FileSettings:
 
 
 @dataclass(frozen=True)
+class SubmitSettings:
+    """Submissions of students (4b.1, D-091): sizes checked by the server before anything is stored, and rates. The
+    sizes cannot exceed what the runner takes (runner/config.py; app.submissions.intake.RUNNER_*), which keeps its
+    own limits as a safety net."""
+
+    source_max_bytes: int = 256 * 1024  # JUDGE_SOURCE_MAX_KB: one source file
+    archive_max_bytes: int = 1024 * 1024  # JUDGE_ARCHIVE_MAX_KB: an archive (and never above max_archive_kb of a problem)
+    rate_per_min: int = 6  # JUDGE_SUBMIT_RATE_PER_MIN: submissions of one student per minute, all contests; 0 = none
+    enter_rate: int = 10  # JUDGE_ENTER_RATE: attempts to enter a contest (codes) per 10 minutes of one student
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = "postgresql+psycopg://judge:judge@127.0.0.1:5432/judge"
     blob_dir: str = "/var/lib/judge/blobs"
@@ -73,6 +85,7 @@ class Settings:
     auth: AuthSettings = AuthSettings()
     imports: ImportSettings = ImportSettings()
     files: FileSettings = FileSettings()
+    submit: SubmitSettings = SubmitSettings()
     metrics_token: Optional[str] = None  # if set, /internal/metrics needs "Authorization: Bearer <it>"
     public_origin: Optional[str] = None  # JUDGE_PUBLIC_ORIGIN, e.g. https://judge.example.ru: the only Origin accepted
     public_port: int = 8000  # the public app (app.public_main), proxied by Caddy
@@ -84,7 +97,7 @@ class Settings:
     @classmethod
     def from_env(cls, env: Optional[Mapping] = None) -> "Settings":
         env = os.environ if env is None else env
-        d, q, a, i, f = cls(), QueueSettings(), AuthSettings(), ImportSettings(), FileSettings()
+        d, q, a, i, f, sb = cls(), QueueSettings(), AuthSettings(), ImportSettings(), FileSettings(), SubmitSettings()
         mib = 1024 * 1024
         rate = int(env.get("JUDGE_COMMENT_RATE_PER_MIN", d.comment_rate_per_min))
         if rate < 0:
@@ -95,6 +108,12 @@ class Settings:
             if value < 0 or (value == 0 and not zero_ok):
                 raise ValueError(f"{name} is {'0 (no limit) or more' if zero_ok else 'at least 1'}")
             return value * unit
+
+        def at_most(name: str, value: int, cap: int) -> int:
+            if value > cap:
+                raise ValueError(f"{name} is at most {cap // 1024} (the runner takes no more)")
+            return value
+        from .submissions.intake import RUNNER_ARCHIVE_MAX_BYTES, RUNNER_SOURCE_MAX_BYTES
         return cls(
             database_url=env.get("DATABASE_URL", d.database_url),
             blob_dir=env.get("JUDGE_BLOB_DIR", d.blob_dir),
@@ -114,6 +133,15 @@ class Settings:
                 student_quota_bytes=positive("JUDGE_STUDENT_QUOTA_MB", f.student_quota_bytes, mib, zero_ok=True),
                 item_attachments_max=positive("JUDGE_ITEM_ATTACHMENTS_MAX", f.item_attachments_max),
                 attachment_max_bytes=positive("JUDGE_ATTACHMENT_MAX_MB", f.attachment_max_bytes, mib),
+            ),
+            submit=SubmitSettings(
+                source_max_bytes=at_most("JUDGE_SOURCE_MAX_KB", positive("JUDGE_SOURCE_MAX_KB", sb.source_max_bytes,
+                                                                          1024), RUNNER_SOURCE_MAX_BYTES),
+                archive_max_bytes=at_most("JUDGE_ARCHIVE_MAX_KB", positive("JUDGE_ARCHIVE_MAX_KB",
+                                                                            sb.archive_max_bytes, 1024),
+                                          RUNNER_ARCHIVE_MAX_BYTES),
+                rate_per_min=positive("JUDGE_SUBMIT_RATE_PER_MIN", sb.rate_per_min, zero_ok=True),
+                enter_rate=positive("JUDGE_ENTER_RATE", sb.enter_rate),
             ),
             queue=QueueSettings(
                 heartbeat_timeout_s=float(env.get("JUDGE_HEARTBEAT_TIMEOUT_S", q.heartbeat_timeout_s)),

@@ -19,3 +19,7 @@ def language_of(filename: str):
         if lower.endswith(ext):
             return key
     return None
+
+# interpreted languages: the file a submission starts from when none is named (runner/languages.py default_source of a
+# profile without a compile step; tests/test_layers_units.py keeps them equal). An archive must contain it.
+ENTRY_DEFAULTS = {"python": "main.py"}
