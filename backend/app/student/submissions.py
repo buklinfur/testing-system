@@ -45,21 +45,37 @@ def _refuse(decision) -> None:
                            decision.retry_after_s)
 
 
-def precheck(db: Session, user: User, slug: str, label: str, now: datetime, *, language: Optional[str] = None,
-             answers: bool = False) -> None:
+KINDS = ("source", "archive", "answers")
+ANSWERS_MAX_BYTES = 64 * 1024  # a JSON body of answers: questions x 1000 characters fit many times
+
+
+def precheck(db: Session, user: User, settings: SubmitSettings, slug: str, label: str, now: datetime, *, kind: str,
+             language: Optional[str] = None) -> int:
     """The cheap refusals before the body is read: the contest and the problem are there, the kind of body fits the
-    problem, the language is allowed, and access.can_submit says yes now. The caller rolls back afterwards (the
-    participation row was locked)."""
+    problem (an archive only where allow_archive), the language is allowed, and access.can_submit says yes now.
+    Returns the most bytes the body may have for this problem (`kind`: source | archive | answers). The caller rolls
+    back afterwards (the participation row was locked)."""
+    if kind not in KINDS:
+        raise StudentError("invalid_request", f"kind is one of {KINDS}")
     s, cp, version = _target(db, user, slug, label, now)
+    sub = (version.config or {}).get("submission")
     try:
-        if answers:
+        if kind == "answers":
             intake.check_answers(version.type, version.config, {})
+            limit = ANSWERS_MAX_BYTES
         else:
             intake.check_code_problem(version.type)
             _language(db, s.contest, version, language)
+            if kind == "archive":
+                if (sub or {}).get("allow_archive", True) is False:
+                    raise IntakeError("archive_not_allowed", "this problem takes a single file, not an archive")
+                limit = intake.archive_limit(sub, settings.archive_max_bytes)
+            else:
+                limit = settings.source_max_bytes
     except IntakeError as exc:
         raise StudentError(exc.code, str(exc)) from exc
     _refuse(contests.submission_decision(db, user, s.contest, cp, now, language=language))
+    return limit
 
 
 def _language(db: Session, contest: Contest, version: ProblemVersion, language: Optional[str]) -> str:

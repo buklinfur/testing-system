@@ -23,6 +23,7 @@ docs/
   ROADMAP.md                  где проект сейчас, порядок модулей, обязательства следующим модулям
   DECISIONS.md                журнал решений D-001…
   openapi-admin.json          OpenAPI админского и auth API (tools/gen-openapi.py)
+  openapi-student.json        OpenAPI API ученика и auth API (tools/gen-openapi.py)
 backend/app/models.py         модели SQLAlchemy 2.0 (PostgreSQL)
 runner/                       раннер: песочница, компиляция, чекеры, интерактив, вердикты (docs/RUNNER.md)
 worker/                       воркер: supervisor, процессы, дисковый кэш, клиент API (docs/WORKER.md)

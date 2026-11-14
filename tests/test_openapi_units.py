@@ -1,4 +1,5 @@
-"""docs/openapi-admin.json is what the app describes now (tools/gen-openapi.py writes it; the app does not serve it)."""
+"""docs/openapi-admin.json and docs/openapi-student.json are what the app describes now (tools/gen-openapi.py writes
+them; the app does not serve them)."""
 import importlib.util
 import json
 import unittest
@@ -14,20 +15,38 @@ def tool():
     return module
 
 
+def paths(name: str) -> dict:
+    return json.loads((ROOT / "docs" / name).read_text(encoding="utf-8"))["paths"]
+
+
 class OpenApiFileTests(unittest.TestCase):
-    def test_the_file_matches_the_app(self):
+    def test_the_files_match_the_app(self):
         gen = tool()
-        current = (ROOT / "docs" / "openapi-admin.json").read_text(encoding="utf-8")
-        self.assertEqual(current, gen.render(gen.build()), "docs/openapi-admin.json is out of date: run "
-                                                            "python tools/gen-openapi.py")
+        for target, (out, _title, _prefixes) in gen.TARGETS.items():
+            with self.subTest(target=target):
+                self.assertEqual(out.read_text(encoding="utf-8"), gen.render(gen.build(target)),
+                                 f"{out.name} is out of date: run python tools/gen-openapi.py")
+        self.assertEqual(gen.main(["--check"]), 0)
 
     def test_it_holds_the_admin_and_auth_api_only_and_no_operations_on_admins(self):
-        paths = json.loads((ROOT / "docs" / "openapi-admin.json").read_text(encoding="utf-8"))["paths"]
-        self.assertTrue(all(p.startswith(("/api/admin/", "/api/auth/")) for p in paths))
-        self.assertIn("/api/admin/submissions/rejudge", paths)
-        self.assertIn("/api/auth/profile", paths)
+        found = paths("openapi-admin.json")
+        self.assertTrue(all(p.startswith(("/api/admin/", "/api/auth/")) for p in found))
+        self.assertIn("/api/admin/submissions/rejudge", found)
+        self.assertIn("/api/auth/profile", found)
         forbidden = ("/admins", "2fa", "totp", "worker")  # R2: admins, 2FA resets and worker tokens are console-only
-        self.assertEqual([p for p in paths if p.startswith("/api/admin/") and any(w in p for w in forbidden)], [])
+        self.assertEqual([p for p in found if p.startswith("/api/admin/") and any(w in p for w in forbidden)], [])
+
+    def test_the_student_file_holds_the_student_and_auth_api_only(self):
+        found = paths("openapi-student.json")
+        self.assertTrue(all(p.startswith(("/api/contests", "/api/submissions", "/api/load", "/api/auth/"))
+                            for p in found))
+        for path in ("/api/contests", "/api/contests/{slug}/problems/{label}/submissions", "/api/submissions/{submission_id}",
+                     "/api/load", "/api/auth/login"):
+            self.assertIn(path, found)
+        upload = found["/api/contests/{slug}/problems/{label}/submissions"]["post"]["requestBody"]["content"]
+        self.assertEqual(sorted(upload), ["application/json", "application/zip", "text/plain"])
+        doc = json.loads((ROOT / "docs" / "openapi-student.json").read_text(encoding="utf-8"))
+        self.assertNotIn("ItemFields", doc["components"]["schemas"])  # no admin body in the student file
 
 
 if __name__ == "__main__":

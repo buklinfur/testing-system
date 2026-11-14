@@ -26,6 +26,7 @@ from .auth_api import SAFE_METHODS, router as auth_router
 from .http_body import JSON_LIMIT, BodyLimitMiddleware
 from .db import get_sessionmaker
 from .settings import Settings
+from .student_api import UPLOAD_PATTERNS as STUDENT_UPLOAD_PATTERNS, router as student_router
 
 PLACEHOLDER_SECRET = "CHANGE_ME"  # the placeholder of JUDGE_SECRET_KEY and JUDGE_PUBLIC_ORIGIN in backend.env.example
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -109,10 +110,11 @@ def create_public_app(settings: Optional[Settings] = None, session_factory=None,
         return response
 
     app.add_middleware(BodyLimitMiddleware, limit=JSON_LIMIT, exempt=UPLOADS,  # outermost: before anything reads
-                       exempt_patterns=UPLOAD_PATTERNS)
+                       exempt_patterns=UPLOAD_PATTERNS + STUDENT_UPLOAD_PATTERNS)
     api_errors.install(app)
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(student_router)
     return app
 
 

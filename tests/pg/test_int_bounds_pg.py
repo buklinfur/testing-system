@@ -28,6 +28,7 @@ if HAVE_API:
     from fastapi import Depends
 
     from app.auth_api import get_db
+    from app.student_api import PREFIXES as STUDENT_PREFIXES
 
 BAD = (2 ** 31, 2 ** 63, -1)
 
@@ -55,10 +56,15 @@ class IntBoundsTests(ApiCase):
         _boss, password, secret = self.make_admin()
         self.admin = self.browser()
         self.h = self.csrf(self.admin_login(self.admin, password, secret))
+        student, student_password = self.make_student()  # the student routes of 4b.1 with a student session
+        self.student = self.browser()
+        self.sh = self.csrf(self.login(self.student, student.login, student_password))
 
     def client_for(self, path):
         if path.startswith("/api/admin/"):
             return self.admin, self.h
+        if path.startswith(STUDENT_PREFIXES):
+            return self.student, self.sh
         self.fail(f"no client for {path}: a new prefix of the public app needs its role here")
 
     def operations(self):
@@ -74,7 +80,7 @@ class IntBoundsTests(ApiCase):
         _doc, ops = self.operations()
         checked = set()
         for path, method, op in ops:
-            if not path.startswith("/api/admin/"):
+            if not path.startswith(("/api/admin/",) + STUDENT_PREFIXES):
                 continue
             client, headers = self.client_for(path)
             for p in op.get("parameters", []):
@@ -94,6 +100,7 @@ class IntBoundsTests(ApiCase):
         for name in ("item_id", "user_id", "group_id", "submission_id", "comment_id", "number", "cursor", "after",
                      "limit", "extension_id", "import_id"):  # the old routes of ROADMAP "До 4б.1" are in the sweep
             self.assertIn(name, names)
+        self.assertIn("group", names)  # and the student routes (submission_id, cursor, limit too)
         self.assertEqual({where for where, _name in checked}, {"path", "query"})
 
     def test_every_integer_field_of_a_json_body_is_bounded(self):
@@ -101,7 +108,7 @@ class IntBoundsTests(ApiCase):
         components = doc["components"]["schemas"]
         fields = 0
         for path, method, op in ops:
-            if not path.startswith("/api/admin/"):
+            if not path.startswith(("/api/admin/",) + STUDENT_PREFIXES):
                 continue
             media = op.get("requestBody", {}).get("content", {}).get("application/json")
             ref = (media or {}).get("schema", {}).get("$ref")

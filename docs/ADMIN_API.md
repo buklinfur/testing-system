@@ -4,7 +4,7 @@ API для админского веб-интерфейса (модуль 5). Р
 профиль — [`AUTH.md`](AUTH.md). Тот же процесс, что `/api/auth` (публичное приложение, `python -m app.public_main`), за
 тем же Caddy. Код: [`backend/app/admin_api/`](../backend/app/admin_api); сервисы — общие с `judgectl`.
 
-**Машиночитаемое описание** — [`openapi-admin.json`](openapi-admin.json) (`/api/admin` и `/api/auth`). По сети приложение
+**Машиночитаемое описание** — [`openapi-admin.json`](openapi-admin.json) (`/api/admin` и `/api/auth`; API ученика — [`openapi-student.json`](openapi-student.json), `STUDENT_API.md` §6). По сети приложение
 OpenAPI не отдаёт (`openapi_url=None`); файл пишет `python tools/gen-openapi.py`, а `tests/test_openapi_units.py`
 падает, если файл разошёлся с приложением. Этот документ — описание для людей: смысл, правила и коды ошибок.
 

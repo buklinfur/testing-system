@@ -300,6 +300,14 @@ def queue_position(session: Session, settings: QueueSettings, judgement_id: Opti
     return min(mine) if mine else None
 
 
+def poll_inputs(session: Session, settings: QueueSettings, judgement_id: int, now: datetime) -> tuple:
+    """(place of a queued judgement in the fair order or None, workers that can take a submission now) for the poll
+    interval of the student API (student_api.submissions.poll_after_s). Not a snapshot of one moment
+    (read_one_moment): an interval does not need one, and the place and the workers are read by one transaction."""
+    online, _busy, _by_state = _workers_online(session, settings, now)
+    return queue_position(session, settings, judgement_id=judgement_id), online
+
+
 # ---------------------------------------------------------------------------------- heartbeat / release
 def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Optional[int], attempt: Optional[int],
               phase: Optional[str], tests_done: Optional[int], tests_total: Optional[int], stats: dict,

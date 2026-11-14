@@ -36,7 +36,7 @@ ENTRY_MAX_CHARS = 255
 BOM = b"\xef\xbb\xbf"
 QUIZ_TYPES = ("choice", "text_answer")
 
-# code -> HTTP status of the student API (stage 6); every code is raised below
+# code -> HTTP status of the student API (student_api.deps.STUDENT_STATUS takes these); every code is raised below
 CODES = {"language_not_allowed": 422, "archive_not_allowed": 422, "archive_invalid": 422, "archive_too_many_files": 422,
          "entry_not_found": 422, "entry_invalid": 422, "source_too_large": 413, "source_empty": 422,
          "source_encoding": 422, "answers_invalid": 422, "answers_expected": 422, "source_expected": 422}

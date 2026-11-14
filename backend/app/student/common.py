@@ -15,7 +15,7 @@ from ..models import Contest, ContestProblem, ContestState, Participation, User
 
 
 class StudentError(ValueError):
-    """A refusal with a stable code (STUDENT_API.md; HTTP statuses: stage 6) and, for rates, retry_after_s."""
+    """A refusal with a stable code (STUDENT_API.md; HTTP statuses: student_api.deps.STUDENT_STATUS) and, for rates, retry_after_s."""
 
     def __init__(self, code: str, message: str = "", retry_after_s: Optional[int] = None):
         self.code, self.retry_after_s = code, retry_after_s
