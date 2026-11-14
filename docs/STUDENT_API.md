@@ -1,6 +1,6 @@
 # API ученика (модуль 4б.1)
 
-Статус: правила (этап 4, D-091) готовы; сервисы — этап 5, HTTP — этап 6 (этот документ дополнится маршрутами,
+Статус: правила (этап 4, D-091) и сервисы (этап 5, D-093) готовы; HTTP — этап 6 (этот документ дополнится маршрутами,
 кодами ответов и опросом). План — сессия 4б.1, ROADMAP «4б.1».
 
 Ученик — всегда `User` из сессии: идентификаторов пользователя, участия или группы API не принимает. Время `now` —
@@ -40,11 +40,15 @@
 ## 3. Вид посылки ученику (`app/submissions/student_view.py`)
 
 Чистая функция над строками; раннер не импортируется (тексты вердиктов и подсказок — `protocol/verdicts.py`, общий
-с раннером). **Что показывать, решается при чтении** — по политике, которую передаёт сервис: `feedback` и
-видимость групп **версии, закреплённой сейчас** за задачей контеста (группа, которой в ней нет, — закрытая с
-`feedback` задачи), и группы, открытые ученику сейчас (`access.visible_tests`: открытые; все — после конца при
-`tests_after_end`). `test_results.visible_to_student`, записанный воркером при проверке, источником не является:
-политика, ужесточённая потом (`full` → `verdict_only`), скрывает подробности и старых посылок.
+с раннером). **Что показывать, решается при чтении** (`effective_policy`, D-094):
+* **открытость** групп и тестов — только по **версии, на которой шла проверка** (её группы и тесты, без сопоставления
+  с группами другой версии по имени), и только пока эта версия закреплена за задачей контеста: открыта в ней и открыта
+  ученику сейчас (`access.visible_tests`: открытые; все — после конца при `tests_after_end`). Проверка старой версии
+  ни одной группы открытой не показывает;
+* **уровень `feedback`** — строже из двух: уровень группы в версии проверки и самый строгий уровень версии,
+  закреплённой сейчас (`meet`: `full` уступает любому, `first_fail` с `groups_only` дают `verdict_only`).
+`test_results.visible_to_student`, записанный воркером при проверке, источником не является: политика, ужесточённая
+потом (`full` → `verdict_only`), скрывает подробности и старых посылок.
 
 * статус: `queued` | `judging` (с `progress`) | `done`; вердикт, его текст и подсказка — только у `done`;
 * баллы — в баллах контеста (`scores.contest_score`, D-090), у групп тоже; `counted`, `late`, `rechecking`;
@@ -60,3 +64,26 @@
 ## 4. Таблица результатов
 
 Правила — `CONTESTS.md` §4 («Таблица результатов», `standings_open_for`).
+
+## 5. Сервисы (`app/student/`, D-093)
+
+Функции не делают commit (транзакция — вызывающего); ученик — `User` из сессии, иначе `student_required`. Отказ —
+`StudentError(code, retry_after_s)`; коды → HTTP — этап 6.
+
+| Функция | Что | Отказы |
+|---|---|---|
+| `contests.my_contests` | контесты, которые ученик видит (`mode: full`) или где участвовал (`own_results`); строка: `slug`, `title`, `mode`, `phase` (`before` / `running` / `over`), `state`, времена, `timing_mode`, `personal_duration`, `access_mode`, `has_access`, `joined`, `joined_via`, `started_at`, `window`, `standings_open` | — |
+| `contests.contest_view` | строка + `server_time`; при `full` — `description_md`, группы контеста (для фильтра таблицы), `problem_count`, `problems`: до начала времени ученика — **пустой список** (D-093), потом по `problem_visible`: метка, `titles`, `max_score` в баллах контеста, `available_from`, свой срок с продлениями, политика после срока, `statement_open`, свои `submissions` и `best` | `contest_not_found` |
+| `contests.enter` | попытка входа (с кодом или без): `EnterOutcome(ok, code, participation)`; записывается **всегда** (`contest_entry_attempts`), вызывающий делает commit и при отказе | `rate_limited` (`JUDGE_ENTER_RATE` за 10 минут, без записи); в `code` — отказы `access.can_enter`, `contest_not_found` |
+| `contests.start` | личный старт | отказы `access.can_start` |
+| `problems.problem_view` | условие версии, закреплённой сейчас: `titles`, `statements`, `limits`, `note_md`, `max_score`, сроки, примеры (тесты открытых групп с `show_in_statement`, до 64 КБ каждый), языки, лимиты файла и архива, свои `counted_submissions` / `limit` / `cooldown_left_s`; задача без кода — вопросы **без ответов** | `contest_not_found`, `no_access`, `problem_not_found` (скрыта, до `available_from`, нет метки), `not_participant`, `press_start`, `not_started_yet`, `statement_hidden` |
+| `problems.statement_file` | картинка `statement/images/…` из `version.files` после открытого условия | те же, `file_not_found` (тест, чекер, `..`, чего нет) |
+| `submissions.precheck` | дешёвые отказы до чтения тела (вызывающий затем делает rollback) | доступ, вид тела, язык, `can_submit` |
+| `submissions.submit` | одна посылка: исходник, архив или ответы; порядок — приём (§1), `SUBMIT_RATE`, частота (§2), `submission_decision` (участие `FOR UPDATE`), блоб, строка, очередь; отказ ничего не оставляет | коды §1, `rate_limited`, отказы `can_submit` (`cooldown` с `retry_after_s`, `submission_limit`, `deadline_passed`, `contest_over`, …), `invalid_request` |
+| `submissions.my_submissions` | свои посылки, новые первыми, курсор; `contest` (видимый, в том числе только для своих результатов), `label` | `contest_not_found`, `label_needs_contest` |
+| `submissions.my_submission` | вид §3 текущей проверки, `rechecking`, без истории | `submission_not_found` (чужая — так же) |
+| `submissions.my_source` | свой исходник | `submission_not_found`, `file_not_found` (ответы, не код) |
+| `standings.standings` | таблица §4, `group` — неархивная группа контеста | `standings_closed`, `group_not_found` |
+
+`counted` посылки не хранится: считается при чтении по окну участника (как лимит посылок). `dev_seed --contest`
+отправляет посылки через `submissions.submit` (много посылок в минуту — `JUDGE_SUBMIT_RATE_PER_MIN=0`).

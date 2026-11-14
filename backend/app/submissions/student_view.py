@@ -1,11 +1,16 @@
 """What a student sees of their own submission (4b.1, D-091): a pure function over the stored rows, no database, no
 runner (the backend never imports it; the texts are protocol/verdicts.py).
 
-What may be shown is decided now, at reading time, by the policy the caller passes - the feedback and visibility of
-the test groups of the problem version currently pinned to the contest problem, and the groups whose tests are open
-to this student now (contests/access.visible_tests: the open ones, every one after the end with tests_after_end).
-test_results.visible_to_student, written by the worker when it judged, is not consulted: a policy made stricter
-later (full -> verdict_only) hides the details of old submissions too.
+What may be shown is decided now, at reading time, by effective_policy (D-094):
+* which groups are open comes only from the version the judgement ran on - its own groups and tests, never matched
+  by name with the groups of another version - and only while that version is still the one pinned to the contest
+  problem: open there and open to the student now (contests/access.visible_tests: the open ones, every one after the
+  end with tests_after_end). A judgement of an older version shows no group as open (a new version may have closed
+  it, or renumbered the groups);
+* the feedback level of a group is the stricter of its level in the judgement's version and the strictest level of
+  the version pinned now (its problem level and every group override): a policy made stricter later
+  (full -> verdict_only) hides the details of old submissions too.
+test_results.visible_to_student, written by the worker when it judged, is not consulted.
 
 * status: queued | judging (with progress) | done; a verdict, its text and hint only when done;
 * points in the contest's points (scores.contest_score, D-090), also those of the groups;
@@ -48,9 +53,45 @@ class GroupPolicy:
 
 
 def policy_of(problem_feedback: Optional[str], groups: Iterable) -> dict:
-    """{group name: GroupPolicy} of a problem version: `groups` are (name, visibility, feedback override or None)."""
+    """{group name: GroupPolicy} of a problem version as written in it: `groups` are (name, visibility, feedback
+    override or None)."""
     base = _v(problem_feedback) or DEFAULT_FEEDBACK
     return {name: GroupPolicy(_v(visibility), _v(feedback) or base) for name, visibility, feedback in groups}
+
+
+def meet(a: str, b: str) -> str:
+    """The stricter of two feedback levels: what both allow. full allows everything the other does; first_fail
+    (one failed test, no hidden groups) and groups_only (hidden groups, no tests) share only what verdict_only shows."""
+    if a == b or b == "full":
+        return a
+    if a == "full":
+        return b
+    return "verdict_only"
+
+
+def strictest(levels: Iterable) -> str:
+    out = "full"
+    for level in levels:
+        out = meet(out, _v(level) or DEFAULT_FEEDBACK)
+    return out
+
+
+def effective_feedback(judged_feedback: Optional[str], pinned_levels: Iterable) -> str:
+    """The problem-level feedback to apply: the judgement's version's, capped by the version pinned now."""
+    return meet(_v(judged_feedback) or DEFAULT_FEEDBACK, strictest(pinned_levels))
+
+
+def effective_policy(judged_feedback: Optional[str], judged_groups: Iterable, pinned_levels: Iterable,
+                     same_version: bool, open_now: Iterable[str]) -> dict:
+    """{group name: GroupPolicy} for a judgement, by the rules of the module docstring.
+
+    judged_feedback / judged_groups: the problem level and (name, visibility, override) of the groups of the version
+    the judgement ran on; pinned_levels: the problem level and every group override of the version pinned now;
+    same_version: the judgement ran on the version pinned now; open_now: access.visible_tests over judged_groups."""
+    cap = strictest(pinned_levels)
+    shown = set(open_now) if same_version else set()
+    return {name: GroupPolicy("open" if name in shown else "hidden", meet(rule.feedback, cap))
+            for name, rule in policy_of(judged_feedback, judged_groups).items()}
 
 
 def _get(row, key, default=None):
@@ -79,18 +120,17 @@ def status_of(judgement) -> str:
 
 
 def student_view(judgement, *, results: Iterable = (), policy: Mapping = None, problem_feedback: Optional[str] = None,
-                 open_groups: Iterable[str] = (), contents: Mapping = None, points: Optional[Decimal] = None,
-                 counted: bool = True, late: bool = False, rechecking: bool = False) -> dict:
+                 contents: Mapping = None, points: Optional[Decimal] = None, counted: bool = True, late: bool = False,
+                 rechecking: bool = False) -> dict:
     """The student's view of the current judgement of their submission.
 
     results: rows of test_results in order, each with `group` (name), `test_case_id`, `verdict`, `time_ms`,
-    `memory_kb`, `exit_code`, `signal`, `tl_kind`, `checker_message`, `output_excerpt`; policy: policy_of() of the
-    pinned version (a group it does not know is hidden with the problem's feedback); open_groups: names from
-    access.visible_tests; contents: {test_case_id: {"input": str, "answer": str}} read by the caller for tests of
-    open groups only (anything else in it is ignored); points: contest_problems.points."""
+    `memory_kb`, `exit_code`, `signal`, `tl_kind`, `checker_message`, `output_excerpt`; policy: effective_policy()
+    (a group it does not know is hidden with problem_feedback); problem_feedback: effective_feedback(); contents:
+    {test_case_id: {"input": str, "answer": str}} read by the caller for tests of open groups only (anything else in
+    it is ignored); points: contest_problems.points."""
     policy = policy or {}
     base = _v(problem_feedback) or DEFAULT_FEEDBACK
-    open_now = set(open_groups)
     contents = contents or {}
     status = status_of(judgement)
     score, max_score = _get(judgement, "score"), _get(judgement, "max_score")
@@ -115,8 +155,7 @@ def student_view(judgement, *, results: Iterable = (), policy: Mapping = None, p
         return view
 
     def rule(name) -> GroupPolicy:
-        known = policy.get(name) or GroupPolicy("hidden", base)
-        return GroupPolicy("open", known.feedback) if name in open_now else known
+        return policy.get(name) or GroupPolicy("hidden", base)
 
     groups = []
     for g in summary.get("groups") or []:

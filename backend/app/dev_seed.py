@@ -11,9 +11,10 @@
   an entry pinned to an older version is hidden (its submissions stay).
 * `--contest SLUG --label L`: instead of the "dev" contest, submit to problem L of a real (published) contest the way
   a student will through the API of 4b: the student enters (with the contest's invite code), presses "start" in a
-  personal contest, and every submission goes through service.submission_decision (access, window, upsolving,
-  deadline and extensions, cooldown, limit, language) and keeps its `late`. A refusal stops dev_seed with its
-  reason and exit code 1. Not with --package.
+  personal contest, and every submission goes through student.submissions.submit - the one path of the student API
+  (intake, the rate JUDGE_SUBMIT_RATE_PER_MIN, service.submission_decision: access, window, upsolving, deadline and
+  extensions, cooldown, limit, language) and keeps its `late`. A refusal stops dev_seed with its reason and exit
+  code 1. Not with --package. Many submissions in a minute: set JUDGE_SUBMIT_RATE_PER_MIN=0.
 * `--item ID [--text-file F]`: hand in work on manual assignment ID (the class feed, 4v.1) as student
   `dev-student-N` would through the API of 4b.2: classroom.works.submit_work with the rules of
   classroom/access.py (audience, available_from, deadline and extensions, already graded, the answer and its
@@ -65,6 +66,8 @@ from .models import AccessMode, Contest, ContestProblem, ContestState, Language,
     Submission, User
 from .problems.importer import ImportResult, import_package, store_blob
 from .settings import Settings
+from .student import submissions as student_submissions
+from .student.common import StudentError
 
 CONTEST_SLUG = "dev"
 DEFAULT_SOURCE = b"a, b = map(int, input().split())\nprint(a + b)\n"
@@ -140,7 +143,8 @@ def ensure_contest_problem(session: Session, version: ProblemVersion, admin: Use
     return cp
 
 
-def submit_to_contest(session: Session, blobs: BlobStore, args, student: User, source: bytes) -> list:
+def submit_to_contest(session: Session, blobs: BlobStore, settings: Settings, args, student: User,
+                      source: bytes) -> list:
     """Join, start (personal timing) and submit as a student would; stops at the first refusal of the rules."""
     contest = service.get_contest(session, args.contest)
     cp = service.visible_row(session, contest, args.label)
@@ -156,21 +160,17 @@ def submit_to_contest(session: Session, blobs: BlobStore, args, student: User, s
     for i in range(args.count):
         if i:  # each submission is its own request; the first one was received at `now` above
             now = datetime.now(timezone.utc)
-        decision = service.submission_decision(session, student, contest, cp, now, language=args.language)
-        if not decision:
-            wait = f" (retry in {decision.retry_after_s} s)" if decision.retry_after_s else ""
-            print(f"dev_seed: refused by the access rules: {decision.reason}{wait}", file=sys.stderr)
+        try:  # the one path of a student's submission (4b.1): intake, rate, access rules, blob, queue
+            made = student_submissions.submit(
+                session, student, blobs, settings.submit, contest.slug, cp.label, now, language=args.language,
+                source=None if args.archive else source, archive=source if args.archive else None, entry=args.entry)
+        except StudentError as exc:
+            wait = f" (retry in {exc.retry_after_s} s)" if exc.retry_after_s else ""
+            print(f"dev_seed: refused by the access rules: {exc.code}{wait}", file=sys.stderr)
             break
-        source_sha = store_blob(session, blobs, source)  # "reading the source" happens after the receipt time
-        sub = Submission(user_id=student.id, contest_problem_id=cp.id, language_key=args.language,
-                         source_sha256=source_sha, is_archive=args.archive, entry_file=args.entry, created_at=now,
-                         late=decision.late)
-        session.add(sub)
-        session.flush()
-        j = q.enqueue(session, sub)
-        out.append({"submission_id": sub.id, "judgement_id": j.id, "problem_version_id": cp.problem_version_id,
-                    "contest_problem_id": cp.id, "import": None, "counted": decision.counted,
-                    "late": decision.late})
+        out.append({"submission_id": made["id"], "judgement_id": made["judgement_id"],
+                    "problem_version_id": cp.problem_version_id, "contest_problem_id": cp.id, "import": None,
+                    "counted": made["counted"], "late": made["late"]})
     return out
 
 
@@ -283,7 +283,7 @@ def main(argv=None) -> int:
         if args.contest:
             student = _student(session, args.user)
             try:
-                out = submit_to_contest(session, blobs, args, student, source)
+                out = submit_to_contest(session, blobs, settings, args, student, source)
             except service.ContestError as exc:
                 print(f"dev_seed: {exc}", file=sys.stderr)
                 return 1

@@ -677,6 +677,23 @@ class Participation(Base):
     )
 
 
+class ContestEntryAttempt(Base):
+    """One attempt of a student to enter a contest (4b.1, D-093), right or wrong: JUDGE_ENTER_RATE counts them over
+    10 minutes (app.rates), in the database so that the limit holds across processes and restarts. `contest_id` is
+    empty when the slug named no contest the student may see; `outcome` is the code of the answer ("ok",
+    "rejoin_with_code", "wrong_code", ...). The reaper prunes rows older than JUDGE_AUTH_RETENTION_DAYS."""
+
+    __tablename__ = "contest_entry_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    contest_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contests.id", ondelete="CASCADE"))
+    outcome: Mapped[str] = mapped_column(String(40), nullable=False)
+    at: Mapped[datetime] = utcnow_column()
+
+    __table_args__ = (Index("ix_contest_entry_attempts_user_at", "user_id", "at"),)
+
+
 # --------------------------------------------------------------------------- groups (classes, D-020)
 class Group(Base):
     """A class. Groups are archived, never deleted; the name is unique (ignoring case) among groups not archived."""

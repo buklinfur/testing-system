@@ -190,7 +190,7 @@ problems:
 `can_see_own_results`. Контест, попавший в список только по второму условию (ученика убрали из группы, режим сменился,
 группу заархивировали), открывается в режиме «только мои результаты»: свои посылки и оценки — да; условий, сдачи и
 таблицы результатов — нет. Строка теста: убранный из группы ученик — `can_view_contest = False`,
-`can_see_own_results = True`.
+`can_see_own_results = True`. Строит список `student/contests.my_contests` (4б.1, `STUDENT_API.md` §5).
 
 **Сервис** (`service.py`, `groups.py`): `access_inputs(db, contest, user)` даёт `(participation, in_group)` для функций
 выше; `enter` — первый вход (и смена `joined_via` на `code` по верному коду, аудит `contest.rejoin_with_code` от имени

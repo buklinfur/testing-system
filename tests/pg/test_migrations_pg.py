@@ -1036,6 +1036,7 @@ class MigrationTests(PgCase):
             before = self.judgement_rows(conn, upgraded=False)
             self.alembic(conn, "upgrade", "f2e12ff59f1c")
             self.assertEqual(self.judgement_rows(conn), self.SCORES_TRANSFERRED)
+            self.alembic(conn, "upgrade", "head")  # models.py is the head, not this revision
             diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
             self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
             # the SQL copy of the rule == scores.version_max_score, for every kind of version

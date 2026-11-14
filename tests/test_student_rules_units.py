@@ -19,7 +19,7 @@ from app.contests import standings as st  # noqa: E402
 from app.settings import Settings  # noqa: E402
 from app.submissions import intake  # noqa: E402
 from app.submissions.intake import IntakeError  # noqa: E402
-from app.submissions.student_view import policy_of, student_view  # noqa: E402
+from app.submissions.student_view import effective_feedback, effective_policy, meet, student_view  # noqa: E402
 
 T0 = datetime(2026, 11, 13, 9, 0, tzinfo=timezone.utc)
 
@@ -199,16 +199,22 @@ RESULTS = [result("samples", 1, "OK"), result("small", 2, "OK"), result("small",
 CONTENTS = {i: {"input": f"INPUT-{i}", "answer": f"ANSWER-{i}"} for i in range(1, 7)}
 
 
-def groups(feedback, big=None):
-    return policy_of(feedback, [("samples", "open", None), ("small", "hidden", None), ("big", "hidden", big)])
+JUDGED = [("samples", "open", None), ("small", "hidden", None), ("big", "hidden", None)]
+
+
+def groups(feedback, big=None, open_now=("samples",), same_version=True, pinned=None):
+    """The policy of a judgement of the version pinned now (unless same_version is False)."""
+    judged = [("samples", "open", None), ("small", "hidden", None), ("big", "hidden", big)]
+    return effective_policy(feedback, judged, pinned if pinned is not None else [feedback], same_version, open_now)
 
 
 class StudentViewTests(unittest.TestCase):
     def view(self, feedback="full", open_groups=("samples",), **kw):
+        kw.setdefault("policy", groups(feedback, open_now=open_groups))
         kw.setdefault("results", RESULTS)
         kw.setdefault("contents", CONTENTS)
         return student_view(kw.pop("j", judgement()), policy=kw.pop("policy", groups(feedback)),
-                            problem_feedback=feedback, open_groups=open_groups, **kw)
+                            problem_feedback=feedback, **kw)
 
     def text(self, view) -> str:
         return json.dumps(view, default=str, ensure_ascii=False)
@@ -251,10 +257,10 @@ class StudentViewTests(unittest.TestCase):
         groups_only = self.view("groups_only")
         self.assertEqual([t["test_no"] for t in groups_only["tests"]], [1])
         self.assertEqual([g["name"] for g in groups_only["groups"]], ["samples", "small", "big"])
-        mixed = self.view("first_fail", policy=groups("first_fail", big="full"))
+        mixed = self.view("first_fail", policy=groups("first_fail", big="full", pinned=["full"]))
         self.assertEqual([t["test_no"] for t in mixed["tests"]], [1, 4, 5, 6])
         self.assertEqual(mixed["tests"][2]["runtime_hint"][:17], "Ошибка сегментаци")
-        unknown = self.view("full", policy={}, open_groups=())  # groups the pinned version no longer has: hidden, problem's feedback
+        unknown = self.view("full", policy={})  # groups the pinned version no longer has: hidden, problem's feedback
         self.assertEqual([t["test_no"] for t in unknown["tests"]], [1, 2, 3, 4, 5, 6])
         self.assertNotIn("input", unknown["tests"][0])
 
@@ -300,6 +306,54 @@ def att(user, problem, minute, verdict="OK", score=None, max_score=D(60), counte
 PEOPLE = [st.Participant(1, "Аня", T0), st.Participant(2, "Борис", T0), st.Participant(3, "Вика", T0)]
 PROBLEMS = [st.Problem(10, "A", points=D(100)), st.Problem(11, "B", max_score=D(60)),
             st.Problem(12, "C", hidden=True, max_score=D(60))]
+
+
+class VersionPolicyTests(unittest.TestCase):
+    """Owner's amendment of stage 5: openness only from the judgement's own version while it is pinned; the level is
+    the stricter of the two versions; tests of an old judgement are never matched with groups of another version."""
+
+    def shown(self, policy, feedback="full"):
+        v = student_view(judgement(), results=RESULTS, policy=policy, problem_feedback=feedback, contents=CONTENTS)
+        return v, json.dumps(v, default=str, ensure_ascii=False)
+
+    def test_meet(self):
+        table = {("full", "full"): "full", ("full", "first_fail"): "first_fail", ("groups_only", "full"): "groups_only",
+                 ("first_fail", "groups_only"): "verdict_only", ("groups_only", "first_fail"): "verdict_only",
+                 ("verdict_only", "full"): "verdict_only", ("first_fail", "first_fail"): "first_fail"}
+        for (a, b), want in table.items():
+            with self.subTest(a=a, b=b):
+                self.assertEqual(meet(a, b), want)
+        self.assertEqual(effective_feedback("full", ["full", "groups_only"]), "groups_only")
+        self.assertEqual(effective_feedback(None, [None]), "first_fail")
+
+    def test_a_new_version_that_closed_an_open_group_hides_it_in_old_submissions(self):
+        v, text = self.shown(groups("full", same_version=False, pinned=["full"]))
+        self.assertNotIn("INPUT-1", text)
+        self.assertNotIn("CHECKER-1", text)
+        self.assertEqual([g["name"] for g in v["groups"]], ["samples", "small", "big"])  # full: scores, no content
+
+    def test_a_new_version_that_opened_a_closed_group_does_not_open_it_in_old_submissions(self):
+        # the judgement's version had "big" hidden; whatever the new version says about a group of that name
+        policy = effective_policy("full", JUDGED, ["full"], False, open_now=("samples", "small", "big"))
+        _v, text = self.shown(policy)
+        for secret in ("INPUT-", "ANSWER-", "OUTPUT-", "CHECKER-"):
+            self.assertNotIn(secret, text)
+
+    def test_renumbered_groups_leak_nothing(self):
+        # the version pinned now calls its groups otherwise; the old judgement keeps its own names, all hidden
+        policy = effective_policy("first_fail", JUDGED, ["first_fail", "full"], False, open_now=("g1", "g2"))
+        v, text = self.shown(policy, "first_fail")
+        self.assertEqual([t["test_no"] for t in v["tests"]], [4])
+        self.assertNotIn("INPUT-", text)
+
+    def test_the_stricter_level_wins(self):
+        same = groups("full", pinned=["full", "verdict_only"])  # a group override of the pinned version is strict
+        v, _ = self.shown(same)
+        self.assertEqual([t["test_no"] for t in v["tests"]], [1])  # the open sample only
+        self.assertNotIn("time_ms", v["tests"][0])
+        loose = groups("groups_only", pinned=["full"])  # a looser pinned version does not loosen the old one
+        v, _ = self.shown(loose, "groups_only")
+        self.assertEqual([t["test_no"] for t in v["tests"]], [1])
 
 
 class StandingsTests(unittest.TestCase):

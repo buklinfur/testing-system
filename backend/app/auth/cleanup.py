@@ -6,12 +6,13 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, or_
 from sqlalchemy.orm import Session
 
-from ..models import AuthFailure, AuthLockout, LoginToken, UserSession
+from ..models import AuthFailure, AuthLockout, ContestEntryAttempt, LoginToken, UserSession
 from ..settings import AuthSettings
 
 
 def prune(db: Session, settings: AuthSettings, now: datetime) -> dict:
-    """Delete failures, finished lockouts, dead sessions and QR tokens older than retention_days."""
+    """Delete failures, finished lockouts, dead sessions, QR tokens and attempts to enter a contest (D-093) older than
+    retention_days."""
     cutoff = now - timedelta(days=settings.retention_days)
     out = {
         "failures": db.execute(delete(AuthFailure).where(AuthFailure.at < cutoff)).rowcount,
@@ -21,5 +22,6 @@ def prune(db: Session, settings: AuthSettings, now: datetime) -> dict:
             UserSession.absolute_expires_at < cutoff))).rowcount,
         "login_tokens": db.execute(delete(LoginToken).where(or_(
             LoginToken.expires_at < cutoff, LoginToken.used_at < cutoff, LoginToken.revoked_at < cutoff))).rowcount,
+        "entry_attempts": db.execute(delete(ContestEntryAttempt).where(ContestEntryAttempt.at < cutoff)).rowcount,
     }
     return out
