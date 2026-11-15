@@ -926,6 +926,37 @@ class AssignmentSubmissionLink(Base):
     )
 
 
+class WorkDraftFile(Base):
+    """A file a student uploaded to the draft of an assignment before handing it in (4b.2, D-097, D-098): one per
+    upload, in the order of upload (id), private to the student until a hand-in names it - then the row goes and the
+    blob becomes a file of the hand-in. Deleting by the student sets deleted_at; the row (and so its blob in the
+    student's quota) stays until the reaper removes it JUDGE_DRAFT_TTL_DAYS after the upload, deleted or not. Names
+    are unique among the live files of the pair (item, student), case ignored. Not a trace of the user: erased with
+    it."""
+
+    __tablename__ = "work_draft_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    blob_sha256: Mapped[str] = mapped_column(ForeignKey("blobs.sha256", ondelete="RESTRICT"), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(f"btrim(name, E' \\t\\r\\n') <> '' AND char_length(name) <= {ATTACHMENT_NAME_MAX_CHARS}",
+                        name="name_valid"),
+        CheckConstraint("size > 0", name="size_positive"),
+        CheckConstraint("deleted_at IS NULL OR deleted_at >= created_at", name="deleted_after_created"),
+        Index("ix_work_draft_files_owner", "user_id", "item_id", "id"),
+        Index("ix_work_draft_files_created", "created_at"),
+        Index("uq_work_draft_files_name", "item_id", "user_id", text("lower(name)"), unique=True,
+              postgresql_where=text("deleted_at IS NULL")),
+    )
+
+
 class AssignmentReview(Base):
     """What a teacher did with a work, rows only added: the history of grades. The current grade is the last
     `graded` row; with grades_release = manual a student sees the last graded row that has a `released` row

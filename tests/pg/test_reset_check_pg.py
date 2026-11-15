@@ -56,10 +56,11 @@ class ResetCheckTests(unittest.TestCase):
                       "deadline_extensions", "version_checks", "feed_items", "assignment_works", "comment_threads",
                       "comments", "thread_reads", "attachments", "assignment_submission_links", "materials",
                       "material_versions", "material_groups", "library_sections", "material_sections",
-                      "material_refs"):
+                      "material_refs", "work_draft_files"):
             self.assertIn(table, rows)
         self.assertEqual(rows["attachments"], 3, "a file and a link of a teacher on an item, a file of a material")
         self.assertEqual(rows["material_refs"], 3, "from a problem version, a feed item and a material version")
+        self.assertEqual(rows["work_draft_files"], 2, "a live draft file and a deleted one")
         with engine.connect() as conn:
             kinds = conn.execute(text("SELECT kind::text, count(*) FROM assignment_submission_files GROUP BY kind"))
             self.assertEqual(dict(kinds.all()), {"text": 1, "file": 1})
@@ -67,9 +68,27 @@ class ResetCheckTests(unittest.TestCase):
             with engine.begin() as conn:
                 self.alembic(conn, "downgrade", "base")
         self.assertIn("nothing was changed", str(caught.exception))
+        self.assertIn("draft files of students: 2", str(caught.exception),
+                      "the first downgrade on the way down is the one of 4b.2")
+
+    def test_without_the_drafts_of_4b2_the_next_refusal_is_the_one_of_4v4(self):
+        """The draft files refuse the downgrade of 4b.2 even when deleted; without them the downgrades of 4b.1 pass
+        and the one of 4v.4 stops."""
+        _schema, engine = self.migrated()
+        with engine.begin() as conn:
+            reset_check.seed(conn)
+            conn.execute(text("DELETE FROM work_draft_files WHERE deleted_at IS NULL"))
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "downgrade", "base")
+        self.assertIn("draft files of students: 1", str(caught.exception), "a deleted draft file refuses too")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM work_draft_files"))
+        with self.assertRaises(RuntimeError) as caught:
+            with engine.begin() as conn:
+                self.alembic(conn, "downgrade", "base")
         self.assertIn("materials: 1, library sections: 2, material items: 1, attachments of material versions: 1, "
-                      "links to materials: 3", str(caught.exception),
-                      "the first downgrade on the way down is the one of 4v.4")
+                      "links to materials: 3", str(caught.exception))
 
     def test_without_the_rows_of_4v4_the_next_downgrade_refuses_the_rows_of_4v3(self):
         """Every layer of the seed refuses its own downgrade: take away 4v.4 and the downgrade of 4v.4 passes, the
@@ -77,7 +96,8 @@ class ResetCheckTests(unittest.TestCase):
         _schema, engine = self.migrated()
         with engine.begin() as conn:
             reset_check.seed(conn)
-            for table in ("material_refs", "material_sections", "library_sections", "material_groups"):
+            for table in ("work_draft_files", "material_refs", "material_sections", "library_sections",
+                          "material_groups"):
                 conn.execute(text(f"DELETE FROM {table}"))
             conn.execute(text("DELETE FROM attachments WHERE material_version_id IS NOT NULL"))
             conn.execute(text("DELETE FROM feed_item_audience WHERE item_id = 4"))

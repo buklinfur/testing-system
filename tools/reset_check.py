@@ -24,8 +24,9 @@ sys.path[:0] = [str(ROOT), str(ROOT / "backend")]
 from sqlalchemy import create_engine, text  # noqa: E402
 
 # One of each thing a teacher and students leave behind, including what the downgrades of 4a.3 (groups, contest
-# deadlines), 4a.4 (version checks), 4v.1 (the feed), 4v.2 (comments), 4v.3 (files, links, attachments) and 4v.4
-# (materials, their versions and attachments, the library's groups and sections, material items, links) refuse.
+# deadlines), 4a.4 (version checks), 4v.1 (the feed), 4v.2 (comments), 4v.3 (files, links, attachments), 4v.4
+# (materials, their versions and attachments, the library's groups and sections, material items, links) and 4b.2
+# (students' draft files, a deleted one too) refuse.
 SEED_SQL = """
     INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
       (1, 'admin', '!', 'A', 'admin', true), (2, 'pupil', '!', 'P', 'student', true);
@@ -98,7 +99,12 @@ SEED_SQL = """
     INSERT INTO feed_item_audience (item_id, group_id) VALUES (4, 1);
     INSERT INTO material_refs (slug, problem_version_id) VALUES ('cycles', 1);
     INSERT INTO material_refs (slug, feed_item_id) VALUES ('cycles', 2);
-    INSERT INTO material_refs (slug, material_version_id) VALUES ('cycles', 2)
+    INSERT INTO material_refs (slug, material_version_id) VALUES ('cycles', 2);
+    INSERT INTO work_draft_files (item_id, user_id, name, blob_sha256, size)
+      VALUES (3, 2, 'фото.heic', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 5);
+    INSERT INTO work_draft_files (item_id, user_id, name, blob_sha256, size, created_at, deleted_at)
+      VALUES (3, 2, 'лишнее.jpg', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 3,
+              '2026-11-15 10:00+00', '2026-11-15 10:05+00')
 """
 
 
