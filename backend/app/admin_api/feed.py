@@ -8,7 +8,7 @@ endpoints; a unit test checks it against every code the services can raise.
 """
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Annotated, Optional, Union
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
@@ -23,6 +23,7 @@ from ..classroom import items
 from ..classroom.items import FeedError
 from ..contests import service as contests
 from ..contests.service import ContestError
+from ..ids import Count, Id
 from ..jsonable import plain
 from ..materials import service as materials
 from ..models import FeedItem, Group, User
@@ -97,7 +98,12 @@ NO_ROUTE_YET: frozenset = frozenset()
 # codes no admin request can produce: only a student's comment (D-077; the test of 4b.2, ROADMAP)
 COMMENT_STUDENT_ONLY = frozenset({"comments_disabled", "comments_teacher_only", "not_your_comment", "rate_limited"})
 
-POINTS = Union[StrictStr, StrictInt, StrictFloat]  # a JSON number or a string: grading.parse_points decides
+# A JSON number or a string: grading.parse_points decides - at most 6 digits before the point (Numeric(8, 2)), so no
+# number reaches the database unchecked (D-088), and the refusal is the service's own (score_invalid /
+# max_points_invalid, D-061). The numbers have no bounds of the body: a NaN literal fails any bound and must be
+# score_invalid, and a strict float takes a JSON integer, so a bound of the int branch would bound nothing
+# (tests/test_int_bounds_units.py EXCEPTIONS). Only the string is limited, as a string.
+POINTS = Union[Annotated[StrictStr, Field(max_length=40)], StrictInt, StrictFloat]
 
 
 def refused(exc: FeedError) -> ApiError:
@@ -177,22 +183,22 @@ class CreateBody(ItemFields):
     title: str = Field(max_length=1000, description="for kind material: empty takes the material's title")
     contest: Optional[str] = Field(None, max_length=64, description="slug, for kind contest")
     material: Optional[str] = Field(None, max_length=64, description="slug, for kind material (4v.4)")
-    group_ids: list[int] = Field(default_factory=list, max_length=200)
-    user_ids: list[int] = Field(default_factory=list, max_length=200)
+    group_ids: list[Id] = Field(default_factory=list, max_length=200)
+    user_ids: list[Id] = Field(default_factory=list, max_length=200)
 
 
 class AudienceBody(Body):
-    group_ids: list[int] = Field(default_factory=list, max_length=200)
-    user_ids: list[int] = Field(default_factory=list, max_length=200)
+    group_ids: list[Id] = Field(default_factory=list, max_length=200)
+    user_ids: list[Id] = Field(default_factory=list, max_length=200)
 
 
 class DeleteBody(Body):
-    confirm_id: int
+    confirm_id: Count  # compared with the id of the path, never looked up: 0 is a mismatch, not a bad request
 
 
 class ItemExtensionBody(Body):
-    user_id: Optional[int] = None  # exactly one of user_id / group_id
-    group_id: Optional[int] = None
+    user_id: Optional[Id] = None  # exactly one of user_id / group_id
+    group_id: Optional[Id] = None
     due_at: str = Field(max_length=40, description="without an offset: JUDGE_TIMEZONE")
     reason: Optional[str] = Field(None, max_length=200)
 
@@ -207,7 +213,7 @@ def detail(db: Session, item: FeedItem) -> dict:
 
 # ----------------------------------------------------------------------------- items
 @router.get("/items")
-def list_items(group_id: Optional[int] = None, kind: Optional[str] = None, state: Optional[str] = None,
+def list_items(group_id: Optional[Id] = None, kind: Optional[str] = None, state: Optional[str] = None,
                pg: Page = Depends(page), db: Session = Depends(get_db)):
     """Newest first by id. group_id: addressed to the group; kind: assignment | contest; state: draft | published |
     archived."""
@@ -254,14 +260,14 @@ def create_item(body: CreateBody, request: Request, db: Session = Depends(get_db
 
 
 @router.get("/items/{item_id}")
-def get_item_detail(item_id: int, db: Session = Depends(get_db)):
+def get_item_detail(item_id: Id, db: Session = Depends(get_db)):
     """Every setting, the contest, the audience by name, the number of extensions, works by status, `warning` (a
     contest item whose addressees may not see the contest)."""
     return detail(db, get_item(db, item_id))
 
 
 @router.put("/items/{item_id}")
-def update_item(item_id: int, body: ItemFields, request: Request, db: Session = Depends(get_db),
+def update_item(item_id: Id, body: ItemFields, request: Request, db: Session = Depends(get_db),
                 actor: audit.Actor = Depends(admin_actor)):
     """Only the keys sent change; null clears. grading pass_fail / none without max_points clears max_points."""
     item = get_item(db, item_id, lock=True)
@@ -286,27 +292,27 @@ def _state(db: Session, item_id: int, func, request: Request, actor: audit.Actor
 
 
 @router.post("/items/{item_id}/publish")
-def publish_item(item_id: int, request: Request, db: Session = Depends(get_db),
+def publish_item(item_id: Id, request: Request, db: Session = Depends(get_db),
                  actor: audit.Actor = Depends(admin_actor)):
     """Needs an addressee; with a future available_from the students see it from then (no scheduler)."""
     return _state(db, item_id, items.publish, request, actor)
 
 
 @router.post("/items/{item_id}/archive")
-def archive_item(item_id: int, request: Request, db: Session = Depends(get_db),
+def archive_item(item_id: Id, request: Request, db: Session = Depends(get_db),
                  actor: audit.Actor = Depends(admin_actor)):
     """Gone from the feed, refuses hand-ins; students keep their work and released grades."""
     return _state(db, item_id, items.archive, request, actor)
 
 
 @router.post("/items/{item_id}/unarchive")
-def unarchive_item(item_id: int, request: Request, db: Session = Depends(get_db),
+def unarchive_item(item_id: Id, request: Request, db: Session = Depends(get_db),
                    actor: audit.Actor = Depends(admin_actor)):
     return _state(db, item_id, items.unarchive, request, actor)
 
 
 @router.post("/items/{item_id}/delete", status_code=204)
-def delete_item(item_id: int, body: DeleteBody, request: Request, db: Session = Depends(get_db),
+def delete_item(item_id: Id, body: DeleteBody, request: Request, db: Session = Depends(get_db),
                 actor: audit.Actor = Depends(admin_actor)):
     """Only a draft without works and extensions; {confirm_id} must repeat the id."""
     item = get_item(db, item_id, lock=True)
@@ -322,7 +328,7 @@ def delete_item(item_id: int, body: DeleteBody, request: Request, db: Session = 
 
 
 @router.put("/items/{item_id}/audience")
-def set_audience(item_id: int, body: AudienceBody, request: Request, db: Session = Depends(get_db),
+def set_audience(item_id: Id, body: AudienceBody, request: Request, db: Session = Depends(get_db),
                  actor: audit.Actor = Depends(admin_actor)):
     """The audience becomes exactly these groups and students: {item, added, removed}."""
     item = get_item(db, item_id, lock=True)
@@ -338,7 +344,7 @@ def set_audience(item_id: int, body: AudienceBody, request: Request, db: Session
 
 
 @router.get("/groups/{group_id}/feed")
-def group_feed(group_id: int, drafts: bool = True, db: Session = Depends(get_db)):
+def group_feed(group_id: Id, drafts: bool = True, db: Session = Depends(get_db)):
     """The items addressed to the group, in the order of the feed (available_from, else published_at; newest
     first). No cursor: one group's feed."""
     group = get_group(db, group_id)
@@ -347,12 +353,12 @@ def group_feed(group_id: int, drafts: bool = True, db: Session = Depends(get_db)
 
 # ----------------------------------------------------------------------------- extensions
 @router.get("/items/{item_id}/extensions")
-def list_extensions(item_id: int, db: Session = Depends(get_db)):
+def list_extensions(item_id: Id, db: Session = Depends(get_db)):
     return plain({"items": items.list_extensions(db, get_item(db, item_id))})
 
 
 @router.post("/items/{item_id}/extensions")
-def add_extension(item_id: int, body: ItemExtensionBody, request: Request, db: Session = Depends(get_db),
+def add_extension(item_id: Id, body: ItemExtensionBody, request: Request, db: Session = Depends(get_db),
                   actor: audit.Actor = Depends(admin_actor)):
     """201 for a new extension; 200 when it replaced one of the same student or group (`replaced`: the old due)."""
     item = get_item(db, item_id)
@@ -371,7 +377,7 @@ def add_extension(item_id: int, body: ItemExtensionBody, request: Request, db: S
 
 
 @router.post("/items/{item_id}/extensions/{extension_id}/delete", status_code=204)
-def delete_extension(item_id: int, extension_id: int, request: Request, db: Session = Depends(get_db),
+def delete_extension(item_id: Id, extension_id: Id, request: Request, db: Session = Depends(get_db),
                      actor: audit.Actor = Depends(admin_actor)):
     """Only an extension of this item: the id of another one (of a contest problem too) is 404, like a missing one."""
     item = get_item(db, item_id)

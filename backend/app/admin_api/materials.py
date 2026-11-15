@@ -1,7 +1,7 @@
 """/api/admin the library of materials and «Справочник» (4v.4; docs/ADMIN_API.md §5.11, docs/CLASSROOM.md §11,
 D-083..D-087). The same services as `judgectl material ...` / `section ...` (materials/service.py, library.py).
 
-Materials: a material is addressed by its id (int4, DbId); its slug never changes (PATCH with another slug: 422
+Materials: a material is addressed by its id (int4, ids.Id); its slug never changes (PATCH with another slug: 422
 slug_immutable). Every change of the content - a new text, a file or a link added, one removed, a new order - makes a
 version and answers it (`version`, `created`: false when nothing changed); links [[памятка:slug]] that are malformed,
 unknown or archived never refuse a text: they come back as `warnings`. Ids of attachments are those of the latest
@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import Field, StrictInt, StrictStr
+from pydantic import Field, StrictStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -37,11 +37,12 @@ from ..classroom import attachments as att
 from ..classroom.items import FeedError
 from ..content_files import file_response
 from ..http_body import require_type, save_body
+from ..ids import Id, StrictId, VersionNo
 from ..jsonable import plain
 from ..materials import library, refs
 from ..materials import service as materials
 from ..models import Material
-from .attachments import UPLOAD_DOC, UPLOAD_TYPE, DbId, LinkBody, OrderBody, upload_name
+from .attachments import UPLOAD_DOC, UPLOAD_TYPE, LinkBody, OrderBody, upload_name
 from .deps import Page, admin_actor, admin_session, page, paginate
 from .feed import Body, DeleteBody, blobs, get_group, refused
 
@@ -55,7 +56,7 @@ class MaterialCreate(Body):
     title: StrictStr = Field(max_length=1000)
     body_md: StrictStr = Field("", max_length=BODY_MAX, description="Markdown; links [[памятка:slug]]")
     library: StrictStr = Field("none", max_length=20, description="none | all_students | groups")
-    group_ids: list[StrictInt] = Field(default_factory=list, max_length=200,
+    group_ids: list[StrictId] = Field(default_factory=list, max_length=200,
                                        description="the library groups (with library groups)")
 
 
@@ -71,7 +72,7 @@ class VersionBody(Body):
 
 
 class GroupsBody(Body):
-    group_ids: list[StrictInt] = Field(max_length=200)
+    group_ids: list[StrictId] = Field(max_length=200)
 
 
 class ResolveBody(Body):
@@ -80,7 +81,7 @@ class ResolveBody(Body):
 
 class SectionCreate(Body):
     title: StrictStr = Field(max_length=1000)
-    parent_id: Optional[StrictInt] = Field(None, description="a top-level section: this one becomes its subsection")
+    parent_id: Optional[StrictId] = Field(None, description="a top-level section: this one becomes its subsection")
 
 
 class SectionPatch(Body):
@@ -88,16 +89,16 @@ class SectionPatch(Body):
 
 
 class SectionMove(Body):
-    parent_id: Optional[StrictInt] = Field(description="a top-level section, or null for the top level")
+    parent_id: Optional[StrictId] = Field(description="a top-level section, or null for the top level")
 
 
 class SectionOrder(Body):
-    parent_id: Optional[StrictInt] = Field(None, description="the subsections of this section; null: the top level")
-    ids: list[StrictInt] = Field(max_length=500)
+    parent_id: Optional[StrictId] = Field(None, description="the subsections of this section; null: the top level")
+    ids: list[StrictId] = Field(max_length=500)
 
 
 class PlaceBody(Body):
-    material_id: StrictInt
+    material_id: StrictId
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -182,7 +183,7 @@ def resolve_links(body: ResolveBody, request: Request, db: Session = Depends(get
 
 
 @router.get("/materials/{material_id}")
-def get_material(material_id: DbId, request: Request, db: Session = Depends(get_db),
+def get_material(material_id: Id, request: Request, db: Session = Depends(get_db),
                  cur: Current = Depends(admin_session)):
     """The latest version: text, attachments, its links resolved (ok / archived / unknown) and `link_warnings`; the
     library audience, groups, sections, number of versions, archived_at."""
@@ -190,7 +191,7 @@ def get_material(material_id: DbId, request: Request, db: Session = Depends(get_
 
 
 @router.patch("/materials/{material_id}")
-def patch_material(material_id: DbId, body: MaterialPatch, request: Request, db: Session = Depends(get_db),
+def patch_material(material_id: Id, body: MaterialPatch, request: Request, db: Session = Depends(get_db),
                    actor: audit.Actor = Depends(admin_actor)):
     """The title and the library audience, in place (no version). A slug other than the current one: 422
     slug_immutable (create a new material and archive this one). 409 material_archived."""
@@ -203,7 +204,7 @@ def patch_material(material_id: DbId, body: MaterialPatch, request: Request, db:
 
 
 @router.post("/materials/{material_id}/versions")
-def new_version(material_id: DbId, body: VersionBody, request: Request, db: Session = Depends(get_db),
+def new_version(material_id: Id, body: VersionBody, request: Request, db: Session = Depends(get_db),
                 actor: audit.Actor = Depends(admin_actor)):
     """A new text: a new version with the attachments of the latest one (`created`: false and the latest version
     when the text is the same). `warnings` about its links. 409 material_archived; 422 body_invalid, body_too_long."""
@@ -213,13 +214,13 @@ def new_version(material_id: DbId, body: VersionBody, request: Request, db: Sess
 
 
 @router.get("/materials/{material_id}/versions")
-def list_versions(material_id: DbId, db: Session = Depends(get_db)):
+def list_versions(material_id: Id, db: Session = Depends(get_db)):
     """Every version, newest first: number, when, who, length of the text, number of attachments."""
     return plain({"items": materials.versions(db, _material(db, material_id))})
 
 
 @router.get("/materials/{material_id}/versions/{number}")
-def get_version(material_id: DbId, number: DbId, request: Request, db: Session = Depends(get_db),
+def get_version(material_id: Id, number: VersionNo, request: Request, db: Session = Depends(get_db),
                 cur: Current = Depends(admin_session)):
     """One version: its text, attachments and links resolved now. 404 version_not_found."""
     material = _material(db, material_id)
@@ -232,7 +233,7 @@ def get_version(material_id: DbId, number: DbId, request: Request, db: Session =
 
 
 @router.put("/materials/{material_id}/groups")
-def set_groups(material_id: DbId, body: GroupsBody, request: Request, db: Session = Depends(get_db),
+def set_groups(material_id: Id, body: GroupsBody, request: Request, db: Session = Depends(get_db),
                actor: audit.Actor = Depends(admin_actor)):
     """The library groups: exactly these (they count with library groups). A group added must not be archived (409
     group_archived); one already there stays. 409 material_archived."""
@@ -249,21 +250,21 @@ def _archive(db: Session, material_id: int, func, request: Request, actor: audit
 
 
 @router.post("/materials/{material_id}/archive")
-def archive_material(material_id: DbId, request: Request, db: Session = Depends(get_db),
+def archive_material(material_id: Id, request: Request, db: Session = Depends(get_db),
                      actor: audit.Actor = Depends(admin_actor)):
     """Read only and out of the library; the feed and links still open it. Again: changed false."""
     return _archive(db, material_id, materials.archive, request, actor)
 
 
 @router.post("/materials/{material_id}/unarchive")
-def unarchive_material(material_id: DbId, request: Request, db: Session = Depends(get_db),
+def unarchive_material(material_id: Id, request: Request, db: Session = Depends(get_db),
                        actor: audit.Actor = Depends(admin_actor)):
     """Back from the archive (its sections were kept). Again: changed false."""
     return _archive(db, material_id, materials.unarchive, request, actor)
 
 
 @router.get("/materials/{material_id}/where")
-def where_used(material_id: DbId, db: Session = Depends(get_db)):
+def where_used(material_id: Id, db: Session = Depends(get_db)):
     """Material items of it, feed items linking it, problem versions linking it (slug@version), materials whose
     latest version links it."""
     return plain(materials.where_used(db, _material(db, material_id)))
@@ -271,7 +272,7 @@ def where_used(material_id: DbId, db: Session = Depends(get_db)):
 
 # ----------------------------------------------------------------------------- attachments of a version
 @router.post("/materials/{material_id}/attachments", status_code=201, openapi_extra=UPLOAD_DOC)
-async def upload_material_file(material_id: DbId, request: Request, db: Session = Depends(get_db),
+async def upload_material_file(material_id: Id, request: Request, db: Session = Depends(get_db),
                                actor: audit.Actor = Depends(admin_actor)):
     """A new version with this file appended: the raw body (application/octet-stream), the name in ?name=. 201 with
     the version and its attachments. 415 another Content-Type; 422 invalid_request (no name, twice, broken UTF-8),
@@ -305,7 +306,7 @@ async def upload_material_file(material_id: DbId, request: Request, db: Session 
 
 
 @router.post("/materials/{material_id}/links", status_code=201)
-def add_material_link(material_id: DbId, body: LinkBody, request: Request, db: Session = Depends(get_db),
+def add_material_link(material_id: Id, body: LinkBody, request: Request, db: Session = Depends(get_db),
                       actor: audit.Actor = Depends(admin_actor)):
     """A new version with this link appended (stored after strip; the server never opens it)."""
     material = _material(db, material_id)
@@ -315,7 +316,7 @@ def add_material_link(material_id: DbId, body: LinkBody, request: Request, db: S
 
 
 @router.put("/materials/{material_id}/attachments/order")
-def reorder_material_attachments(material_id: DbId, body: OrderBody, request: Request,
+def reorder_material_attachments(material_id: Id, body: OrderBody, request: Request,
                                  db: Session = Depends(get_db), actor: audit.Actor = Depends(admin_actor)):
     """{ids}: every attachment of the latest version exactly once (attachment_order_invalid otherwise, with missing,
     extra and repeated). A new version in this order (`created`: false for the same order)."""
@@ -325,8 +326,8 @@ def reorder_material_attachments(material_id: DbId, body: OrderBody, request: Re
 
 
 @router.get("/materials/{material_id}/attachments/{attachment_id}")
-def download_material_file(material_id: DbId, attachment_id: DbId, request: Request,
-                           version: Optional[int] = Query(None, ge=1, le=2_147_483_647),
+def download_material_file(material_id: Id, attachment_id: Id, request: Request,
+                           version: Optional[VersionNo] = None,
                            db: Session = Depends(get_db), cur: Current = Depends(admin_session)):
     """The file of a file attachment of the latest version, or of ?version=N (docs/FILES.md: the type by name and
     content, ETag, 304). 404 attachment_not_found (not a file of that version: another version's, a link, no such
@@ -340,7 +341,7 @@ def download_material_file(material_id: DbId, attachment_id: DbId, request: Requ
 
 
 @router.post("/materials/{material_id}/attachments/{attachment_id}/delete")
-def delete_material_attachment(material_id: DbId, attachment_id: DbId, request: Request,
+def delete_material_attachment(material_id: Id, attachment_id: Id, request: Request,
                                db: Session = Depends(get_db), actor: audit.Actor = Depends(admin_actor)):
     """A new version without this attachment of the latest one (the blob stays with the old versions). 404
     attachment_not_found: not one of the latest version."""
@@ -380,7 +381,7 @@ def order_sections(body: SectionOrder, request: Request, db: Session = Depends(g
 
 
 @router.patch("/library/sections/{section_id}")
-def rename_section(section_id: DbId, body: SectionPatch, request: Request, db: Session = Depends(get_db),
+def rename_section(section_id: Id, body: SectionPatch, request: Request, db: Session = Depends(get_db),
                    actor: audit.Actor = Depends(admin_actor)):
     """A new title. changed false: the same one."""
     section = _section(db, section_id)
@@ -389,7 +390,7 @@ def rename_section(section_id: DbId, body: SectionPatch, request: Request, db: S
 
 
 @router.post("/library/sections/{section_id}/move")
-def move_section(section_id: DbId, body: SectionMove, request: Request, db: Session = Depends(get_db),
+def move_section(section_id: Id, body: SectionMove, request: Request, db: Session = Depends(get_db),
                  actor: audit.Actor = Depends(admin_actor)):
     """To the end of a top-level section (parent_id) or of the top level (null). 422 section_invalid (under itself);
     409 section_too_deep (under a subsection, or a section with subsections under another)."""
@@ -400,7 +401,7 @@ def move_section(section_id: DbId, body: SectionMove, request: Request, db: Sess
 
 
 @router.post("/library/sections/{section_id}/delete")
-def delete_section(section_id: DbId, body: DeleteBody, request: Request, db: Session = Depends(get_db),
+def delete_section(section_id: Id, body: DeleteBody, request: Request, db: Session = Depends(get_db),
                    actor: audit.Actor = Depends(admin_actor)):
     """Delete a section without subsections (409 section_not_empty); its materials only leave it. confirm_id: the
     id again (422 confirmation_mismatch). What was deleted, with the slugs that were in it."""
@@ -411,7 +412,7 @@ def delete_section(section_id: DbId, body: DeleteBody, request: Request, db: Ses
 
 
 @router.post("/library/sections/{section_id}/materials")
-def place_material(section_id: DbId, body: PlaceBody, request: Request, db: Session = Depends(get_db),
+def place_material(section_id: Id, body: PlaceBody, request: Request, db: Session = Depends(get_db),
                    actor: audit.Actor = Depends(admin_actor)):
     """Put a material at the end of the section (changed false: it is there). 409 material_archived."""
     section = _section(db, section_id)
@@ -421,7 +422,7 @@ def place_material(section_id: DbId, body: PlaceBody, request: Request, db: Sess
 
 
 @router.put("/library/sections/{section_id}/materials/order")
-def order_section_materials(section_id: DbId, body: OrderBody, request: Request, db: Session = Depends(get_db),
+def order_section_materials(section_id: Id, body: OrderBody, request: Request, db: Session = Depends(get_db),
                             actor: audit.Actor = Depends(admin_actor)):
     """{ids}: the material ids of the section, every one exactly once (422 order_invalid)."""
     section = _section(db, section_id)
@@ -430,7 +431,7 @@ def order_section_materials(section_id: DbId, body: OrderBody, request: Request,
 
 
 @router.post("/library/sections/{section_id}/materials/{material_id}/delete")
-def unplace_material(section_id: DbId, material_id: DbId, request: Request, db: Session = Depends(get_db),
+def unplace_material(section_id: Id, material_id: Id, request: Request, db: Session = Depends(get_db),
                      actor: audit.Actor = Depends(admin_actor)):
     """Take a material out of the section (it stays in the library). changed false: it was not there."""
     section = _section(db, section_id)

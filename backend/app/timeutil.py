@@ -41,7 +41,19 @@ def display(value: Optional[datetime], tz: tzinfo) -> str:
     return value.astimezone(tz).strftime("%Y-%m-%d %H:%M")
 
 
+YEARS = (1970, 2999)  # what a contest, a deadline or an audit filter may name
+
+
 def parse_local(text: str, tz: tzinfo) -> datetime:
-    """ISO 8601 ('2026-11-10 09:00', '2026-11-10T09:00:00+07:00', '...Z'); without an offset it is local time of tz."""
+    """ISO 8601 ('2026-11-10 09:00', '2026-11-10T09:00:00+07:00', '...Z'); without an offset it is local time of tz.
+    ValueError for anything else, including a year outside YEARS: 0001-01-01 or 9999-12-31 with an offset cannot even
+    be moved to UTC (OverflowError), and a window or a deadline near them would overflow later (D-088)."""
     value = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
-    return value.replace(tzinfo=tz) if value.tzinfo is None else value
+    value = value.replace(tzinfo=tz) if value.tzinfo is None else value
+    try:
+        year = value.astimezone(timezone.utc).year
+    except OverflowError as exc:
+        raise ValueError(f"time out of range: {text!r}") from exc
+    if not YEARS[0] <= year <= YEARS[1]:
+        raise ValueError(f"time out of range (years {YEARS[0]}..{YEARS[1]}): {text!r}")
+    return value

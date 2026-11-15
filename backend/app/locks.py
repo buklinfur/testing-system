@@ -14,7 +14,12 @@ checks that, and that no other module of the backend calls pg_advisory_* with a 
   quota (the distinct blobs of all their hand-ins) counts every earlier one (docs/CLASSROOM.md §10, 4v.3);
 * LIBRARY - one bigint key: changes of the sections of the library («Справочник») and of the materials in them one at
   a time, so positions, the two levels and an order that must list exactly the current set are decided on what the
-  other change wrote (docs/CLASSROOM.md §11, 4v.4). Changes of one material lock its row instead (FOR UPDATE).
+  other change wrote (docs/CLASSROOM.md §11, 4v.4). Changes of one material lock its row instead (FOR UPDATE);
+* SUBMIT_RATE - the pair (SUBMIT_RATE, user id): the submissions of one student one at a time, so the rate limit
+  (JUDGE_SUBMIT_RATE_PER_MIN) counts every earlier one; taken before the participation row (FOR UPDATE), always in
+  this order (docs/STUDENT_API.md, 4b.1);
+* ENTER_RATE - the pair (ENTER_RATE, user id): the attempts of one student to enter a contest one at a time, so
+  JUDGE_ENTER_RATE counts every earlier attempt (contest_entry_attempts, D-093); taken before the participation row.
 """
 from __future__ import annotations
 
@@ -26,9 +31,11 @@ COMMENT_RATE = 7_340_002
 PROBLEM_IMPORT = 7_340_003
 STUDENT_FILES = 7_340_004
 LIBRARY = 7_340_005
+SUBMIT_RATE = 7_340_006
+ENTER_RATE = 7_340_007
 
 ALL = {"CLAIM": CLAIM, "COMMENT_RATE": COMMENT_RATE, "PROBLEM_IMPORT": PROBLEM_IMPORT,
-       "STUDENT_FILES": STUDENT_FILES, "LIBRARY": LIBRARY}
+       "STUDENT_FILES": STUDENT_FILES, "LIBRARY": LIBRARY, "SUBMIT_RATE": SUBMIT_RATE, "ENTER_RATE": ENTER_RATE}
 
 
 def take(db: Session, key: int) -> None:

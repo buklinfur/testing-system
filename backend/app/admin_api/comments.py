@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import Field
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from ..auth import audit
 from ..auth_api import Current, get_db, now
 from ..classroom import comments
 from ..classroom.items import FeedError
+from ..ids import After, Id, Limit
 from ..jsonable import plain
 from .deps import DEFAULT_LIMIT, MAX_LIMIT, Page, admin_actor, admin_session, page
 from .feed import Body, get_group, get_item, get_user, refused
@@ -34,14 +35,14 @@ class CommentBody(Body):
 
 
 class CommentReadBody(Body):
-    up_to: Optional[int] = Field(None, ge=1, description="a comment of this thread; by default the last one")
+    up_to: Optional[Id] = Field(None, description="a comment of this thread; by default the last one")
 
 
 class CommentDeleteBody(Body):
     reason: Optional[str] = Field(None, max_length=10_000, description="at most 200 characters (reason_too_long)")
 
 
-def _limit(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> int:
+def _limit(limit: Limit = DEFAULT_LIMIT) -> int:
     return min(limit, MAX_LIMIT)
 
 
@@ -88,7 +89,7 @@ def _read(db: Session, request: Request, cur: Current, item_id: int, user_id: Op
 
 # ----------------------------------------------------------------------------- the shared thread
 @router.get("/items/{item_id}/comments")
-def shared_thread(item_id: int, request: Request, after: Optional[int] = Query(None, ge=0),
+def shared_thread(item_id: Id, request: Request, after: Optional[After] = None,
                   limit: int = Depends(_limit), db: Session = Depends(get_db),
                   cur: Current = Depends(admin_session)):
     """Oldest first, deleted comments with their text and reason; `unread` is this admin's. Reading sets no mark
@@ -97,14 +98,14 @@ def shared_thread(item_id: int, request: Request, after: Optional[int] = Query(N
 
 
 @router.post("/items/{item_id}/comments", status_code=201)
-def post_shared(item_id: int, body: CommentBody, request: Request, db: Session = Depends(get_db),
+def post_shared(item_id: Id, body: CommentBody, request: Request, db: Session = Depends(get_db),
                 cur: Current = Depends(admin_session), actor: audit.Actor = Depends(admin_actor)):
     """A teacher writes even with comments off and in a contest item; not in a draft (not_published)."""
     return _post(db, request, actor, cur, item_id, None, body)
 
 
 @router.post("/items/{item_id}/comments/read")
-def read_shared(item_id: int, request: Request, body: Optional[CommentReadBody] = None, db: Session = Depends(get_db),
+def read_shared(item_id: Id, request: Request, body: Optional[CommentReadBody] = None, db: Session = Depends(get_db),
                 cur: Current = Depends(admin_session)):
     """This admin's mark: up to `up_to` or the last comment; it only grows. {unread}: what is left."""
     return _read(db, request, cur, item_id, None, body)
@@ -112,7 +113,7 @@ def read_shared(item_id: int, request: Request, body: Optional[CommentReadBody] 
 
 # ----------------------------------------------------------------------------- the private thread of a student
 @router.get("/items/{item_id}/students/{user_id}/comments")
-def private_thread(item_id: int, user_id: int, request: Request, after: Optional[int] = Query(None, ge=0),
+def private_thread(item_id: Id, user_id: Id, request: Request, after: Optional[After] = None,
                    limit: int = Depends(_limit), db: Session = Depends(get_db),
                    cur: Current = Depends(admin_session)):
     """The thread of the pair (item, student) of the path: an assignment and a student addressed now or with work
@@ -121,21 +122,21 @@ def private_thread(item_id: int, user_id: int, request: Request, after: Optional
 
 
 @router.post("/items/{item_id}/students/{user_id}/comments", status_code=201)
-def post_private(item_id: int, user_id: int, body: CommentBody, request: Request, db: Session = Depends(get_db),
+def post_private(item_id: Id, user_id: Id, body: CommentBody, request: Request, db: Session = Depends(get_db),
                  cur: Current = Depends(admin_session), actor: audit.Actor = Depends(admin_actor)):
     """A reply or the first message to the student (the thread is made by it); archived items too."""
     return _post(db, request, actor, cur, item_id, user_id, body)
 
 
 @router.post("/items/{item_id}/students/{user_id}/comments/read")
-def read_private(item_id: int, user_id: int, request: Request, body: Optional[CommentReadBody] = None,
+def read_private(item_id: Id, user_id: Id, request: Request, body: Optional[CommentReadBody] = None,
                  db: Session = Depends(get_db), cur: Current = Depends(admin_session)):
     return _read(db, request, cur, item_id, user_id, body)
 
 
 # ----------------------------------------------------------------------------- moderation and the inbox
 @router.post("/comments/{comment_id}/delete")
-def delete_comment(comment_id: int, request: Request, body: Optional[CommentDeleteBody] = None,
+def delete_comment(comment_id: Id, request: Request, body: Optional[CommentDeleteBody] = None,
                    db: Session = Depends(get_db), cur: Current = Depends(admin_session),
                    actor: audit.Actor = Depends(admin_actor)):
     """Soft: students no longer see it, teachers see the text, who deleted it and the reason. The answer is the
@@ -151,7 +152,7 @@ def delete_comment(comment_id: int, request: Request, body: Optional[CommentDele
 
 
 @router.get("/comments/threads")
-def threads(request: Request, item_id: Optional[int] = None, group_id: Optional[int] = None,
+def threads(request: Request, item_id: Optional[Id] = None, group_id: Optional[Id] = None,
             awaiting: Optional[bool] = None, unread: Optional[bool] = None, pg: Page = Depends(page),
             db: Session = Depends(get_db), cur: Current = Depends(admin_session)):
     """The inbox: every thread with comments, the one with the newest comment first (the cursor is that comment's

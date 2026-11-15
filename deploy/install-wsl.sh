@@ -8,12 +8,15 @@
 #   * the venv with the pinned requirements, bytecode compiled in advance (judge cannot write it);
 #   * systemd units (not enabled or started);
 #   * if /etc/judge/backend.env has a real DATABASE_URL: alembic upgrade head as `judge`, and a worker token
-#     written into /etc/judge/worker.env if it still says CHANGE_ME (the token is never printed).
+#     written into /etc/judge/worker.env if it still says CHANGE_ME (deploy/lib/worker-token.sh: through a private
+#     file, never printed, never on a command line).
 # It does not touch /etc/wsl.conf, /mnt/c, the proxy settings, PostgreSQL itself or isolate.
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 [ -d runner ] && [ -d worker ] && [ -d backend ] && [ -f alembic.ini ] || { echo "run from the repository root"; exit 1; }
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+. "$(dirname "$0")/lib/worker-token.sh"
+trap judge_token_cleanup EXIT
 
 # 0. checks that save a half-done installation
 command -v rsync >/dev/null || { echo "rsync is missing: apt install rsync"; exit 1; }
@@ -84,13 +87,8 @@ else
   as_judge /opt/judge/.venv/bin/alembic -c /opt/judge/alembic.ini upgrade head
   if grep -q '^JUDGE_WORKER_TOKEN=CHANGE_ME' /etc/judge/worker.env; then
     name="$(hostname -s)-$(date +%Y%m%d%H%M%S)"
-    token=$(as_judge /opt/judge/.venv/bin/python -m app.judgectl worker token create "$name" | tail -1)
-    [[ $token =~ ^jw_[A-Za-z0-9_-]{20,}$ ]] || { echo "unexpected token output"; exit 1; }
-    TOKEN="$token" awk '/^JUDGE_WORKER_TOKEN=/{print "JUDGE_WORKER_TOKEN=" ENVIRON["TOKEN"]; next} {print}' \
-      /etc/judge/worker.env > /etc/judge/worker.env.new
-    chown root:judge /etc/judge/worker.env.new; chmod 640 /etc/judge/worker.env.new
-    mv /etc/judge/worker.env.new /etc/judge/worker.env
-    echo "worker token '$name' created and written to /etc/judge/worker.env (not shown)"
+    judge_worker_token_new "$name" /etc/judge/worker.env as_judge
+    echo "worker token '$name' written to /etc/judge/worker.env (not shown)"
   fi
 fi
 # variables set in the templates but missing in existing env files (templates are copied only once); names only

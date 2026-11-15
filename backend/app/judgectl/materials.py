@@ -15,11 +15,13 @@ from sqlalchemy import func, select
 from .. import groups as g
 from ..classroom import attachments as att
 from ..classroom.comments import CONSOLE
+from ..classroom.items import FeedError
+from ..ids import parse_id
 from ..materials import library, refs
 from ..materials import service as materials
 from ..models import Material
 from . import attachments as attachment_cmds
-from .core import CliError, Context, confirm, emit_json, read_input, show, terminal_text
+from .core import CliError, Context, confirm, emit_json, int4, read_input, show, terminal_text
 
 BODY_LIMIT = 1024 * 1024  # like the JSON body of the admin API (the service stops a text at 100 000 characters)
 LIBRARY_MODES = ("none", "all_students", "groups")
@@ -29,7 +31,10 @@ def get_material(db, ref: str) -> Material:
     """A material by slug, or by #id."""
     ref = (ref or "").strip()
     if ref.startswith("#") and ref[1:].isdigit():
-        return materials.get_material(db, int(ref[1:]))
+        number = parse_id(ref[1:])
+        if number is None:  # beyond int4: nothing has it
+            raise FeedError(f"no material {ref}", "material_not_found")
+        return materials.get_material(db, number)
     return materials.by_slug(db, ref)
 
 
@@ -462,7 +467,7 @@ def add_parsers(groups, command) -> None:
     p = command(m, "show", material_show, "the latest version (or --version N): text, attachments, links",
                 json=True)
     p.add_argument("material", help="slug or #id")
-    p.add_argument("--version", type=int, help="an older version")
+    p.add_argument("--version", type=int4, help="an older version")
     p = command(m, "edit", material_edit, "a new text: a new version (the same text: none)", json=True)
     p.add_argument("material", help="slug or #id")
     p.add_argument("--body-file", required=True, help="the text in Markdown (a file, or - for stdin)")
@@ -496,15 +501,15 @@ def add_parsers(groups, command) -> None:
     p.add_argument("--title", help="what students see instead of the address (at most 200 characters)")
     p = command(m, "detach", material_detach, "a new version without this attachment", json=True)
     p.add_argument("material", help="slug or #id")
-    p.add_argument("att", type=int, help="id of an attachment of the latest version (material show)")
+    p.add_argument("att", type=int4, help="id of an attachment of the latest version (material show)")
     p = command(m, "attachment-order", material_attachment_order,
                 "a new version with this order: every attachment id of the latest version once", json=True)
     p.add_argument("material", help="slug or #id")
-    p.add_argument("ids", type=int, nargs="+", metavar="att")
+    p.add_argument("ids", type=int4, nargs="+", metavar="att")
     p = command(m, "file", material_file, "save a file of the material to a new file", json=True)
     p.add_argument("material", help="slug or #id")
-    p.add_argument("att", type=int, help="id of the file (material show [--version N])")
-    p.add_argument("--version", type=int, help="a file of an older version")
+    p.add_argument("att", type=int4, help="id of the file (material show [--version N])")
+    p.add_argument("--version", type=int4, help="a file of an older version")
     p.add_argument("-o", "--out", required=True, help="a new file, or - for stdout when it is not a terminal")
     p.add_argument("--force", action="store_true", help="replace an existing file")
     command(m, "where", material_where, "feed items, problem versions and materials that give or link it",
@@ -516,27 +521,27 @@ def add_parsers(groups, command) -> None:
         dest="cmd", required=True, metavar="COMMAND")
     p = command(s, "create", section_create, "a section at the end (with --parent: a subsection)", json=True)
     p.add_argument("title")
-    p.add_argument("--parent", type=int, help="id of a top-level section")
+    p.add_argument("--parent", type=int4, help="id of a top-level section")
     command(s, "list", section_list, "the library as a tree: sections, their materials, the rest", json=True)
     p = command(s, "rename", section_rename, "a new title")
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("title")
     p = command(s, "move", section_move, "to the end of another section or of the top level")
-    p.add_argument("id", type=int)
-    p.add_argument("--parent", type=int, help="id of a top-level section")
+    p.add_argument("id", type=int4)
+    p.add_argument("--parent", type=int4, help="id of a top-level section")
     p.add_argument("--top", action="store_true", help="to the top level")
     p = command(s, "delete", section_delete, "delete a section without subsections (its materials stay)", json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("--yes", action="store_true", help="no confirmation (scripts)")
     for name, func, text in (("place", section_place, "put a material at the end of a section"),
                              ("unplace", section_unplace, "take a material out of a section")):
         p = command(s, name, func, text)
-        p.add_argument("id", type=int)
+        p.add_argument("id", type=int4)
         p.add_argument("material", help="slug or #id")
     p = command(s, "order", section_order, "the order of the top level (or of --parent): every section id once")
-    p.add_argument("ids", type=int, nargs="+", metavar="id")
-    p.add_argument("--parent", type=int, help="the subsections of this section")
+    p.add_argument("ids", type=int4, nargs="+", metavar="id")
+    p.add_argument("--parent", type=int4, help="the subsections of this section")
     p = command(s, "material-order", section_material_order,
                 "the order of the materials of a section: every one once")
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("materials", nargs="+", metavar="material", help="slug or #id")

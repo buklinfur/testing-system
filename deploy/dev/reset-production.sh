@@ -19,6 +19,7 @@ set -euo pipefail
 [ "${1:-}" = --yes-wipe-production ] || { echo "usage: $0 --yes-wipe-production"; exit 2; }
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 . "$(dirname "$0")/../lib/pg-database.sh"
+. "$(dirname "$0")/../lib/worker-token.sh"
 
 DB=judge
 BLOBS=/var/lib/judge/blobs
@@ -33,6 +34,7 @@ j() {  # as judge with the backend environment
 PHASE=checks
 on_exit() {
   local code=$?
+  judge_token_cleanup  # the private directory of a new token, if any (a failure included)
   [ "$code" = 0 ] && return
   echo >&2
   echo "reset-production: FAILED during: $PHASE (exit $code)" >&2
@@ -86,12 +88,8 @@ left=$(find "$BLOBS" "$CACHE" -mindepth 1 | wc -l)
 
 # 5. a new worker token (the old one lived in the dropped database)
 PHASE=token
-token=$(j /opt/judge/.venv/bin/python -m app.judgectl worker token create main | tail -1)
-[[ $token =~ ^jw_[A-Za-z0-9_-]{20,}$ ]] || fail "unexpected token output"
 f=/etc/judge/worker.env
-TOKEN="$token" awk 'BEGIN{d=0} /^JUDGE_WORKER_TOKEN=/{print "JUDGE_WORKER_TOKEN=" ENVIRON["TOKEN"]; d=1; next} {print}
-                    END{if(!d) print "JUDGE_WORKER_TOKEN=" ENVIRON["TOKEN"]}' "$f" > "$f.new"
-chown root:judge "$f.new"; chmod 640 "$f.new"; mv "$f.new" "$f"
+judge_worker_token_new main "$f" j
 PHASE=done
 
 echo "done: database $DB recreated (owner and privileges as on a fresh installation) and migrated, $BLOBS and"

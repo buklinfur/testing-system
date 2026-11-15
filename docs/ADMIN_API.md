@@ -4,7 +4,7 @@ API для админского веб-интерфейса (модуль 5). Р
 профиль — [`AUTH.md`](AUTH.md). Тот же процесс, что `/api/auth` (публичное приложение, `python -m app.public_main`), за
 тем же Caddy. Код: [`backend/app/admin_api/`](../backend/app/admin_api); сервисы — общие с `judgectl`.
 
-**Машиночитаемое описание** — [`openapi-admin.json`](openapi-admin.json) (`/api/admin` и `/api/auth`). По сети приложение
+**Машиночитаемое описание** — [`openapi-admin.json`](openapi-admin.json) (`/api/admin` и `/api/auth`; API ученика — [`openapi-student.json`](openapi-student.json), `STUDENT_API.md` §6). По сети приложение
 OpenAPI не отдаёт (`openapi_url=None`); файл пишет `python tools/gen-openapi.py`, а `tests/test_openapi_units.py`
 падает, если файл разошёлся с приложением. Этот документ — описание для людей: смысл, правила и коды ошибок.
 
@@ -41,6 +41,16 @@ OpenAPI не отдаёт (`openapi_url=None`); файл пишет `python tool
   `detail` — постоянный код для программ (`snake_case`); `message` и `problems` — необязательны. Ошибки разбора тела
   — 422 `invalid_request`, по строке на поле в `problems` (`"password: Field required"`); неизвестный путь — 404
   `not_found`; не тот метод — 405 `method_not_allowed`.
+* **Числа на входе ограничены** (D-088): id в пути, в query и в теле — от 1 до 2147483647 (столбцы `int4`; типы
+  `app/ids.py`), `cursor`, `limit`, номера версий и счётчики — тоже; баллы — по правилам D-061 (до `999999.99`, иначе
+  `score_invalid` / `max_points_invalid`). Число
+  вне границ — 422 `invalid_request` с полем в `problems`, до обработчика; число внутри текста (`sum@99999999999` в
+  перепроверке) — «не найдено», как любой несуществующий номер. Значение, которое всё же отвергла база
+  (`DataError`: переполнение, слишком длинная строка), — тоже 422 `invalid_request` (`"value out of range or too
+  long"`), никогда не 500; в журнал оно пишется ошибкой уровня `ERROR` (метод и шаблон пути, без значений): это
+  забытая граница в нашем коде. Проверяют `tests/test_int_bounds_units.py` (каждое число каждого маршрута в OpenAPI
+  приложения имеет границы) и `tests/pg/test_int_bounds_pg.py` (2^31, 2^63 и −1 в каждый маршрут) — новые маршруты,
+  в том числе ученика 4б, попадают в проверку сами.
 * **Время** — всегда UTC, ISO 8601 с `Z`.
 * **Списки** — курсор по `id`, новые первыми: `?cursor=<id>&limit=<n>` (по умолчанию 50, больше 200 урезается до 200).
   Ответ `{"items": [...], "next_cursor": <id или null>}`; следующая страница — тот же запрос с `cursor=next_cursor`.
@@ -216,8 +226,8 @@ two_factor (только у админов)}`; хешей и секретов н
 
 | Метод и путь | Тело / параметры | Ответ | Ошибки |
 |---|---|---|---|
-| `GET /submissions` | `contest`, `label` (только с `contest`), `problem` (slug), `user_id`, `group_id` (**текущие** члены группы), `verdict`, `status` (вердикт и статус **текущей** проверки), `late`, курсор | `{items: [{id, user: {id, login, display_name}, contest, label, problem, version, language, archive, created_at, late, judgement: {id, status, verdict, score} \| null}]}` | 404 `contest_not_found` / `contest_problem_not_found` / `problem_not_found` / `group_not_found`, 422 `label_needs_contest`, 422 `invalid_request` (неизвестный вердикт или статус) |
-| `GET /submissions/{id}` | `?judgement_id=` (тесты другой проверки этой посылки) | то же + `entry_file`, `ip`, `answers`, `source: {name, size, missing, text, truncated}` (текст — до 256 КБ, байты не UTF-8 заменены) или `{name, size, files: [{name, size}], entry_file}` для архива; `judgements` — **вся история** (`reason`, `status`, `verdict`, `score`, `version`, `current`, `attempt`, `failures`, `priority`, `worker`, `requested_by`, времена, `tests_done/total`, `compile_log`, `error`, `summary`); `tests_of` и `tests` — **все** тесты (`test`, `group`, `verdict`, `time_ms`, `memory_kb`, `exit_code`, `signal`, `tl_kind`, `visible_to_student`, `checker_message`, `stderr_excerpt`, `output_excerpt`) | 404 `submission_not_found` / `judgement_not_found` |
+| `GET /submissions` | `contest`, `label` (только с `contest`), `problem` (slug), `user_id`, `group_id` (**текущие** члены группы), `verdict`, `status` (вердикт и статус **текущей** проверки), `late`, курсор | `{items: [{id, user: {id, login, display_name}, contest, label, problem, version, language, archive, created_at, late, judgement: {id, status, verdict, score, max_score, contest_score, contest_max} \| null}]}`. `score` / `max_score` — в баллах версии задачи (`max_score` пуст у незавершённой проверки), `contest_score` / `contest_max` — в баллах контеста (`points` задачи контеста, иначе как есть; `scores.contest_score`, D-090) | 404 `contest_not_found` / `contest_problem_not_found` / `problem_not_found` / `group_not_found`, 422 `label_needs_contest`, 422 `invalid_request` (неизвестный вердикт или статус) |
+| `GET /submissions/{id}` | `?judgement_id=` (тесты другой проверки этой посылки) | то же + `entry_file`, `ip`, `answers`, `source: {name, size, missing, text, truncated}` (текст — до 256 КБ, байты не UTF-8 заменены) или `{name, size, files: [{name, size}], entry_file}` для архива; `judgements` — **вся история** (`reason`, `status`, `verdict`, `score`, `max_score`, `contest_score`, `contest_max`, `version`, `current`, `attempt`, `failures`, `priority`, `worker`, `requested_by`, времена, `tests_done/total`, `compile_log`, `error`, `server_gave_up_at` (проверку завершил сервер, D-090), `summary`); `tests_of` и `tests` — **все** тесты (`test`, `group`, `verdict`, `time_ms`, `memory_kb`, `exit_code`, `signal`, `tl_kind`, `visible_to_student`, `checker_message`, `stderr_excerpt`, `output_excerpt`) | 404 `submission_not_found` / `judgement_not_found` |
 | `GET /submissions/{id}/source` | — | файл: один исходник — `text/plain; charset=utf-8`, архив — `application/zip`; всегда `attachment` (`submission-<id>.py` / `.zip`), `nosniff`, `sandbox`-CSP (§4) | 404 `submission_not_found` / `no_source` (посылка с ответами) / `file_missing` |
 | `POST /submissions/{id}/rejudge` | — | `{submission, kind: created \| retargeted \| already_running, judgement}` | 404 |
 | `POST /submissions/rejudge` | `{contest+label \| contest_problem_id \| problem_version: "<slug>@<n>" \| submission_ids, verdicts?, user_id?, group_id?}` + **`dry_run: true` или `expect: N`** | `dry_run` → `{affected, dry_run: true}`, ничего не меняется; `expect` → `{affected, contest_problems, created, retargeted, already_running, dry_run: false}` | 422 `rejudge_needs_filter` (нет ни задачи, ни версии, ни id посылок: «перепроверить всё» нельзя), 422 `dry_run_or_expect` (нужно ровно одно), 409 `count_changed` + `affected` (фильтр выбирает уже другое число: ничего не сделано), 404 как у списка, `version_not_found` |

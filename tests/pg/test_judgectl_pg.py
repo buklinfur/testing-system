@@ -5,6 +5,7 @@ import os
 import re
 import stat
 import tempfile
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,8 +14,10 @@ from tests.pg.pgbase import HAVE_SA, URL, PgCase, requires_pg
 if URL and HAVE_SA:
     from cryptography.fernet import Fernet
     from sqlalchemy import select
+    from sqlalchemy.orm import Session
 
     from app import admin_cli
+    from app import queue as q
     from app.auth import audit, ratelimit, totp
     from app.auth.passwords import verify_password
     from app.judgectl.cli import main
@@ -263,11 +266,16 @@ class JudgectlTests(PgCase):
 
     # ---------------------------------------------------------------- queue, worker, alias
     def test_worker_tokens_and_queue(self):
-        code, out, _ = self.run_cli("worker", "token", "create", "main", "--caps", "cpu,gpu")
-        self.assertEqual(code, 0)
-        token = out.strip().splitlines()[-1]  # deploy scripts rely on `| tail -1`
-        self.assertTrue(token.startswith("jw_"))
+        path = os.path.join(self.tmp.name, "token")
+        code, out, err = self.run_cli("worker", "token", "create", "main", "--caps", "cpu,gpu", "--out", path)
+        self.assertEqual(code, 0, err)
+        token = Path(path).read_text()
+        self.assertRegex(token, r"^jw_[A-Za-z0-9_-]{20,}\n$")
+        self.assertNotIn("jw_", out + err)  # D-089: only the file has it
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
         self.assertEqual(self.s.execute(select(WorkerToken.capabilities)).scalar_one(), ["cpu", "gpu"])
+        self.assertIsNotNone(q.authenticate(self.s, token.strip()))  # the token of the file is the one that works
+        self.s.commit()  # authenticate marks last_used_at: end that transaction before judgectl revokes the token
         self.assertEqual(self.run_cli("worker", "token", "revoke", "main")[0], 0)
         self.assertEqual(self.run_cli("worker", "token", "revoke", "main")[0], 1)  # nothing live left
         self.assertEqual(self.run_cli("worker", "list")[1].strip(), "(none)")
@@ -279,12 +287,92 @@ class JudgectlTests(PgCase):
         actions = [a.action for a in self.actions()]
         self.assertEqual(actions, ["worker.token_create", "worker.token_revoke"])
 
+    def test_worker_token_only_into_a_new_file(self):
+        """D-089: no --out, --out -, an existing file, a symlink - refused before a token exists; a failure after the
+        file is made (the database, the commit) removes it."""
+        def tokens():
+            self.s.expire_all()
+            return self.s.execute(select(WorkerToken.name)).scalars().all()
+
+        for argv in ((), ("--out", "-")):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli("worker", "token", "create", "w", *argv)
+                self.assertEqual(code, 2)
+                self.assertIn("--out", err)
+                self.assertNotIn("jw_", out + err)
+        code, out, err = self.run_cli("worker", "token", "create", "w", "--out", "-", "--json")
+        self.assertEqual(code, 2)
+        self.assertEqual(tokens(), [])
+        path = os.path.join(self.tmp.name, "token")
+        self.assertEqual(self.run_cli("worker", "token", "create", "w", "--out", path)[0], 0)
+        first = Path(path).read_bytes()
+        for name in ("w2", "w"):  # another token into the same file; the same name too
+            with self.subTest(again=name):
+                code, out, err = self.run_cli("worker", "token", "create", name, "--out", path)
+                self.assertEqual(code, 1)
+                self.assertIn("already exists", err)
+                self.assertEqual(Path(path).read_bytes(), first)  # byte for byte
+        self.assertEqual(tokens(), ["w"])
+        link = os.path.join(self.tmp.name, "link")
+        os.symlink(os.path.join(self.tmp.name, "elsewhere"), link)
+        self.assertEqual(self.run_cli("worker", "token", "create", "w3", "--out", link)[0], 1)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "elsewhere")))
+        code, out, err = self.run_cli("worker", "token", "create", "w4", "--out", os.path.join(self.tmp.name, "x"),
+                                      "--json")
+        self.assertEqual(json.loads(out), {"name": "w4", "capabilities": ["cpu", "problem_check"],
+                                           "out": os.path.join(self.tmp.name, "x")})
+        # the name is taken: the database refuses after the file was made - the file goes too
+        taken = os.path.join(self.tmp.name, "taken")
+        code, out, err = self.run_cli("worker", "token", "create", "w", "--out", taken)
+        self.assertEqual(code, 1)
+        self.assertIn("already exists (revoked ones keep their name)", err)
+        self.assertFalse(os.path.exists(taken))
+        # the commit itself fails: the file goes, no token stays
+        failing = os.path.join(self.tmp.name, "failing")
+        with mock.patch.object(Session, "commit", side_effect=RuntimeError("commit failed")):
+            with self.assertRaises(RuntimeError):
+                self.run_cli("worker", "token", "create", "w5", "--out", failing)
+        self.assertFalse(os.path.exists(failing))
+        self.assertNotIn("w5", tokens())
+        self.assertEqual([a.action for a in self.actions()], ["worker.token_create", "worker.token_create"])
+
+    def test_worker_token_list_shows_neither_token_nor_hash(self):
+        """D-096: what a rotation needs (names, which token has workers online) and nothing that authenticates."""
+        paths = [os.path.join(self.tmp.name, n) for n in ("old", "new")]
+        for name, path in zip(("host-20261101120000", "host-20261115090000"), paths):
+            self.assertEqual(self.run_cli("worker", "token", "create", name, "--out", path, "--caps", "cpu")[0], 0)
+        secrets = [Path(p).read_text().strip() for p in paths]
+        new = q.authenticate(self.s, secrets[1])
+        q.register_worker(self.s, new, "host-w0", ["cpu"], {}, self.settings)
+        self.s.commit()
+        self.assertEqual(self.run_cli("worker", "token", "revoke", "host-20261101120000")[0], 0)
+        hashes = self.s.execute(select(WorkerToken.token_hash)).scalars().all()
+        code, out, err = self.run_cli("worker", "token", "list")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertEqual(lines[0].split(), ["NAME", "CAPS", "CREATED", "REVOKED", "LAST", "USED", "ONLINE"])
+        old, cur = lines[1].split(), lines[2].split()
+        self.assertEqual((old[0], old[1], old[-1]), ("host-20261101120000", "cpu", "0"))
+        self.assertEqual((cur[0], cur[-1]), ("host-20261115090000", "1"))
+        code, jout, err = self.run_cli("worker", "token", "list", "--json")
+        rows = json.loads(jout)
+        self.assertEqual([(r["name"], r["capabilities"], r["revoked"] is None, r["workers_online"]) for r in rows],
+                         [("host-20261101120000", ["cpu"], False, 0), ("host-20261115090000", ["cpu"], True, 1)])
+        self.assertEqual(set(rows[0]), {"name", "capabilities", "created", "revoked", "last_used", "workers_online"})
+        self.assertIsNotNone(rows[1]["last_used"])  # authenticate marked it
+        for text_ in (out + err, jout):
+            self.assertNotIn("jw_", text_)
+            for secret in secrets + hashes:
+                self.assertNotIn(secret, text_)
+
     def test_admin_cli_alias(self):
-        code, out, err = self.run_cli("create-worker-token", "w1", alias=True)
-        self.assertEqual(code, 0)
-        self.assertTrue(out.strip().splitlines()[-1].startswith("jw_"))
+        path = os.path.join(self.tmp.name, "w1")
+        code, out, err = self.run_cli("create-worker-token", "w1", "--out", path, alias=True)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(Path(path).read_text().startswith("jw_"))
+        self.assertNotIn("jw_", out + err)
         self.assertIn("deprecated", err)
-        self.assertIn("judgectl worker token create w1", err)
+        self.assertIn(f"judgectl worker token create w1 --out {path}", err)
         code, out, err = self.run_cli("status", alias=True)
         self.assertEqual(code, 0)
         self.assertIn("queue_length", out)

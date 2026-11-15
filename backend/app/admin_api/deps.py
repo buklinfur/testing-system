@@ -9,13 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from fastapi import Depends, Query, Request, Response
+from fastapi import Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..api_errors import ApiError
 from ..auth import audit
 from ..auth_api import Current, _session, client_ip, get_db
+from ..ids import Id, Limit
 from ..jsonable import plain
 from ..models import Role, User
 
@@ -40,7 +41,7 @@ class Page:
     limit: int
 
 
-def page(cursor: Optional[int] = Query(None, ge=1), limit: int = Query(DEFAULT_LIMIT, ge=1)) -> Page:
+def page(cursor: Optional[Id] = None, limit: Limit = DEFAULT_LIMIT) -> Page:
     return Page(cursor, min(limit, MAX_LIMIT))
 
 

@@ -19,6 +19,7 @@ from .. import groups as g
 from ..contests import deadlines, service
 from ..contests.service import ContestError
 from ..contests.spec import ContestSpecError, from_data
+from ..ids import Id, VersionNo
 from ..jsonable import plain
 from ..models import Contest, ContestState, DeadlineExtension, Group, Participation, User
 from ..timeutil import TimezoneError, parse_local, zone
@@ -32,14 +33,14 @@ STATUS = {"contest_not_found": 404, "contest_problem_not_found": 404, "version_n
 class PinBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str = Field(max_length=8)
-    version: int = Field(ge=1)
+    version: VersionNo
     rejudge: bool  # required: rejudging every submission of the problem is a decision, not a default
 
 
 class ExtensionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    user_id: Optional[int] = None  # exactly one of user_id / group_id
-    group_id: Optional[int] = None
+    user_id: Optional[Id] = None  # exactly one of user_id / group_id
+    group_id: Optional[Id] = None
     due_at: str = Field(max_length=40, description="like contest.yaml: without an offset in JUDGE_TIMEZONE")
     reason: Optional[str] = Field(None, max_length=200)
 
@@ -202,7 +203,7 @@ def add_extension(slug: str, label: str, body: ExtensionBody, request: Request, 
 
 
 @router.post("/contests/{slug}/problems/{label}/extensions/{extension_id}/delete", status_code=204)
-def delete_extension(slug: str, label: str, extension_id: int, request: Request, db: Session = Depends(get_db),
+def delete_extension(slug: str, label: str, extension_id: Id, request: Request, db: Session = Depends(get_db),
                      actor: audit.Actor = Depends(admin_actor)):
     """Only an extension of this very problem of this contest: an id of another one is 404, like a missing one."""
     row = _row(db, _contest(db, slug), label)

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from .. import system
 from ..api_errors import ApiError
 from ..auth_api import get_db
+from ..ids import Id
 from ..jsonable import plain
 from ..models import AuditLog, Language
 from ..timeutil import parse_local, zone
@@ -43,7 +44,7 @@ def _moment(request: Request, value: Optional[str], name: str) -> Optional[datet
 def get_audit(request: Request, action: Optional[str] = Query(None, max_length=64,
                                                                description="exact, or a prefix ending with '.'"),
               object_type: Optional[str] = Query(None, max_length=32), object_id: Optional[str] = Query(None, max_length=64),
-              actor_user_id: Optional[int] = None, console: Optional[bool] = None,
+              actor_user_id: Optional[Id] = None, console: Optional[bool] = None,
               since: Optional[str] = Query(None, max_length=40), until: Optional[str] = Query(None, max_length=40),
               pg: Page = Depends(page), db: Session = Depends(get_db)):
     """Newest first. action=contest. is every contest.* action; console=true: only what the console did,

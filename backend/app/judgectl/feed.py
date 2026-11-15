@@ -15,7 +15,7 @@ from ..models import DeadlineExtension
 from ..timeutil import parse_local
 from . import attachments as attachment_cmds
 from . import materials as material_cmds
-from .core import CliError, Context, UsageError, confirm, emit_json, read_input, show, terminal_text
+from .core import CliError, Context, UsageError, confirm, emit_json, int4, read_input, show, terminal_text
 
 BODY_LIMIT = 1024 * 1024  # like the JSON body of the admin API
 
@@ -419,15 +419,15 @@ def add_parsers(groups, command) -> None:
     p.add_argument("--student", action="append", help="addressed student (login); repeat for more")
     fields(p)
     p = command(item, "edit", item_edit, "change the fields given; the others stay", json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     fields(p, editing=True)
     command(item, "publish", item_publish, "publish (with a later --available-from: shown from then)") \
-        .add_argument("id", type=int)
+        .add_argument("id", type=int4)
     command(item, "archive", item_archive, "gone from the feed; students keep their work and grades") \
-        .add_argument("id", type=int)
-    command(item, "unarchive", item_unarchive, "back to the feed").add_argument("id", type=int)
+        .add_argument("id", type=int4)
+    command(item, "unarchive", item_unarchive, "back to the feed").add_argument("id", type=int4)
     p = command(item, "delete", item_delete, "delete a draft without work and extensions")
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("--yes", action="store_true", help="no confirmation (scripts)")
     p = command(item, "list", item_list, "items, newest first (drafts and published unless --all / --state)",
                 json=True)
@@ -435,14 +435,14 @@ def add_parsers(groups, command) -> None:
     p.add_argument("--kind", choices=["assignment", "contest", "material"])
     p.add_argument("--state", choices=["draft", "published", "archived"])
     p.add_argument("--all", action="store_true", help="archived ones too")
-    command(item, "show", item_show, "settings, audience, text, works", json=True).add_argument("id", type=int)
+    command(item, "show", item_show, "settings, audience, text, works", json=True).add_argument("id", type=int4)
 
     audience = item.add_parser("audience", help="who an item is addressed to").add_subparsers(
         dest="aud_cmd", required=True, metavar="COMMAND")
     for name, text in (("add", "address groups or students"), ("remove", "stop addressing them")):
         p = command(audience, name, item_audience, text, json=True)
         p.set_defaults(action=name)
-        p.add_argument("id", type=int)
+        p.add_argument("id", type=int4)
         p.add_argument("--group", action="append", help="name or #id; repeat for more")
         p.add_argument("--student", action="append", help="login; repeat for more")
 
@@ -450,33 +450,33 @@ def add_parsers(groups, command) -> None:
         dest="ext_cmd", required=True, metavar="COMMAND")
     p = command(extension, "add", item_extension_add,
                 "a later due moment for one student or group (again for the same one: replaces it)", json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     who = p.add_mutually_exclusive_group(required=True)
     who.add_argument("--user", help="login of the student")
     who.add_argument("--group", help="the group (name or #id)")
     p.add_argument("--due", required=True, help="e.g. '2026-11-17 23:59:59' (JUDGE_TIMEZONE) or with Z / +07:00")
     p.add_argument("--reason", help="a short note (at most 200 characters)")
-    command(extension, "list", item_extension_list, "extensions of an item", json=True).add_argument("id", type=int)
-    command(extension, "remove", item_extension_remove, "remove an extension by id").add_argument("eid", type=int)
+    command(extension, "list", item_extension_list, "extensions of an item", json=True).add_argument("id", type=int4)
+    command(extension, "remove", item_extension_remove, "remove an extension by id").add_argument("eid", type=int4)
 
     work = groups.add_parser("work", help="students' work on assignments: review, grades").add_subparsers(
         dest="cmd", required=True, metavar="COMMAND")
     p = command(work, "list", work_list, "the review queue, newest first (with --item: every addressee)", json=True)
-    p.add_argument("--item", type=int, help="one assignment: every addressee, those without work too")
+    p.add_argument("--item", type=int4, help="one assignment: every addressee, those without work too")
     p.add_argument("--group", help="current members of the group (name or #id)")
     p.add_argument("--status", choices=list(works.QUEUE_STATUSES))
     late = p.add_mutually_exclusive_group()
     late.add_argument("--late", dest="late", action="store_true", default=None, help="latest hand-in late")
     late.add_argument("--not-late", dest="late", action="store_false", help="latest hand-in on time")
     p.add_argument("--missing", action="store_true", help="«не сдано»: nothing handed in, deadline passed (--item)")
-    p.add_argument("--last", type=int, default=50)
+    p.add_argument("--last", type=int4, default=50)
     p = command(work, "show", work_show, "every hand-in with its text, every review, what the student sees",
                 json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("login")
     p = command(work, "grade", work_grade, "grade (also without a hand-in); --release: the student sees it now",
                 json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("login")
     scale = p.add_mutually_exclusive_group(required=True)
     scale.add_argument("--score", help="points, e.g. 8 or 4.5 (grading points)")
@@ -486,11 +486,11 @@ def add_parsers(groups, command) -> None:
     p.add_argument("--comment")
     p.add_argument("--release", action="store_true", help="release it at once (grades_release manual)")
     p = command(work, "return", work_return, "back for rework with a comment (seen at once)", json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("login")
     p.add_argument("--comment", required=True)
     p = command(work, "release", work_release, "release the current grades (of every work, or of these students)",
                 json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("logins", nargs="*", metavar="login")
     return item, work

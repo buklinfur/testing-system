@@ -18,6 +18,7 @@ from ..api_errors import ApiError
 from ..auth import audit
 from ..auth_api import get_db, now
 from ..groups import GroupError
+from ..ids import Id
 from ..jsonable import plain
 from ..models import Group, User
 from .deps import Page, admin_actor, like, page, paginate, users_by_id
@@ -36,7 +37,7 @@ class NameBody(Body):
 
 
 class MembersBody(Body):
-    user_ids: list[int] = Field(min_length=1, max_length=200)
+    user_ids: list[Id] = Field(min_length=1, max_length=200)
 
 
 def refused(exc: GroupError) -> ApiError:
@@ -87,13 +88,13 @@ def create_group(body: NameBody, request: Request, db: Session = Depends(get_db)
 
 
 @router.get("/groups/{group_id}")
-def get_group(group_id: int, history: bool = False, db: Session = Depends(get_db)):
+def get_group(group_id: Id, history: bool = False, db: Session = Depends(get_db)):
     """Students now (history=true: also those removed, with when), and the contests it is attached to."""
     return _detail(db, _group(db, group_id), history)
 
 
 @router.put("/groups/{group_id}")
-def rename_group(group_id: int, body: NameBody, request: Request, db: Session = Depends(get_db),
+def rename_group(group_id: Id, body: NameBody, request: Request, db: Session = Depends(get_db),
                  actor: audit.Actor = Depends(admin_actor)):
     group = _group(db, group_id)
     try:
@@ -105,7 +106,7 @@ def rename_group(group_id: int, body: NameBody, request: Request, db: Session = 
 
 
 @router.post("/groups/{group_id}/archive")
-def archive_group(group_id: int, request: Request, db: Session = Depends(get_db),
+def archive_group(group_id: Id, request: Request, db: Session = Depends(get_db),
                   actor: audit.Actor = Depends(admin_actor)):
     group = _group(db, group_id)
     attached = g.archive(db, actor, group, now(request))
@@ -115,7 +116,7 @@ def archive_group(group_id: int, request: Request, db: Session = Depends(get_db)
 
 
 @router.post("/groups/{group_id}/unarchive")
-def unarchive_group(group_id: int, request: Request, db: Session = Depends(get_db),
+def unarchive_group(group_id: Id, request: Request, db: Session = Depends(get_db),
                     actor: audit.Actor = Depends(admin_actor)):
     group = _group(db, group_id)
     try:
@@ -127,7 +128,7 @@ def unarchive_group(group_id: int, request: Request, db: Session = Depends(get_d
 
 
 @router.post("/groups/{group_id}/members")
-def add_members(group_id: int, body: MembersBody, request: Request, db: Session = Depends(get_db),
+def add_members(group_id: Id, body: MembersBody, request: Request, db: Session = Depends(get_db),
                 actor: audit.Actor = Depends(admin_actor)):
     group = _group(db, group_id)
     try:
@@ -139,7 +140,7 @@ def add_members(group_id: int, body: MembersBody, request: Request, db: Session 
 
 
 @router.post("/groups/{group_id}/members/remove")
-def remove_members(group_id: int, body: MembersBody, request: Request, db: Session = Depends(get_db),
+def remove_members(group_id: Id, body: MembersBody, request: Request, db: Session = Depends(get_db),
                    actor: audit.Actor = Depends(admin_actor)):
     group = _group(db, group_id)
     result = g.remove_members(db, actor, group, _users(db, body.user_ids), now(request))

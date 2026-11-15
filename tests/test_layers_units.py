@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from protocol.languages import EXTENSIONS, SYSTEM_LANGUAGES  # noqa: E402
+from protocol.languages import ENTRY_DEFAULTS, EXTENSIONS, SYSTEM_LANGUAGES  # noqa: E402
 from runner.languages import PROFILES  # noqa: E402
 
 FORBIDDEN = ("runner", "worker")
@@ -60,6 +60,9 @@ class LanguagesTests(unittest.TestCase):
         keys = [key for key, _name in SYSTEM_LANGUAGES]
         self.assertEqual(len(keys), len(set(keys)))
         self.assertEqual(sorted(keys), sorted(PROFILES))
+
+    def test_entry_defaults_are_the_interpreted_runner_profiles(self):
+        self.assertEqual(ENTRY_DEFAULTS, {key: p.default_source for key, p in PROFILES.items() if p.compile is None})
 
     def test_extensions_are_the_runner_extensions(self):
         runner = {ext: key for key, profile in PROFILES.items() for ext in profile.extensions}

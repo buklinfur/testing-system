@@ -327,6 +327,31 @@ class LeaderboardAndTestsTests(unittest.TestCase):
                 self.assertEqual(access.can_see_leaderboard(STUDENT, c, part, now), want)
                 self.assertTrue(access.can_see_leaderboard(ADMIN, c, part, now))
 
+    def test_who_sees_the_standings_with_a_personal_timer(self):
+        """standings_open_for (D-091): a student of a personal contest sees the others only once their own window is
+        over, or - never started - once the contest is over; admins always; fixed timing = can_see_leaderboard."""
+        cases = [  # (name, contest, participation, now, a student sees it)
+            ("personal, own window running", personal(), started(at(9, 30)), at(10), False),
+            ("personal, own window over, contest running", personal(), started(at(9, 30)), at(10, 30), True),
+            ("personal, own window ends at its last microsecond", personal(), started(at(9, 30)), at(10, 30) - US, False),
+            ("personal, window cut by the end of the contest", personal(), started(at(11, 30)), E, True),
+            ("personal, not started, contest running", personal(), JOINED, DURING, False),
+            ("personal, not started, contest over", personal(), JOINED, AFTER, True),
+            ("personal, no end, not started", PERSONAL_NO_END, JOINED, at(20), False),
+            ("personal, no end, own window over", PERSONAL_NO_END, started(at(9)), at(10), True),
+            ("personal, hidden leaderboard, window over", personal(leaderboard="hidden"), started(at(9)), AFTER, False),
+            ("personal, after_end, window over, contest running", personal(leaderboard="after_end"),
+             started(at(9)), at(10, 30), False),
+            ("personal, not a participant", personal(), None, AFTER, False),
+            ("fixed, visible, running", FIXED, JOINED, DURING, True),
+            ("fixed, hidden", contest(leaderboard="hidden"), JOINED, AFTER, False),
+        ]
+        for name, c, part, now, want in cases:
+            with self.subTest(name):
+                got = access.standings_open_for(STUDENT, c, part, now)
+                self.assertEqual((bool(got), got.reason), (want, "ok" if want else "standings_closed"))
+                self.assertTrue(access.standings_open_for(ADMIN, c, part, now))
+
     def test_freeze(self):
         frozen = contest(freeze_at=at(11))
         cases = [  # (now, the moment a student's leaderboard is frozen at)

@@ -20,7 +20,7 @@ import protocol
 from ..timeutil import parse_local
 
 SCHEMA_PATH = Path(protocol.__file__).resolve().parent / "schemas" / "contest.schema.json"
-DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?$")
+DURATION_RE = re.compile(r"^(?:(\d{1,5})h)?(?:(\d{1,6})m)?$")  # bounded: 10**11 hours overflows timedelta (D-088)
 MINUTE_59_RE = re.compile(r"[T ]\d{2}:59(?:Z|[+-]\d{2}:\d{2})?$")  # no seconds, minute 59
 
 
@@ -85,6 +85,18 @@ def parse_duration(text: str) -> timedelta:
     return timedelta(hours=int(m.group(1) or 0), minutes=int(m.group(2) or 0))
 
 
+def _time(data: dict, key: str, tz: tzinfo, problems: list, where: str = ""):
+    """data[key] as an aware time, None when absent; a problem (not an exception) when it is not a real time: the
+    schema checks only the shape, so 2026-02-30 or 9999-12-31 with an offset get here (D-088)."""
+    if not data.get(key):
+        return None
+    try:
+        return parse_local(data[key], tz)
+    except ValueError as exc:
+        problems.append(f"{where}{key}: {exc}")
+        return None
+
+
 def _schema_problems(data) -> list[str]:
     try:
         import jsonschema
@@ -117,9 +129,15 @@ def from_data(data, tz: tzinfo) -> ContestSpec:
     if problems:
         raise ContestSpecError(problems)
 
-    when = {k: parse_local(data[k], tz) if data.get(k) else None for k in ("starts_at", "ends_at", "freeze_at")}
+    when = {k: _time(data, k, tz, problems) for k in ("starts_at", "ends_at", "freeze_at")}
     starts, ends, freeze = when["starts_at"], when["ends_at"], when["freeze_at"]
-    duration = parse_duration(data["personal_duration"]) if data.get("personal_duration") else None
+    try:
+        duration = parse_duration(data["personal_duration"]) if data.get("personal_duration") else None
+    except ValueError as exc:
+        problems.append(f"personal_duration: {exc}")
+        duration = None
+    if problems:  # a time that is not one: the checks below would compare with nothing
+        raise ContestSpecError(problems)
     leaderboard = data.get("leaderboard", "hidden")
     if ends is not None and ends <= starts:
         problems.append("ends_at must be after starts_at")
@@ -147,7 +165,7 @@ def from_data(data, tz: tzinfo) -> ContestSpec:
         problems.append(f"each group may occur once (case does not matter): {', '.join(twice)}")
     entries = []
     for p in data["problems"]:
-        available, due = (parse_local(p[k], tz) if p.get(k) else None for k in ("available_from", "due_at"))
+        available, due = (_time(p, k, tz, problems, f"{p['label']}: ") for k in ("available_from", "due_at"))
         if available is not None and due is not None and not available < due:
             problems.append(f"{p['label']}: available_from must be before due_at")
         after_due = p.get("after_due", {})

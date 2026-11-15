@@ -21,6 +21,7 @@ from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from . import problem_checks as checks
+from . import scores
 from .loadinfo import LoadSnapshot, estimate_wait_seconds, typical_judge_seconds
 from .models import (
     ContestProblem, Judgement, JudgementReason, JudgementStatus, QueueEvent, Submission, TestCase,
@@ -36,20 +37,16 @@ PRIORITY_REJUDGE = 10
 ACTIVE = (JudgementStatus.queued, JudgementStatus.compiling, JudgementStatus.running)
 IN_FLIGHT = (JudgementStatus.compiling, JudgementStatus.running)
 log = logging.getLogger("judge.queue")
-# judgements.error of a judgement the server ended itself (gave up after max_attempts): a late result of its last
-# holder is refused (409), like a check whose report says by=server (D-069). A temporary mark in a text column: the
-# next migration of the queue replaces it with a column of its own (ROADMAP). Never compare it directly: only
-# server_gave_up() / _carries_server_mark() look at it (a test checks the code).
-SERVER_GAVE_UP = "the server gave up after "
-
-
-def _carries_server_mark(error: Optional[str]) -> bool:
-    return (error or "").startswith(SERVER_GAVE_UP)
+# The score of a result: Numeric(8, 2), as the points of a problem version (protocol/problem_package.POINTS_MAX)
+SCORE_MAX = Decimal("999999.99")
 
 
 def server_gave_up(j: "Judgement") -> bool:
-    """The server ended this judgement itself (gave up after max_attempts), not a result of a worker (D-069)."""
-    return j.status == JudgementStatus.internal_error and _carries_server_mark(j.error)
+    """The server ended this judgement itself (gave up after max_attempts), not a result of a worker (D-069). The mark
+    is the column judgements.server_gave_up_at (D-090), written only by _fail_attempt."""
+    return j.server_gave_up_at is not None
+
+
 DONE = (JudgementStatus.finished, JudgementStatus.internal_error)
 
 
@@ -107,7 +104,12 @@ def register_worker(session: Session, token: WorkerToken, name: str, capabilitie
         raise TokenError(f"token {token.name!r} does not allow capabilities {sorted(set(capabilities) - set(token.capabilities))}")
     worker = session.execute(select(Worker).where(Worker.name == name).with_for_update()).scalar_one_or_none()
     if worker is not None and worker.token_id != token.id:
-        raise TokenError(f"worker name {name!r} belongs to another token")
+        # a token rotation (D-096): the same worker names come back with a new token. The name moves to it only
+        # while nobody alive holds it - the worker stopped, or silent past the heartbeat timeout, or its token
+        # revoked; a live worker of a live token keeps its name
+        if not _name_free(session, worker, settings):
+            raise TokenError(f"worker name {name!r} belongs to another token")
+        worker.token_id = token.id
     if worker is None:
         worker = Worker(name=name, token_id=token.id, capabilities=list(capabilities))
         session.add(worker)
@@ -128,6 +130,16 @@ def register_worker(session: Session, token: WorkerToken, name: str, capabilitie
     session.flush()
     _event(session, "worker_registered", worker.id, name=name)
     return worker
+
+
+def _name_free(session: Session, worker: Worker, settings: QueueSettings) -> bool:
+    """May another token take over the row of `worker` (D-096)? Yes when it is stopped, silent longer than the
+    heartbeat timeout by the database clock, or its token is revoked."""
+    return bool(session.execute(text(
+        "SELECT w.state = 'stopped' OR w.last_heartbeat IS NULL"
+        " OR w.last_heartbeat < now() - make_interval(secs => :timeout) OR t.revoked_at IS NOT NULL"
+        " FROM workers w JOIN worker_tokens t ON t.id = w.token_id WHERE w.id = :id"),
+        {"id": worker.id, "timeout": settings.heartbeat_timeout_s}).scalar())
 
 
 def _held_by(session: Session, worker_id: int) -> list:
@@ -303,6 +315,14 @@ def queue_position(session: Session, settings: QueueSettings, judgement_id: Opti
     return min(mine) if mine else None
 
 
+def poll_inputs(session: Session, settings: QueueSettings, judgement_id: int, now: datetime) -> tuple:
+    """(place of a queued judgement in the fair order or None, workers that can take a submission now) for the poll
+    interval of the student API (student_api.submissions.poll_after_s). Not a snapshot of one moment
+    (read_one_moment): an interval does not need one, and the place and the workers are read by one transaction."""
+    online, _busy, _by_state = _workers_online(session, settings, now)
+    return queue_position(session, settings, judgement_id=judgement_id), online
+
+
 # ---------------------------------------------------------------------------------- heartbeat / release
 def heartbeat(session: Session, worker: Worker, *, state: str, judgement_id: Optional[int], attempt: Optional[int],
               phase: Optional[str], tests_done: Optional[int], tests_total: Optional[int], stats: dict,
@@ -395,7 +415,9 @@ def _fail_attempt(session: Session, j: Judgement, reason: str, settings: QueueSe
     j.failures += 1
     if j.failures >= settings.max_attempts:
         j.status, j.verdict, j.finished_at = JudgementStatus.internal_error, Verdict.IE, func.now()
-        j.error = f"{SERVER_GAVE_UP}{j.failures} failed attempts; last reason: {reason}"
+        j.server_gave_up_at = func.now()
+        j.score, j.max_score = Decimal(0), scores.version_max_score(session, j.problem_version_id)
+        j.error = f"{j.failures} failed attempts; last reason: {reason}"
         _event(session, "gave_up", j.worker_id, j.id, reason=reason, failures=j.failures)
         return "gave_up"
     _event(session, "requeued", j.worker_id, j.id, reason=reason, failures=j.failures, attempt=j.attempt)
@@ -450,21 +472,23 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
     try:
         verdict = Verdict(payload["verdict"])
         score = Decimal(str(payload.get("score", "0")))
+        maximum = Decimal(str(payload.get("max_score", "0")))
     except (KeyError, ValueError, ArithmeticError) as exc:
         raise BadResult(f"bad verdict or score: {exc}") from exc
 
     if verdict == Verdict.IE:
-        j.error = payload.get("error")
-        if _carries_server_mark(j.error):  # the server's mark is only ever the server's (D-069)
-            j.error = "worker: " + j.error
+        j.error = payload.get("error")  # never the server's mark: that is a column of its own (D-090)
         if j.failures + 1 < settings.max_attempts:
             _fail_attempt(session, j, f"internal error: {payload.get('error')}", settings)
             return "requeued"
         j.failures += 1
         j.status, j.verdict, j.finished_at, j.score = JudgementStatus.internal_error, Verdict.IE, func.now(), Decimal(0)
+        j.max_score = scores.version_max_score(session, j.problem_version_id)
         _event(session, "gave_up", worker.id, j.id, reason=payload.get("error"), failures=j.failures)
         return "recorded"  # a rejudge that ends this way stays non-current: the old verdict is kept
 
+    if not (score.is_finite() and maximum.is_finite() and 0 <= score <= maximum <= SCORE_MAX):
+        raise BadResult(f"score {score} of {maximum}: not within 0 <= score <= max_score <= {SCORE_MAX}")
     tests = payload.get("tests") or []
     if tests:
         valid = set(session.execute(
@@ -482,7 +506,7 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
             stderr_excerpt=t.get("stderr_excerpt") or None, output_excerpt=t.get("output_excerpt") or None,
             visible_to_student=bool(t.get("visible_to_student")),
         ))
-    j.verdict, j.score = verdict, score
+    j.verdict, j.score, j.max_score = verdict, score, maximum
     j.compile_log = payload.get("compile_log")
     j.summary = payload.get("summary") or None
     j.error = None
@@ -496,6 +520,25 @@ def finish(session: Session, worker: Worker, judgement_id: int, payload: dict, s
         j.is_current = True
         session.flush()
     return "recorded"
+
+
+def reject_result(session: Session, worker: Worker, judgement_id: int, attempt, reason: str,
+                  settings: QueueSettings) -> Optional[str]:
+    """A result this worker sent for its judgement was refused (malformed, out of bounds): the attempt failed. The
+    judgement goes back to the queue, or after max_attempts ends as internal_error with the reason in `error`; it never
+    stays held by a worker that has already moved on. Returns "requeued" | "gave_up", or None when the worker does not
+    hold that attempt (nothing to do: the 409 path). The caller rolled back whatever finish() had done."""
+    if not isinstance(attempt, int) or isinstance(attempt, bool):
+        return None
+    j = session.execute(select(Judgement).where(Judgement.id == judgement_id).with_for_update()).scalar_one_or_none()
+    if j is None or j.worker_id != worker.id or j.attempt != attempt or j.status not in IN_FLIGHT:
+        return None
+    _free(worker)
+    reason = f"result rejected: {reason}"[:500]
+    outcome = _fail_attempt(session, j, reason, settings)
+    log.error("judgement %s attempt %s of worker %s (%s): %s -> %s", j.id, attempt, worker.id, worker.name, reason,
+              outcome)
+    return outcome
 
 
 # ---------------------------------------------------------------------------------- load and metrics

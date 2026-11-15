@@ -13,16 +13,16 @@ upload leaves nothing in the store or its tmp.
 
 Files go out through content_files.file_response(..., request=request), only after attachments.item_file found
 the file of this item (another item's id, a link or a missing one: 404 attachment_not_found). Names, URLs and titles
-are untrusted text (ADMIN_API §4.1) and go out as they are. Ids in these paths are int4 (Path le=DB_ID_MAX): a
+are untrusted text (ADMIN_API §4.1) and go out as they are. Ids in these paths are int4 (ids.Id, D-088): a
 larger number is 422, never a database error.
 """
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Optional
 from urllib.parse import unquote_to_bytes
 
-from fastapi import APIRouter, Depends, Path, Request, Response
-from pydantic import Field, StrictInt, StrictStr
+from fastapi import APIRouter, Depends, Request, Response
+from pydantic import Field, StrictStr
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -33,14 +33,13 @@ from ..classroom import attachments
 from ..classroom.items import FeedError
 from ..content_files import file_response
 from ..http_body import require_type, save_body
+from ..ids import Id, StrictId
 from ..jsonable import plain
 from .deps import admin_actor, admin_session
 from .feed import Body, blobs, get_item, refused
 
 router = APIRouter()
 
-DB_ID_MAX = 2_147_483_647  # the ids are int4: a larger one in a path is 422, not a DataError (500)
-DbId = Annotated[int, Path(ge=1, le=DB_ID_MAX)]
 UPLOAD_TYPE = "application/octet-stream"
 
 UPLOAD_DOC = {
@@ -58,7 +57,7 @@ class LinkBody(Body):
 
 
 class OrderBody(Body):
-    ids: list[StrictInt] = Field(max_length=200)
+    ids: list[StrictId] = Field(max_length=200)
 
 
 def upload_name(request: Request) -> str:
@@ -87,14 +86,14 @@ def _item(db: Session, item_id: int):
 
 
 @router.get("/items/{item_id}/attachments")
-def list_item_attachments(item_id: DbId, db: Session = Depends(get_db)):
+def list_item_attachments(item_id: Id, db: Session = Depends(get_db)):
     """The files (id, name, size, sha256) and links (id, url, title) of the item, in their order."""
     item = _item(db, item_id)
     return plain({"items": [attachments.describe(r) for r in attachments.list_attachments(db, item)]})
 
 
 @router.post("/items/{item_id}/attachments", status_code=201, openapi_extra=UPLOAD_DOC)
-async def upload_attachment(item_id: DbId, request: Request, db: Session = Depends(get_db),
+async def upload_attachment(item_id: Id, request: Request, db: Session = Depends(get_db),
                             actor: audit.Actor = Depends(admin_actor)):
     """A file attachment, appended: the raw body (application/octet-stream), the name in ?name=. 201 with the
     attachment. 415 another Content-Type; 422 invalid_request (no name, twice, broken UTF-8), file_type_not_allowed,
@@ -132,7 +131,7 @@ async def upload_attachment(item_id: DbId, request: Request, db: Session = Depen
 
 
 @router.post("/items/{item_id}/links", status_code=201)
-def add_item_link(item_id: DbId, body: LinkBody, request: Request, db: Session = Depends(get_db),
+def add_item_link(item_id: Id, body: LinkBody, request: Request, db: Session = Depends(get_db),
              actor: audit.Actor = Depends(admin_actor)):
     """A link attachment, appended: stored as sent after strip (a blank title: none); the server never opens it."""
     item = _item(db, item_id)
@@ -147,7 +146,7 @@ def add_item_link(item_id: DbId, body: LinkBody, request: Request, db: Session =
 
 
 @router.put("/items/{item_id}/attachments/order")
-def reorder_attachments(item_id: DbId, body: OrderBody, request: Request, db: Session = Depends(get_db),
+def reorder_attachments(item_id: Id, body: OrderBody, request: Request, db: Session = Depends(get_db),
             actor: audit.Actor = Depends(admin_actor)):
     """{ids}: every attachment of the item exactly once (attachment_order_invalid otherwise, with missing, extra and
     repeated). The attachments in the new order."""
@@ -162,7 +161,7 @@ def reorder_attachments(item_id: DbId, body: OrderBody, request: Request, db: Se
 
 
 @router.get("/items/{item_id}/attachments/{attachment_id}")
-def download_attachment(item_id: DbId, attachment_id: DbId, request: Request, db: Session = Depends(get_db),
+def download_attachment(item_id: Id, attachment_id: Id, request: Request, db: Session = Depends(get_db),
              cur: Current = Depends(admin_session)):
     """The file of a file attachment of this item (docs/FILES.md: the type by name and content, ETag, 304). 404
     attachment_not_found: no such attachment of this item (another item's included) or a link."""
@@ -175,7 +174,7 @@ def download_attachment(item_id: DbId, attachment_id: DbId, request: Request, db
 
 
 @router.post("/items/{item_id}/attachments/{attachment_id}/delete", status_code=204)
-def delete_attachment(item_id: DbId, attachment_id: DbId, request: Request, db: Session = Depends(get_db),
+def delete_attachment(item_id: Id, attachment_id: Id, request: Request, db: Session = Depends(get_db),
            actor: audit.Actor = Depends(admin_actor)):
     """Remove an attachment of this item (the blob stays; the audit keeps name, sha256 and size, or url and title).
     Another item's id: 404 attachment_not_found."""

@@ -13,6 +13,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..models import (AssignmentReview, AssignmentWork, Attachment, AuditLog, AuthLockout, Comment, CommentThread,
+                      ContestEntryAttempt,
                       Contest, ContestGroup, DeadlineExtension, FeedItem, FeedItemAudience, Group, GroupMember,
                       Judgement, LoginToken, Material, MaterialGroup, MaterialVersion, Participation, Problem,
                       ProblemVersion, Role, Submission, ThreadRead, User, UserSession, VersionCheck)
@@ -287,7 +288,8 @@ TRACES = (
 
 # Rows that reference the user and are deleted with it (_erase): no trace. tests/pg/test_attachment_schema_pg.py
 # checks that every foreign key to users is in TRACES or here.
-ERASED = (UserSession.user_id, LoginToken.user_id, GroupMember.user_id, ThreadRead.user_id)
+ERASED = (UserSession.user_id, LoginToken.user_id, GroupMember.user_id, ThreadRead.user_id,
+          ContestEntryAttempt.user_id)
 
 
 def traces(db: Session, user: User) -> dict:
@@ -305,13 +307,15 @@ def _describe(found: dict) -> str:
 
 
 def _erase(db: Session, user: User) -> dict:
-    """Delete the user with its sessions, QR tokens, group memberships, comment read marks and the failures /
-    lockouts of its login (no audit here)."""
+    """Delete the user with its sessions, QR tokens, group memberships, comment read marks, attempts to enter a
+    contest (D-093) and the failures / lockouts of its login (no audit here)."""
     removed = {"sessions_deleted": db.execute(delete(UserSession).where(UserSession.user_id == user.id)).rowcount,
                "qr_tokens_deleted": db.execute(delete(LoginToken).where(LoginToken.user_id == user.id)).rowcount,
                "group_memberships_deleted": db.execute(delete(GroupMember)
                                                        .where(GroupMember.user_id == user.id)).rowcount,
-               "thread_reads_deleted": db.execute(delete(ThreadRead).where(ThreadRead.user_id == user.id)).rowcount}
+               "thread_reads_deleted": db.execute(delete(ThreadRead).where(ThreadRead.user_id == user.id)).rowcount,
+               "entry_attempts_deleted": db.execute(delete(ContestEntryAttempt)
+                                                    .where(ContestEntryAttempt.user_id == user.id)).rowcount}
     removed.update(ratelimit.forget_login(db, user.login))
     db.delete(user)
     db.flush()

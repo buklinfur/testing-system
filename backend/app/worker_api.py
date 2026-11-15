@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Callable, Iterator, Literal, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -241,17 +241,32 @@ def release(judgement_id: int, body: ReleaseBody, worker: Worker = Depends(curre
     return {"released": done}
 
 
+def _rejected(session: Session, worker: Worker, judgement_id: int, attempt, reason: str, settings) -> HTTPException:
+    """A refused result fails the attempt (queue.reject_result): requeued, or internal_error after max_attempts, with
+    the reason in the judgement's history. 422 tells the worker; it logs the error and takes the next job."""
+    session.rollback()
+    outcome = q.reject_result(session, worker, judgement_id, attempt, reason, settings.queue)
+    session.commit()
+    return HTTPException(422, {"code": "bad_result", "message": reason, "judgement": outcome})
+
+
 @router.post("/judgements/{judgement_id}/result")
-def result(judgement_id: int, body: ResultBody, worker: Worker = Depends(current_worker),
+def result(judgement_id: int, payload: dict = Body(...), worker: Worker = Depends(current_worker),
            session: Session = Depends(get_session), settings=Depends(get_settings)):
+    # validated here, not by fastapi: a malformed result must fail its attempt too, not leave the job held
+    try:
+        body = ResultBody.model_validate(payload)
+    except ValidationError as exc:
+        problems = "; ".join(f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors()[:5])
+        raise _rejected(session, worker, judgement_id, payload.get("attempt"), f"malformed result: {problems}",
+                        settings)
     try:
         outcome = q.finish(session, worker, judgement_id, body.model_dump(), settings.queue)
     except q.LeaseLost as exc:
         session.rollback()
         raise HTTPException(409, {"code": "lease_lost", "message": str(exc)})
     except q.BadResult as exc:
-        session.rollback()
-        raise HTTPException(422, str(exc))
+        raise _rejected(session, worker, judgement_id, body.attempt, str(exc), settings)
     session.commit()
     return {"status": outcome}
 

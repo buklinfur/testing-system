@@ -6,6 +6,8 @@
         "properties": {
           "group_ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -14,6 +16,8 @@
           },
           "user_ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -66,6 +70,7 @@
           "up_to": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
@@ -84,6 +89,8 @@
         "additionalProperties": false,
         "properties": {
           "confirm_import_id": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
             "title": "Confirm Import Id",
             "type": "integer"
           }
@@ -242,6 +249,8 @@
           },
           "group_ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -270,6 +279,7 @@
           "max_points": {
             "anyOf": [
               {
+                "maxLength": 40,
                 "type": "string"
               },
               {
@@ -293,6 +303,8 @@
           },
           "user_ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -311,6 +323,8 @@
         "additionalProperties": false,
         "properties": {
           "confirm_id": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
             "title": "Confirm Id",
             "type": "integer"
           }
@@ -333,6 +347,8 @@
           "group_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -356,6 +372,8 @@
           "user_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -406,6 +424,7 @@
           "score": {
             "anyOf": [
               {
+                "maxLength": 40,
                 "type": "string"
               },
               {
@@ -429,6 +448,8 @@
         "properties": {
           "group_ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -482,6 +503,8 @@
           "group_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -505,6 +528,8 @@
           "user_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -642,6 +667,7 @@
           "max_points": {
             "anyOf": [
               {
+                "maxLength": 40,
                 "type": "string"
               },
               {
@@ -734,6 +760,8 @@
           "group_ids": {
             "description": "the library groups (with library groups)",
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -817,6 +845,8 @@
         "properties": {
           "user_ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -921,6 +951,8 @@
         "properties": {
           "ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -979,6 +1011,7 @@
             "type": "boolean"
           },
           "version": {
+            "maximum": 2147483647.0,
             "minimum": 1.0,
             "title": "Version",
             "type": "integer"
@@ -996,6 +1029,8 @@
         "additionalProperties": false,
         "properties": {
           "material_id": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
             "title": "Material Id",
             "type": "integer"
           }
@@ -1048,6 +1083,8 @@
           "contest_problem_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -1064,6 +1101,7 @@
           "expect": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -1076,6 +1114,8 @@
           "group_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -1113,6 +1153,8 @@
             "anyOf": [
               {
                 "items": {
+                  "maximum": 2147483647.0,
+                  "minimum": 1.0,
                   "type": "integer"
                 },
                 "maxItems": 1000,
@@ -1128,6 +1170,8 @@
           "user_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -1168,6 +1212,8 @@
             "anyOf": [
               {
                 "items": {
+                  "maximum": 2147483647.0,
+                  "minimum": 1.0,
                   "type": "integer"
                 },
                 "maxItems": 200,
@@ -1220,6 +1266,8 @@
           "parent_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -1247,6 +1295,8 @@
           "parent_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -1268,6 +1318,8 @@
         "properties": {
           "ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 500,
@@ -1277,6 +1329,8 @@
           "parent_id": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -1404,6 +1458,8 @@
         "properties": {
           "user_ids": {
             "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
               "type": "integer"
             },
             "maxItems": 200,
@@ -1506,6 +1562,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -1572,6 +1630,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -1588,6 +1647,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -1629,6 +1689,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -1645,6 +1707,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -1693,6 +1757,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -1709,6 +1774,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -1748,6 +1814,8 @@
             "name": "comment_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Comment Id",
               "type": "integer"
             }
@@ -1825,6 +1893,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -1841,6 +1910,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -2112,6 +2182,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -2128,6 +2199,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -2333,6 +2405,8 @@
             "name": "extension_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Extension Id",
               "type": "integer"
             }
@@ -2437,6 +2511,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -2453,6 +2528,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -2526,6 +2602,8 @@
             "name": "group_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Group Id",
               "type": "integer"
             }
@@ -2571,6 +2649,8 @@
             "name": "group_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Group Id",
               "type": "integer"
             }
@@ -2618,6 +2698,8 @@
             "name": "group_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Group Id",
               "type": "integer"
             }
@@ -2656,6 +2738,8 @@
             "name": "group_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Group Id",
               "type": "integer"
             }
@@ -2703,6 +2787,8 @@
             "name": "group_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Group Id",
               "type": "integer"
             }
@@ -2750,6 +2836,8 @@
             "name": "group_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Group Id",
               "type": "integer"
             }
@@ -2797,6 +2885,8 @@
             "name": "group_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Group Id",
               "type": "integer"
             }
@@ -2873,6 +2963,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -2921,6 +3013,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -2937,6 +3030,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -3011,6 +3105,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3047,6 +3143,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3095,6 +3193,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3378,6 +3478,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3426,6 +3528,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3437,6 +3541,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -3453,6 +3558,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -3490,6 +3596,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3538,6 +3646,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3593,6 +3703,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3635,6 +3747,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3671,6 +3785,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3719,6 +3835,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3728,6 +3846,8 @@
             "name": "extension_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Extension Id",
               "type": "integer"
             }
@@ -3811,6 +3931,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3849,6 +3971,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3897,6 +4021,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3906,6 +4032,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -3917,6 +4045,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -3933,6 +4062,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -3970,6 +4100,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -3979,6 +4111,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -4026,6 +4160,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -4035,6 +4171,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -4089,6 +4227,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -4127,6 +4267,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -4136,6 +4278,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -4235,6 +4379,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -4244,6 +4390,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -4292,6 +4440,8 @@
             "name": "item_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Item Id",
               "type": "integer"
             }
@@ -4301,6 +4451,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -4836,6 +4988,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -4852,6 +5005,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -5691,6 +5845,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -5707,6 +5862,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -5902,6 +6058,8 @@
             "name": "number",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Number",
               "type": "integer"
             }
@@ -5949,6 +6107,8 @@
             "name": "number",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Number",
               "type": "integer"
             }
@@ -6005,6 +6165,8 @@
             "name": "number",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Number",
               "type": "integer"
             }
@@ -6096,6 +6258,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -6112,6 +6276,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -6196,6 +6362,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -6212,6 +6379,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -6288,6 +6456,8 @@
             "name": "submission_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Submission Id",
               "type": "integer"
             }
@@ -6299,6 +6469,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -6341,6 +6513,8 @@
             "name": "submission_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Submission Id",
               "type": "integer"
             }
@@ -6379,6 +6553,8 @@
             "name": "submission_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Submission Id",
               "type": "integer"
             }
@@ -6504,6 +6680,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -6520,6 +6697,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -6633,6 +6811,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -6649,6 +6828,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -6687,6 +6867,8 @@
             "name": "import_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "Import Id",
               "type": "integer"
             }
@@ -6771,6 +6953,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -6808,6 +6992,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -6850,6 +7036,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -6887,6 +7075,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -6924,6 +7114,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -6973,6 +7165,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -7020,6 +7214,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -7058,6 +7254,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -7105,6 +7303,8 @@
             "name": "user_id",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
               "title": "User Id",
               "type": "integer"
             }
@@ -7145,6 +7345,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -7161,6 +7363,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -7231,6 +7435,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -7247,6 +7452,7 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 2147483647,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"

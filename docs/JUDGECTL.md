@@ -31,6 +31,10 @@ PYTHONPATH=.:backend python -m app.judgectl --help
   перезаписывающий строку, BEL, …), DEL, C1 и символы направления текста (U+202E и подобные, U+2028/2029) —
   в виде `\x1b`, `\x0d`, `\u202e`. Многострочный текст (ответ, комментарий, условие) сохраняет `\n` и `\t`, ячейка
   таблицы — нет. `--json` отдаёт данные как есть (JSON сам экранирует управляющие символы).
+* **Числа в аргументах** — id, номера версий, `--last` — от 1 до 2147483647 (`core.int4`, D-088); другое — неверный
+  аргумент (код 2) до обращения к базе. Номер внутри текста (`#id` группы или материала, `<slug>@<версия>`) вне этих
+  границ — «нет такого». Если база всё же отвергла значение, — одна строка `judgectl: the database refused a value
+  (out of range or too long)` и код 1, без трассировки.
 * **Коды выхода:** 0 — успех; 1 — ошибка (`judgectl: <сообщение>` в stderr, ничего не изменено); 2 — неверные
   аргументы; 130 — прервано (Ctrl-C / конец ввода). У отказов ленты (`item`, `work`, `comment`) в конце строки — постоянный код
   в скобках, тот же, что `detail` в админском API: `judgectl: … (no_audience)`.
@@ -98,7 +102,7 @@ judgectl submission show <id>
                            | --problem-version <slug>@<версия>) [--verdicts WA,TL]
 judgectl queue  status | reap | judgements [--last N] | events [--last N]
                 | rejudge (--submission <id> | --contest-problem <id>) [--verdicts WA,TL]     # устарело
-judgectl worker list | token create <имя> [--caps cpu,gpu] | token revoke <имя>
+judgectl worker list | token create <имя> --out <новый-файл> [--caps cpu,gpu] | token list | token revoke <имя>
 judgectl status [--details]
 ```
 
@@ -192,7 +196,7 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 |---|---|
 | `status` | Снимок загрузки (длина очереди, воркеры онлайн, ожидание); `--json` — ещё и метрики. Все числа из одного момента |
 | `reap` | Вернуть в очередь задания потерянных воркеров сейчас, не дожидаясь reaper |
-| `judgements [--last N]` | Последние проверки: вердикт, первый провал, вид TL, попытки, воркер, внутренняя ошибка |
+| `judgements [--last N]` | Последние проверки: вердикт, баллы контеста, первый провал, вид TL, попытки, воркер, внутренняя ошибка (в `--json` и `gave_up`: проверку завершил сервер) |
 | `events [--last N]` | Журнал очереди (регистрации, `released`, `requeued`, `gave_up`; 14 дней) |
 | `rejudge --submission <id> \| --contest-problem <id> [--verdicts …]` | **Устарело:** пишет в stderr новую команду и выполняет `submission rejudge --id \| --contest-problem-id` |
 
@@ -201,8 +205,11 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 | Команда | Что делает |
 |---|---|
 | `list` | Воркеры: состояние, возраст heartbeat, текущее задание, ядра, число проверок, capabilities |
-| `token create <имя> [--caps cpu,gpu]` | Новый токен воркера (по умолчанию `cpu,problem_check`: `problem_check` — проверки версий задач, 4а.4). Токен — **последняя строка** stdout (скрипты берут его `| tail -1`), показывается один раз |
+| `token create <имя> --out <новый-файл> [--caps cpu,gpu]` | Новый токен воркера (по умолчанию `cpu,problem_check`: `problem_check` — проверки версий задач, 4а.4). Токен пишется **только** в новый файл `--out` (0600, `O_EXCL`, символическая ссылка не открывается) и **не печатается нигде** — ни в stdout, ни в stderr, ни в `--json` (там `{name, capabilities, out}`), D-089. Без `--out` или с `--out -` — код 2; существующий файл — отказ, файл не тронут, токен не создан; занятое имя (отозванные токены его хранят) — отказ. Сбой базы или записи после создания файла (и `commit` тоже) удаляет файл: файла с токеном, которого нет в базе, не бывает. В `/etc/judge/worker.env` его пишут `install-wsl.sh` и `reset-production.sh` (`deploy/lib/worker-token.sh`) |
+| `token list` | Все токены воркеров: имя, capabilities, создан, отозван, последнее использование и `ONLINE` — сколько воркеров с этим токеном онлайн сейчас (не `stopped`, heartbeat моложе `JUDGE_HEARTBEAT_TIMEOUT_S`). **Ни токена, ни его хеша** — ни в таблице, ни в `--json` (`[{name, capabilities, created, revoked, last_used, workers_online}]`), D-096. Нужен для ротации (`DEPLOY_WSL2.md` §6 «Обновление до 4б.1»): у нового токена воркеры онлайн, у старого `ONLINE 0` — тогда старый отзывается по имени |
 | `token revoke <имя>` | Отозвать живой токен; если такого нет — ошибка |
+
+**Имя воркера при новом токене** (D-096). Строка воркера (`<машина>-w<N>`) принадлежит токену, с которым он зарегистрировался. Воркер с другим токеном занимает это имя, только если прежний воркер не жив: остановлен (`stopped`), молчит дольше таймаута heartbeat или его токен отозван; иначе `register` — 403 «belongs to another token». Так ротация не требует менять `JUDGE_MACHINE_NAME`.
 
 ### problem — задачи ([`PROBLEM_IMPORT.md`](PROBLEM_IMPORT.md))
 
@@ -383,7 +390,7 @@ stderr и выход 1.
 
 | Команда | Что делает |
 |---|---|
-| `list [--contest <slug> [--label <метка>]] [--problem <slug>] [--user <логин>] [--group <группа>] [--verdicts WA,TL] [--status …] [--late \| --not-late] [--last N]` | Последние посылки (50 по умолчанию) с теми же фильтрами, что `GET /api/admin/submissions`: вердикт и статус — текущей проверки, группа — её **текущие** члены |
+| `list [--contest <slug> [--label <метка>]] [--problem <slug>] [--user <логин>] [--group <группа>] [--verdicts WA,TL] [--status …] [--late \| --not-late] [--last N]` | Последние посылки (50 по умолчанию) с теми же фильтрами, что `GET /api/admin/submissions`: вердикт, статус и баллы — текущей проверки, группа — её **текущие** члены |
 | `show <id>` | Посылка: ученик, контест, задача, язык, «с опозданием»; все проверки (причина, статус, вердикт, баллы, версия, актуальная, попытки, воркер, внутренняя ошибка) и тесты актуальной проверки — **включая скрытые** (это вид админа). `--json` — то же, что `GET /api/admin/submissions/<id>` |
 | `rejudge --id <id>` | Перепроверить посылку (новая проверка, история сохраняется; [`QUEUE.md`](QUEUE.md)) |
 | `rejudge --contest <slug> --problem <метка>` | Все посылки задачи контеста |
@@ -391,6 +398,10 @@ stderr и выход 1.
 | `rejudge --problem-version <slug>@<версия>` | Все посылки всех задач контестов, закреплённых на этой версии (и скрытых) |
 | `--verdicts WA,TL` | Только посылки с этими текущими вердиктами (не с `--id`) |
 | `--dry-run` | Только посчитать, сколько посылок будет перепроверено (не с `--id`) |
+
+Баллы в таблицах `submission list`, `submission show` и `queue judgements` — столбец `POINTS` в баллах контеста:
+`50.00/100.00` (`points` задачи контеста, иначе максимум версии; одна функция `scores.contest_score`, D-090), пусто,
+пока проверка не закончена. В `--json` — `score` и `max_score` в баллах версии и `contest_score`, `contest_max`.
 
 Аудит: `submission.rejudge` (одна посылка), `submissions.rejudge` (пачка: фильтр и числа; до 4а.3b —
 `contest_problem.rejudge` на каждую задачу). Консоль выполняет сразу; в API пачка — в два шага (`dry_run`, потом
@@ -422,7 +433,7 @@ stderr и выход 1.
 
 | admin_cli | judgectl |
 |---|---|
-| `create-worker-token <имя> [--caps]` | `worker token create <имя> [--caps]` |
+| `create-worker-token <имя> --out <файл> [--caps]` | `worker token create <имя> --out <файл> [--caps]` |
 | `revoke-worker-token <имя>` | `worker token revoke <имя>` |
 | `status` | `queue status` + `worker list` |
 | `reap`, `judgements`, `events` | `queue reap`, `queue judgements`, `queue events` |

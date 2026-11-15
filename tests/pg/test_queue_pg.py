@@ -10,7 +10,8 @@ if URL and HAVE_SA:  # imported only when the database is configured
     from sqlalchemy.exc import IntegrityError
 
     from app import loadinfo, metrics, queue as q
-    from app.models import Judgement, JudgementReason, JudgementStatus, QueueEvent, TestResult, Verdict
+    from app.models import (Judgement, JudgementReason, JudgementStatus, QueueEvent, TestResult, Verdict, Worker,
+                            WorkerToken)
 
 
 @requires_pg
@@ -47,6 +48,36 @@ class QueueTests(PgCase):
         with self.assertRaises(q.TokenError):
             q.register_worker(self.s, token, "w", ["cpu", "gpu"], {}, self.settings)
         self.assertIsNone(q.authenticate(self.s, "wrong"))
+
+    def test_a_new_token_takes_a_worker_name_only_from_nobody_alive(self):
+        """D-096, the token rotation of DEPLOY_WSL2 §6: the new token's workers register under the old names once
+        the old workers stopped (or went silent, or their token was revoked); a live worker keeps its name."""
+        old, w = self.token_and_worker("host-w0", token_caps=("cpu",))
+        new = q.authenticate(self.s, q.create_worker_token(self.s, "tok-new", ["cpu"]))
+        self.s.commit()
+        with self.assertRaises(q.TokenError):  # alive under a live token
+            q.register_worker(self.s, new, "host-w0", ["cpu"], {}, self.settings)
+        self.s.rollback()
+        q.deregister_worker(self.s, self.s.get(Worker, w.id))  # systemctl stop: the worker says goodbye
+        self.s.commit()
+        taken = q.register_worker(self.s, new, "host-w0", ["cpu"], {}, self.settings)
+        self.s.commit()
+        self.assertEqual((taken.id, taken.token_id, taken.state), (w.id, new.id, "idle"))
+        with self.assertRaises(q.TokenError):  # and now the old token cannot take it back while it lives
+            q.register_worker(self.s, self.s.get(WorkerToken, old.id), "host-w0", ["cpu"], {}, self.settings)
+        self.s.rollback()
+        # silent past the heartbeat timeout: free again
+        self.s.execute(text("UPDATE workers SET last_heartbeat = now() - make_interval(secs => :s) WHERE id = :id"),
+                       {"s": self.settings.heartbeat_timeout_s + 5, "id": w.id})
+        self.s.commit()
+        self.assertEqual(q.register_worker(self.s, self.s.get(WorkerToken, old.id), "host-w0", ["cpu"], {},
+                                           self.settings).token_id, old.id)
+        self.s.commit()
+        # a live worker whose token is revoked: free too (its process can no longer make a request)
+        self.s.execute(text("UPDATE worker_tokens SET revoked_at = now() WHERE id = :id"), {"id": old.id})
+        self.s.commit()
+        self.assertEqual(q.register_worker(self.s, new, "host-w0", ["cpu"], {}, self.settings).token_id, new.id)
+        self.s.commit()
 
     def test_fair_order_matches_the_reference_implementation(self):
         rng = random.Random(7)

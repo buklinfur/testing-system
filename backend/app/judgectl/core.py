@@ -1,6 +1,7 @@
 """Shared plumbing of judgectl: the context (database, settings, terminal), errors, output and secrets input."""
 from __future__ import annotations
 
+import argparse
 import getpass as _getpass
 import json
 import os
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 from ..auth.audit import Actor
 from ..auth.passwords import MIN_LENGTH, PasswordPolicyError, check_policy
 from ..auth.totp import SecretBox, TotpConfigError
+from ..ids import DB_ID_MAX
 from ..models import Role
 from ..settings import Settings
 from ..jsonable import plain
@@ -31,6 +33,18 @@ class CliError(Exception):
 
 class UsageError(CliError):
     """Wrong arguments found after argparse (a flag required only with another one): exit code 2, like argparse."""
+
+
+def int4(text: str) -> int:
+    """argparse type of every number judgectl takes - ids, version numbers, --last: a whole number 1..2147483647 (the
+    ids are int4); anything else is a usage error (exit 2) before the database is asked (D-088)."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if not 1 <= value <= DB_ID_MAX:
+        raise argparse.ArgumentTypeError(f"must be from 1 to {DB_ID_MAX}: {text}")
+    return value
 
 
 def _stdout() -> TextIO:
@@ -211,8 +225,9 @@ def show(ctx: Context, rows: list[dict], columns: list[tuple[str, str]]) -> None
         table(ctx, rows, columns)
 
 
-def open_private_new(path: str) -> TextIO:
-    """A new file only this user can read (0600); an existing file is never overwritten."""
+def create_private_new(path: str) -> int:
+    """A descriptor of a new file only this user can read (0600): O_EXCL - an existing file (or a symlink, O_NOFOLLOW)
+    is never overwritten or followed, CliError instead."""
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError as exc:
@@ -220,7 +235,12 @@ def open_private_new(path: str) -> TextIO:
     except OSError as exc:
         raise CliError(f"cannot create {path}: {exc.strerror}") from exc
     os.fchmod(fd, 0o600)  # in case of an unusual umask
-    return os.fdopen(fd, "w", encoding="utf-8-sig", newline="")  # BOM + ';': Excel on Windows opens it as is
+    return fd
+
+
+def open_private_new(path: str) -> TextIO:
+    """A new text file only this user can read (0600), for the CSV of passwords; never overwrites."""
+    return os.fdopen(create_private_new(path), "w", encoding="utf-8-sig", newline="")  # BOM + ';': Excel opens it
 
 
 # ----------------------------------------------------------------------------- secrets typed in
@@ -238,3 +258,11 @@ def ask_new_password(ctx: Context, login: str, role: Role) -> str:
             continue
         return first
     raise CliError(f"no acceptable password after {PASSWORD_ATTEMPTS} attempts, nothing changed")
+
+
+def points_text(j: dict):
+    """The points in the contest as a table shows them: «50.00/100.00» (scores.contest_score / contest_max of the
+    view), nothing while the judgement is not finished (no max_score yet)."""
+    if not j or j.get("max_score") is None:
+        return None
+    return f"{j['contest_score']}/{j['contest_max']}"

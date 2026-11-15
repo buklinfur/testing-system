@@ -19,7 +19,7 @@ from ..blobstore import BlobStore, TooLarge
 from ..classroom import attachments, items, works
 from ..classroom.comments import CONSOLE
 from ..classroom.items import FeedError
-from .core import CliError, Context, emit_json, show, terminal_text
+from .core import CliError, Context, emit_json, int4, show, terminal_text
 
 
 def size_text(n: int) -> str:
@@ -212,27 +212,27 @@ def work_file(ctx: Context, args) -> int:
 def add_parsers(item, work, command) -> None:
     """The attachment commands in the `item` and `work` groups of feed.add_parsers (`command`: cli.py's helper)."""
     p = command(item, "attach", item_attach, "attach a file (a teacher's file of the item)", json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("file", help="the file, or - for stdin (then --name)")
     p.add_argument("--name", help="the name students see (default: the file's base name)")
     p = command(item, "link", item_link, "attach a link (stored as given; the server never opens it)", json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("url", help="http:// or https://")
     p.add_argument("--title", help="what students see instead of the address (at most 200 characters)")
     command(item, "attachments", item_attachments, "files and links of an item, in their order", json=True) \
-        .add_argument("id", type=int)
+        .add_argument("id", type=int4)
     p = command(item, "detach", item_detach, "remove a file or link from the item (the audit keeps what it was)",
                 json=True)
-    p.add_argument("id", type=int)
-    p.add_argument("att", type=int, help="id of the attachment (item attachments)")
+    p.add_argument("id", type=int4)
+    p.add_argument("att", type=int4, help="id of the attachment (item attachments)")
     p = command(item, "attachment-order", item_attachment_order, "the new order: every attachment id once",
                 json=True)
-    p.add_argument("id", type=int)
-    p.add_argument("ids", type=int, nargs="+", metavar="att")
+    p.add_argument("id", type=int4)
+    p.add_argument("ids", type=int4, nargs="+", metavar="att")
 
     p = command(work, "file", work_file, "save a file of a work (answer.md or an upload) to a new file", json=True)
-    p.add_argument("id", type=int)
+    p.add_argument("id", type=int4)
     p.add_argument("login")
-    p.add_argument("file_id", type=int, help="id of the file (work show)")
+    p.add_argument("file_id", type=int4, help="id of the file (work show)")
     p.add_argument("-o", "--out", required=True, help="a new file, or - for stdout when it is not a terminal")
     p.add_argument("--force", action="store_true", help="replace an existing file")
