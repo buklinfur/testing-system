@@ -156,6 +156,39 @@ class IncomingTests(unittest.TestCase):
         self.assertNothingLeft()
 
 
+class SweepTmpTests(unittest.TestCase):
+    """The reaper's sweep of <root>/tmp (D-099): only regular files untouched for a day, never what a link points to,
+    never a directory, never a blob."""
+
+    def test_old_regular_files_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = BlobStore(Path(root) / "blobs")
+            tmp = store.staging()
+            now = 1_800_000_000.0
+            old, fresh = tmp / "in-old", tmp / "in-fresh"
+            for path in (old, fresh):
+                path.write_bytes(b"x")
+            os.utime(old, (now - blobstore.TMP_MAX_AGE_S - 1,) * 2)
+            os.utime(fresh, (now - blobstore.TMP_MAX_AGE_S + 60,) * 2)
+            outside = Path(root) / "precious"
+            outside.write_bytes(b"keep")
+            os.utime(outside, (now - 10 * blobstore.TMP_MAX_AGE_S,) * 2)
+            (tmp / "link").symlink_to(outside)
+            os.utime(tmp / "link", (now - 10 * blobstore.TMP_MAX_AGE_S,) * 2, follow_symlinks=False)
+            (tmp / "dir").mkdir()
+            os.utime(tmp / "dir", (now - 10 * blobstore.TMP_MAX_AGE_S,) * 2)
+            sha = store.put(b"blob")
+            os.utime(store.path(sha), (now - 10 * blobstore.TMP_MAX_AGE_S,) * 2)
+            self.assertEqual(store.sweep_tmp(now=now), 1)
+            self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["dir", "in-fresh", "link"])
+            self.assertEqual(outside.read_bytes(), b"keep")
+            self.assertTrue(store.exists(sha))
+
+    def test_no_tmp_yet(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(BlobStore(Path(root)).sweep_tmp(), 0)
+
+
 class FileSettingsTests(unittest.TestCase):
     def test_defaults_are_the_rules(self):
         f = FileSettings()

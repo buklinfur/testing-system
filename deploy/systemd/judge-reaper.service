@@ -17,6 +17,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# draft files and stale uploads (4b.2): the reaper removes files in <JUDGE_BLOB_DIR>/tmp
+ReadWritePaths=/var/lib/judge
 
 [Install]
 WantedBy=multi-user.target

@@ -104,6 +104,19 @@ def view_inputs(db: Session, item: FeedItem, user: User) -> dict:
     return out
 
 
+def student_sees(db: Session, user: User, item: FeedItem, now: datetime) -> bool:
+    """Whether the item exists for the student at all (4b.2): in their feed (access.item_listed with view_inputs), or
+    their own work is on it (access.can_see_own_work: also archived, out of the audience, after the statement is
+    hidden). Anything else - a draft, an item before available_from, another class's - is "not found" to them."""
+    inputs = view_inputs(db, item, user)
+    inputs.pop("extensions", None)  # the statement's deadline does not take an item out of the feed
+    if access.item_listed(user, item, now, **inputs):
+        return True
+    has_work = db.execute(select(AssignmentWork.id).where(AssignmentWork.item_id == item.id,
+                                                          AssignmentWork.user_id == user.id)).first() is not None
+    return access.can_see_own_work(user, item, has_work)
+
+
 def lock_item(db: Session, item: FeedItem) -> FeedItem:
     """The row of the item, locked (SELECT ... FOR UPDATE) and read again: changes of its attachments go one after
     another."""

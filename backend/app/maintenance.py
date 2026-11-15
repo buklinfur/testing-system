@@ -1,6 +1,9 @@
 """Reaper: returns the judgements of lost workers to the queue. Runs as its own systemd unit.
 
-About once an hour it also prunes old authentication rows (failures, lockouts, dead sessions, QR tokens).
+About once an hour it also prunes old authentication rows (failures, lockouts, dead sessions, QR tokens), removes
+students' draft files uploaded more than JUDGE_DRAFT_TTL_DAYS ago, deleted or not (4b.2, D-099), and files left in
+<JUDGE_BLOB_DIR>/tmp by a crash for more than a day (blobstore.sweep_tmp; the blobs themselves stay for the collector
+of module 6).
 
     python -m app.maintenance
 
@@ -16,6 +19,8 @@ from datetime import datetime, timezone
 
 from . import queue as q
 from .auth import cleanup
+from .blobstore import BlobStore
+from .classroom import drafts
 from .db import session_scope
 from .settings import Settings
 
@@ -50,6 +55,19 @@ def main() -> int:
                     log.info("pruned auth rows: %s", pruned)
             except Exception:  # noqa: BLE001
                 log.exception("auth prune failed")
+            try:
+                with session_scope() as session:
+                    purged = drafts.purge(session, datetime.now(timezone.utc), all_settings.files.draft_ttl_days)
+                if purged:
+                    log.info("removed draft files: %d", purged)
+            except Exception:  # noqa: BLE001
+                log.exception("draft purge failed")
+            try:
+                swept = BlobStore(all_settings.blob_dir).sweep_tmp()
+                if swept:
+                    log.info("removed stale files in the blob store's tmp: %d", swept)
+            except Exception:  # noqa: BLE001
+                log.exception("tmp sweep failed")
         stop.wait(settings.reaper_interval_s)
     return 0
 

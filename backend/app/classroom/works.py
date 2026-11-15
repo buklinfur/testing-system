@@ -34,7 +34,7 @@ from ..auth import audit
 from ..blobstore import BlobStore, Incoming
 from ..models import (AssignmentReview, AssignmentSubmission, AssignmentSubmissionFile, AssignmentSubmissionLink,
                       AssignmentWork, FeedItem, FeedItemAudience, FeedItemKind, FeedItemState, Group, GroupMember,
-                      ReviewAction, Role, SubmissionFileKind, User, WorkStatus)
+                      ReviewAction, Role, SubmissionFileKind, User, WorkDraftFile, WorkStatus)
 from . import access, grading
 from . import attachment_rules
 from . import attachments as files_service
@@ -110,19 +110,25 @@ def _comment(text: Optional[str]) -> Optional[str]:
 def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs: BlobStore,
                 text: Optional[str] = None, text_limit: int = access.ANSWER_TEXT_MAX_BYTES,
                 ip: Optional[str] = None, files: Sequence[Incoming] = (), links: Sequence = (),
-                limits: attachment_rules.Limits = attachment_rules.Limits(),
+                drafts: Sequence[int] = (), limits: attachment_rules.Limits = attachment_rules.Limits(),
                 quota: Optional[int] = attachment_rules.STUDENT_QUOTA_BYTES) -> tuple[AssignmentSubmission, object]:
     """A hand-in of the student of the session, received at `now`: a text answer, files (finished
-    blobstore.Incoming, in their order) and links (url, title). Returns (the hand-in, the decision: late or not).
+    blobstore.Incoming, in their order), files of the student's draft of this item by id (4b.2, in their order,
+    after the Incoming ones) and links (url, title). Returns (the hand-in, the decision: late or not).
 
-    Order: access.can_submit_work (with the number of files and links) -> attachment_rules.check_hand_in (names,
-    types, sizes, links) -> the advisory lock of the student, the lock of the work, can_submit_work again on the
-    status read under it -> the quota (attachment_rules.quota_ok: sizes of the blobs this hand-in adds that the
-    student does not have yet, answer.md included) -> only then the files go into the store. A refusal raises
-    FeedError before anything is stored; the caller closes the uploads either way."""
+    Order: access.can_submit_work (with the number of files, draft files and links) -> attachment_rules.check_hand_in
+    of the Incoming files and the links -> the advisory lock of the student -> the named draft files, locked (FOR
+    UPDATE; an id that is not a live file of this student's draft of this item: draft_file_not_found) and
+    check_hand_in of everything together (their first bytes read from the store) -> the lock of the work,
+    can_submit_work again on the status read under it -> the quota (attachment_rules.quota_ok: sizes of the blobs
+    this hand-in adds that the student does not have yet among their hand-ins and drafts, answer.md included; a
+    draft file is theirs already) -> only then the Incoming files go into the store; the draft rows named are
+    deleted, their blobs now files of the hand-in. A refusal raises FeedError before anything is stored; the caller
+    closes the uploads either way."""
     files = [f.finish() for f in files]
     links = [files_service.rules_link(getattr(link, "url", link), getattr(link, "title", None)) for link in links]
     views = [files_service.file_view(f) for f in files]
+    drafts = list(drafts)
     in_audience = feed.in_audience(db, item, user)
     extensions = feed.due_moments(db, item, user)
     current = work_of(db, item, user)
@@ -130,7 +136,7 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
     def decide(status):
         d = access.can_submit_work(user, item, now, in_audience=in_audience, extensions=extensions,
                                    work_status=status, text=text, text_limit=text_limit,
-                                   attachments=len(files) + len(links))
+                                   attachments=len(files) + len(drafts) + len(links))
         if not d:
             raise FeedError(d.reason, d.reason)
         return d
@@ -140,6 +146,10 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
         files_service.refuse(attachment_rules.check_hand_in(views, links, limits))
     answer = text.encode("utf-8") if text is not None and text.strip() else None
     locks.take_pair(db, locks.STUDENT_FILES, user.id)
+    taken = _take_drafts(db, user, item, drafts)
+    if taken:
+        draft_views = [files_service.FileView(row.name, row.size, _head(blobs, row.blob_sha256)) for row in taken]
+        files_service.refuse(attachment_rules.check_hand_in(views + draft_views, links, limits))
     work, prior = _lock_or_create(db, item, user, now)
     decision = decide(prior)
     new = {f.sha256: f.size for f in files}
@@ -162,6 +172,11 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
         sha = files_service.adopt(db, upload)
         db.add(AssignmentSubmissionFile(submission_id=sub.id, kind=SubmissionFileKind.file, path=view.name,
                                         blob_sha256=sha, size=view.size, position=position))
+    for position, row in enumerate(taken, len(files) + 1):
+        db.add(AssignmentSubmissionFile(submission_id=sub.id, kind=SubmissionFileKind.file, path=row.name,
+                                        blob_sha256=row.blob_sha256, size=row.size, position=position))
+    for row in {r.id: r for r in taken}.values():
+        db.delete(row)
     for position, link in enumerate(links):
         db.add(AssignmentSubmissionLink(submission_id=sub.id, url=link.url, title=link.title, position=position))
     _set_status(work, prior, "submit", now)
@@ -169,12 +184,51 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
     return sub, decision
 
 
+def _take_drafts(db: Session, user: User, item: FeedItem, ids: Sequence[int]) -> list[WorkDraftFile]:
+    """The live files of the student's draft of the item with these ids, in the order of `ids`, locked (FOR UPDATE:
+    a second hand-in naming the same file waits, then finds it gone). An id repeated stays repeated (the hand-in
+    then refuses duplicate_name); any id that is not such a file: draft_file_not_found."""
+    if not ids:
+        return []
+    rows = {r.id: r for r in db.execute(
+        select(WorkDraftFile).where(WorkDraftFile.id.in_(set(ids)), WorkDraftFile.item_id == item.id,
+                                    WorkDraftFile.user_id == user.id, WorkDraftFile.deleted_at.is_(None))
+        .with_for_update().execution_options(populate_existing=True)).scalars()}
+    missing = [i for i in ids if i not in rows]
+    if missing:
+        raise FeedError(f"no file {missing[0]} in your draft", "draft_file_not_found", id=missing[0])
+    return [rows[i] for i in ids]
+
+
+def _head(blobs: BlobStore, sha256: str) -> bytes:
+    """The first bytes of a stored blob, for the signature check of the rules."""
+    fh = blobs.open(sha256)
+    if fh is None:
+        raise RuntimeError(f"blob {sha256} is recorded but missing from the store")
+    with fh:
+        return fh.read(attachment_rules.HEAD_BYTES)
+
+
+def last_submission(db: Session, work: AssignmentWork) -> Optional[AssignmentSubmission]:
+    """The latest hand-in of the work (the one that counts), or None."""
+    return db.execute(select(AssignmentSubmission).where(AssignmentSubmission.work_id == work.id)
+                      .order_by(AssignmentSubmission.created_at.desc(), AssignmentSubmission.id.desc())
+                      .limit(1)).scalar_one_or_none()
+
+
 def quota_used(db: Session, user: User, shas: Iterable[str] = ()) -> tuple[int, set]:
-    """(the sizes of the distinct blobs in all the student's hand-ins, which of `shas` they already have)."""
-    mine = (select(AssignmentSubmissionFile.blob_sha256, func.max(AssignmentSubmissionFile.size).label("size"))
-            .join(AssignmentSubmission, AssignmentSubmission.id == AssignmentSubmissionFile.submission_id)
-            .join(AssignmentWork, AssignmentWork.id == AssignmentSubmission.work_id)
-            .where(AssignmentWork.user_id == user.id).group_by(AssignmentSubmissionFile.blob_sha256).subquery())
+    """(the sizes of the distinct blobs in all the student's hand-ins and draft files - deleted draft files too,
+    until the reaper removes them (4b.2) - and which of `shas` they already have). Only the student's own rows
+    count: a blob stored for someone else is new to them (an upload never tells what the store holds)."""
+    handed_in = (select(AssignmentSubmissionFile.blob_sha256.label("sha"), AssignmentSubmissionFile.size.label("size"))
+                 .join(AssignmentSubmission, AssignmentSubmission.id == AssignmentSubmissionFile.submission_id)
+                 .join(AssignmentWork, AssignmentWork.id == AssignmentSubmission.work_id)
+                 .where(AssignmentWork.user_id == user.id))
+    drafted = (select(WorkDraftFile.blob_sha256.label("sha"), WorkDraftFile.size.label("size"))
+               .where(WorkDraftFile.user_id == user.id))
+    rows = union_all(handed_in, drafted).subquery()
+    mine = (select(rows.c.sha.label("blob_sha256"), func.max(rows.c.size).label("size"))
+            .group_by(rows.c.sha).subquery())
     used = db.execute(select(func.coalesce(func.sum(mine.c.size), 0))).scalar_one()
     shas = list(shas)
     owned = set(db.execute(select(mine.c.blob_sha256).where(mine.c.blob_sha256.in_(shas))).scalars()) if shas else set()
