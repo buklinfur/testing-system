@@ -33,6 +33,12 @@ PDF = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n"
 SVG = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
 HTML = b"<!doctype html><html><script>alert(1)</script></html>"
 CP1251 = "print('Привет')\n".encode("cp1251")
+# an iPhone photo: ftyp box of 24 bytes, major brand heic, compatible mif1 heic
+HEIC = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00\x00\x00\x00" * 4
+# another major brand, heic among the compatible ones
+HEIC_COMPAT = b"\x00\x00\x00\x1cftypMSNV\x00\x00\x00\x00isommp42heic" + b"\x00" * 8
+AVIF = b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf" + b"\x00" * 8
+MP4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 8
 MIB = 1024 * 1024
 
 
@@ -65,6 +71,11 @@ def link(url="https://scratch.mit.edu/projects/1", title=None):
 
 def code(decision):
     return "ok" if decision else decision.reason if hasattr(decision, "reason") else decision.code
+
+
+def code_index(refusal):
+    """"ok" or (code, index) of a Refusal."""
+    return "ok" if refusal else (refusal.code, refusal.index)
 
 
 # --------------------------------------------------------------------------- purity
@@ -124,7 +135,7 @@ class InStepTests(unittest.TestCase):
         except ImportError:  # pragma: no cover - fastapi is not installed
             self.skipTest("needs fastapi")
         from protocol.problem_package import picture_kind
-        heads = [PNG, JPEG, WEBP, ZIP, EMPTY_ZIP, PDF, SVG, HTML, CP1251, b"", b"RIFF\x00\x00\x00\x00WAVE",
+        heads = [PNG, JPEG, WEBP, ZIP, EMPTY_ZIP, PDF, HEIC, SVG, HTML, CP1251, b"", b"RIFF\x00\x00\x00\x00WAVE",
                  b"\x89PNG", b"\xff\xd8", b"PK\x03"]
         for head in heads:
             with self.subTest(head=head[:12]):
@@ -164,7 +175,8 @@ class NameTests(unittest.TestCase):
             ("pic.gif", "file_type_not_allowed"),
             ("setup.exe", "file_type_not_allowed"),
             ("script.sh", "file_type_not_allowed"),
-            ("photo.heic", "file_type_not_allowed"),
+            ("photo.heic", "ok"),  # D-097 (D-078 refused it)
+            ("photo.avif", "file_type_not_allowed"),
             ("", "file_name_invalid"),
             ("   ", "file_name_invalid"),
             ("...", "file_name_invalid"),
@@ -238,6 +250,16 @@ class ContentTests(unittest.TestCase):
             ("paper.pdf", b"%PDF", "file_content_mismatch"),  # no dash: not the header
             ("paper.pdf", HTML, "file_content_mismatch"),
             ("paper.pdf", b"\n%PDF-1.4", "file_content_mismatch"),
+            # HEIC / HEIF of an iPhone, taken as they are (D-097)
+            ("IMG_0001.HEIC", HEIC, "ok"),
+            ("photo.heif", HEIC, "ok"),
+            ("photo.heic", HEIC_COMPAT, "ok"),
+            ("photo.heic", AVIF, "file_content_mismatch"),
+            ("photo.heic", MP4, "file_content_mismatch"),
+            ("photo.heic", JPEG, "file_content_mismatch"),  # a JPEG under .heic: save it again as .jpg
+            ("photo.heic", b"\x00\x00\x00\x18ftyp", "file_content_mismatch"),  # the box cut before its brand
+            ("photo.jpg", HEIC, "file_content_mismatch"),
+            ("photo.avif", AVIF, "file_type_not_allowed"),
         ]
         for name, head, expected in cases:
             with self.subTest(name=name, head=head[:8]):
@@ -261,7 +283,19 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(set(ar.ALLOWED), {
             ".py", ".c", ".cpp", ".h", ".hpp", ".txt", ".md", ".csv", ".json", ".ipynb",
             ".zip", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".sb3", ".pdf",
-            ".png", ".jpg", ".jpeg", ".webp"})
+            ".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"})
+
+    def test_heif_is_never_shown_as_a_picture(self):
+        """HEIC is taken but served only as a download: content_files does not sniff it as a picture."""
+        try:
+            from app import content_files
+        except ImportError:  # pragma: no cover
+            self.skipTest("needs fastapi")
+        self.assertEqual(ar.signature(HEIC), "heif")
+        for name in ("IMG_0001.HEIC", "photo.heif"):
+            with self.subTest(name=name):
+                self.assertEqual(content_files.decide(name, HEIC, complete=True), content_files.OCTET)
+                self.assertEqual(content_files.kind_of(name), content_files.OCTET)
 
 
 # --------------------------------------------------------------------------- links
@@ -416,10 +450,15 @@ class LimitTests(unittest.TestCase):
     def test_defaults(self):
         self.assertEqual((ar.SUBMISSION_FILES_MAX, ar.SUBMISSION_FILE_MAX_BYTES, ar.SUBMISSION_TOTAL_MAX_BYTES,
                           ar.STUDENT_QUOTA_BYTES, ar.ITEM_ATTACHMENTS_MAX, ar.ATTACHMENT_MAX_BYTES),
-                         (10, 20 * MIB, 50 * MIB, 200 * MIB, 20, 50 * MIB))
-        files = [f(f"{i}.py", size=ar.SUBMISSION_FILE_MAX_BYTES // 4) for i in range(10)]
-        self.assertTrue(ar.check_hand_in(files))  # 10 files of 5 MB: exactly 50 MB
+                         (20, 30 * MIB, 200 * MIB, 1024 * MIB, 20, 50 * MIB))  # D-097
+        self.assertEqual(ar.DRAFT_TTL_DAYS, 14)
+        files = [f(f"{i}.py", size=10 * MIB) for i in range(20)]
+        self.assertTrue(ar.check_hand_in(files))  # 20 files of 10 MB: exactly 200 MB
         self.assertEqual(ar.check_hand_in(files + [f("x.py")]).code, "too_many_files")
+        photos = [f(f"{i}.jpg", JPEG, size=ar.SUBMISSION_FILE_MAX_BYTES) for i in range(6)]
+        self.assertTrue(ar.check_hand_in(photos))  # six photos of 30 MB: 180 MB
+        self.assertEqual(ar.check_hand_in(photos + [f("6.jpg", JPEG, size=ar.SUBMISSION_FILE_MAX_BYTES)]).code,
+                         "submission_too_large")
 
     def test_order_of_a_hand_in(self):
         """too_many_files, then each file in order (its name, type, size, content), duplicate_name,
@@ -456,6 +495,57 @@ class LimitTests(unittest.TestCase):
         self.assertTrue(ar.quota_ok(10 ** 12, 10 ** 12, 0))
         self.assertTrue(ar.quota_ok(ar.STUDENT_QUOTA_BYTES - 1, 1))
         self.assertFalse(ar.quota_ok(ar.STUDENT_QUOTA_BYTES, 1))
+
+
+# --------------------------------------------------------------------------- a student's draft (4b.2)
+class DraftTests(unittest.TestCase):
+    LIM = ar.Limits(files_max=3, file_max_bytes=100, total_max_bytes=250)
+
+    def name(self, names, count, name):
+        return code_index(ar.check_draft_name(names, count, name, self.LIM))
+
+    def file(self, names, count, size, one):
+        return code_index(ar.check_draft_file(names, count, size, one, self.LIM))
+
+    def test_before_the_body(self):
+        self.assertEqual(self.name([], 0, "a.py"), "ok")
+        self.assertEqual(self.name(["a.py", "b.py"], 2, "c.py"), "ok")
+        self.assertEqual(self.name(["a.py", "b.py", "c.py"], 3, "d.svg"), ("too_many_files", None))  # count first
+        self.assertEqual(self.name([], 0, "a/b.py"), ("file_name_invalid", 0))
+        self.assertEqual(self.name(["A.PY"], 1, "a.svg"), ("file_type_not_allowed", 0))  # type before repeat
+        self.assertEqual(self.name(["A.PY"], 1, "a.py"), ("duplicate_name", 0))
+        self.assertEqual(self.name(["Отчёт.PDF"], 1, "отчёт.pdf"), ("duplicate_name", 0))
+        self.assertEqual(self.name([], 0, "IMG_1.HEIC"), "ok")
+
+    def test_after_the_body(self):
+        self.assertEqual(self.file([], 0, 0, f("a.py", size=100)), "ok")
+        self.assertEqual(self.file(["a.py", "b.py"], 2, 150, f("c.py", size=100)), "ok")  # exactly 250
+        self.assertEqual(self.file(["a.py", "b.py"], 2, 150, f("c.py", size=101)), ("file_too_large", 0))
+        self.assertEqual(self.file(["a.py", "b.py"], 2, 151, f("c.py", size=100)), ("submission_too_large", None))
+        self.assertEqual(self.file(["a.py", "b.py", "c.py"], 3, 3, f("d.svg")), ("too_many_files", None))
+        self.assertEqual(self.file(["a.py"], 1, 1, f("A.py", size=100)), ("duplicate_name", 0))
+        self.assertEqual(self.file(["a.py"], 1, 240, f("A.py", size=100)), ("duplicate_name", 0))  # before the sum
+        self.assertEqual(self.file([], 0, 0, f("p.png", HTML)), ("file_content_mismatch", 0))
+        self.assertEqual(self.file([], 0, 0, f("e.txt", b"")), ("file_empty", 0))
+        self.assertEqual(self.file([], 0, 0, f("p.heic", HEIC)), "ok")
+
+    def test_a_full_draft_fits_one_hand_in(self):
+        """Every draft check_draft_file lets grow still passes check_hand_in with the same limits (no links)."""
+        draft, names, total = [], [], 0
+        for i in range(5):
+            one = f(f"{i}.py", size=80)
+            if not ar.check_draft_file(names, len(draft), total, one, self.LIM):
+                break
+            draft.append(one)
+            names.append(one.name)
+            total += one.size
+        self.assertEqual(len(draft), 3)
+        self.assertTrue(ar.check_hand_in(draft, [], self.LIM))
+
+    def test_quota_counts_what_is_new(self):
+        self.assertTrue(ar.quota_ok(ar.STUDENT_QUOTA_BYTES - 30 * MIB, 30 * MIB))
+        self.assertEqual(code(ar.quota_ok(ar.STUDENT_QUOTA_BYTES - 30 * MIB, 30 * MIB + 1)), "quota_exceeded")
+        self.assertTrue(ar.quota_ok(ar.STUDENT_QUOTA_BYTES + 1, 0))  # a file the student already has
 
 
 # --------------------------------------------------------------------------- who sees and who changes them

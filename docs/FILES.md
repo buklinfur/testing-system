@@ -18,6 +18,7 @@ D-026 и правило «тип по расширению» из `MODULE_4A.md`
 | картинка PNG/JPEG/WebP | любое другое (`.txt`, `.in`, без расширения) | `application/octet-stream`, вложением |
 | не картинка (HTML, SVG, что угодно) | картиночное (`pic.png`) | `application/octet-stream`, вложением |
 | GIF, SVG, HTML и всё прочее | любое | `application/octet-stream`, вложением (D-026: GIF тоже) |
+| HEIC / HEIF (фото iPhone, принимаются у сдач с 4б.2, D-097) | `.heic`, `.heif` | `application/octet-stream`, вложением: в браузере не показывается |
 | текст: нет байта NUL и это UTF-8 | текстовое (`.in`, `.out`, `.ans`, `.txt`, `.md`, `.py`, `.c`, `.cpp`, `.h`, `.yaml`, `.json`, …) или исходник посылки | `text/plain; charset=utf-8`, вложением |
 | не UTF-8 (например, **cp1251**) или есть NUL | текстовое или исходник | `application/octet-stream`, вложением |
 | zip `PK 03 04` | архив посылки | `application/zip`, вложением |

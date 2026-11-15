@@ -569,10 +569,11 @@ D-059 в [`DECISIONS.md`](DECISIONS.md): заменяет D-027 («виды эл
 | `zip docx xlsx pptx odt ods odp sb3` | сигнатура zip `PK\x03\x04`; пустой zip (`PK\x05\x06`) — отказ |
 | `pdf` | начинается с `%PDF-` |
 | `png`, `jpg` / `jpeg`, `webp` | сигнатура PNG / JPEG / WebP, **совпадающая с расширением** |
+| `heic`, `heif` (4б.2, D-097) | бокс ISO BMFF `ftyp` в байтах 4–8: major brand `heic heix heim heis hevc hevx mif1 msf1` или `heic` / `heix` среди совместимых. Принимается как есть, отдаётся только вложением |
 
 Несовпадение даёт `file_content_mismatch`. Картинки при загрузке проверяются строже, чем при отдаче: D-070 отдаёт
 `.jpg` с PNG внутри как `image/png`, а загрузка такой файл отклоняет, и ученик пересохраняет его сразу. SVG, HTML,
-GIF, HEIC, исполняемые и всё прочее в список не входят. Сигнатуры совпадают с `content_files.sniff` и
+GIF, AVIF, исполняемые и всё прочее в список не входят (HEIC — с 4б.2, D-078 его отвергал). Сигнатуры совпадают с `content_files.sniff` и
 `protocol/problem_package.picture_kind`, тест держит их в согласии.
 
 Один файл (`check_file`) проверяется по порядку: имя → тип → пустой (`file_empty`) → размер (`file_too_large`) →
@@ -605,10 +606,11 @@ GIF, HEIC, исполняемые и всё прочее в список не в
 ### Лимиты сдачи
 
 `check_hand_in(files, links, limits)` проверяет по порядку, первая неудача даёт код:
-1. `too_many_files` — файлов и ссылок вместе больше `JUDGE_SUBMISSION_FILES_MAX` (10); `answer.md` не считается;
-2. каждый файл по порядку — `check_file` с пределом `JUDGE_SUBMISSION_FILE_MAX_MB` (20 МБ);
+1. `too_many_files` — файлов и ссылок вместе больше `JUDGE_SUBMISSION_FILES_MAX` (20; до 4б.2 — 10); `answer.md` не
+   считается;
+2. каждый файл по порядку — `check_file` с пределом `JUDGE_SUBMISSION_FILE_MAX_MB` (30 МБ; до 4б.2 — 20);
 3. `duplicate_name`;
-4. `submission_too_large` — сумма файлов больше `JUDGE_SUBMISSION_TOTAL_MAX_MB` (50 МБ);
+4. `submission_too_large` — сумма файлов больше `JUDGE_SUBMISSION_TOTAL_MAX_MB` (200 МБ; до 4б.2 — 50);
 5. каждая ссылка по порядку — `check_link`.
 
 Ответ — `OK` или `Refusal(code, index)`: номер файла или ссылки, о которых отказ (`None` — о списке целиком).
@@ -619,15 +621,32 @@ GIF, HEIC, исполняемые и всё прочее в список не в
 ### Квота ученика
 
 `quota_ok(used, adding, quota)`:
-* `used` — сумма размеров **различных** блобов (distinct `sha256`) во всех сдачах ученика, вместе с `answer.md`;
-* `adding` — размеры блобов новой сдачи, которых у ученика ещё нет.
+* `used` — сумма размеров **различных** блобов (distinct `sha256`) во всех сдачах ученика, вместе с `answer.md`, и
+  (с 4б.2) в его черновиках, **удалённых тоже**, пока reaper не убрал их строки;
+* `adding` — размеры блобов новой сдачи или чернового файла, которых у ученика ещё нет.
 
 Поэтому пересдача тех же файлов квоту не расходует, а история сдач её не съедает. Граница включительная.
 * Сдача без новых блобов проходит всегда, даже если квоту уменьшили ниже `used`.
-* `quota` — `JUDGE_STUDENT_QUOTA_MB` (200 МБ); пусто или 0 — без предела.
+* `quota` — `JUDGE_STUDENT_QUOTA_MB` (1 ГБ; до 4б.2 — 200 МБ); пусто или 0 — без предела.
 * Отказ — `quota_exceeded`; сообщение сервиса просит обратиться к преподавателю.
 
 Ссылки в квоту не входят.
+
+### Черновик ученика (4б.2, D-097)
+
+Ученик загружает файлы задания по одному **до сдачи** — в черновик пары «задание — ученик» (с телефона фото
+прикладывают по мере съёмки); сдача потом называет id черновых файлов. Отмены сдачи нет: до оценки новая сдача
+заменяет прежнюю, черновик готовит следующую версию.
+* `check_draft_name(имена, число, имя)` — до тела: `too_many_files` (в черновике уже `JUDGE_SUBMISSION_FILES_MAX`
+  файлов), коды имени и типа, `duplicate_name` (среди живых черновых файлов, без учёта регистра);
+* `check_draft_file(имена, число, сумма, файл)` — после тела, под блокировкой ученика: `too_many_files`, коды
+  `check_file` с пределом `JUDGE_SUBMISSION_FILE_MAX_MB`, `duplicate_name`, `submission_too_large` (сумма черновика
+  больше `JUDGE_SUBMISSION_TOTAL_MAX_MB`). Черновик, который эти правила пропустили, проходит `check_hand_in` целиком;
+* в черновике только файлы: ссылки и текст приходят вместе со сдачей;
+* квота — та же `quota_ok` (черновики, удалённые тоже, входят в `used`);
+* черновой файл, удалённый и нет, убирается через `JUDGE_DRAFT_TTL_DAYS` (14) дней после загрузки (reaper).
+
+Схема, сервисы и маршруты — этапы 2–5 сессии 4б.2.
 
 ### Вложения преподавателя
 
@@ -720,7 +739,8 @@ GIF, HEIC, исполняемые и всё прочее в список не в
 
 **Лимиты** — `Settings.files` (`FileSettings`), env `JUDGE_SUBMISSION_FILES_MAX`, `JUDGE_SUBMISSION_FILE_MAX_MB`,
 `JUDGE_SUBMISSION_TOTAL_MAX_MB`, `JUDGE_STUDENT_QUOTA_MB` (0 — без квоты), `JUDGE_ITEM_ATTACHMENTS_MAX`,
-`JUDGE_ATTACHMENT_MAX_MB` (пример — `deploy/env/backend.env.example`); неверное значение останавливает запуск.
+`JUDGE_ATTACHMENT_MAX_MB`, с 4б.2 — `JUDGE_DRAFT_TTL_DAYS` (пример — `deploy/env/backend.env.example`); неверное
+значение останавливает запуск.
 `attachments.hand_in_limits` / `teacher_limits` превращают их в `Limits` правил.
 
 judgectl и админский API — этапы 4 и 5. Коды сервисов `file_not_found` (404) и `quota_exceeded` (409, только сдача

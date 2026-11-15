@@ -353,9 +353,10 @@ j .venv/bin/python -m app.judgectl status           # migration b7e3d91a4c62, р
 | `JUDGE_IMPORT_MAX_FILES`, `JUDGE_IMPORT_MAX_RATIO` | `5000`, `0` (выкл.) | нет |
 | **`JUDGE_ASSIGNMENT_TEXT_MAX_KB`** | `64` — текст ответа ручного задания (4в.1) | нет |
 | **`JUDGE_COMMENT_RATE_PER_MIN`** | `10` — комментариев ученика в минуту, `0` — без лимита (4в.2) | нет |
-| **`JUDGE_SUBMISSION_FILES_MAX`** | `10` — файлов и ссылок в одной сдаче (4в.3) | нет |
-| **`JUDGE_SUBMISSION_FILE_MAX_MB`**, **`JUDGE_SUBMISSION_TOTAL_MAX_MB`** | `20`, `50` — файл сдачи, все файлы сдачи | нет |
-| **`JUDGE_STUDENT_QUOTA_MB`** | `200` — различные файлы ученика, `0` — без квоты | нет |
+| **`JUDGE_SUBMISSION_FILES_MAX`** | `20` — файлов и ссылок в одной сдаче (4в.3; до 4б.2 — `10`, D-097) | нет |
+| **`JUDGE_SUBMISSION_FILE_MAX_MB`**, **`JUDGE_SUBMISSION_TOTAL_MAX_MB`** | `30`, `200` — файл сдачи (и черновика), все файлы сдачи (до 4б.2 — `20`, `50`) | нет |
+| **`JUDGE_STUDENT_QUOTA_MB`** | `1024` — различные файлы сдач и черновиков ученика, `0` — без квоты (до 4б.2 — `200`) | нет |
+| **`JUDGE_DRAFT_TTL_DAYS`** | `14` — через сколько дней после загрузки reaper убирает черновой файл ученика (4б.2) | нет |
 | **`JUDGE_ITEM_ATTACHMENTS_MAX`** | `20` — вложений у элемента ленты и у версии материала (4в.3, 4в.4) | нет |
 | **`JUDGE_ATTACHMENT_MAX_MB`** | `50` — файл преподавателя (элемент, материал) | нет |
 

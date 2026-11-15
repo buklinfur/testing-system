@@ -167,26 +167,28 @@ class FileSettingsTests(unittest.TestCase):
         self.assertEqual(ar.TEACHER_LIMITS.files_max, f.item_attachments_max)
         self.assertEqual(ar.TEACHER_LIMITS.file_max_bytes, f.attachment_max_bytes)
         self.assertEqual(blobstore.HEAD_BYTES, ar.HEAD_BYTES)
+        self.assertEqual(f.draft_ttl_days, ar.DRAFT_TTL_DAYS)
         self.assertEqual(Settings.from_env({}).files, f)
 
     def test_from_env(self):
         f = Settings.from_env({"JUDGE_SUBMISSION_FILES_MAX": "3", "JUDGE_SUBMISSION_FILE_MAX_MB": "1",
                                "JUDGE_SUBMISSION_TOTAL_MAX_MB": "2", "JUDGE_STUDENT_QUOTA_MB": "0",
                                "JUDGE_ITEM_ATTACHMENTS_MAX": "5", "JUDGE_ATTACHMENT_MAX_MB": "7"}).files
-        self.assertEqual(f, FileSettings(3, MIB, 2 * MIB, 0, 5, 7 * MIB))
+        self.assertEqual(f, FileSettings(3, MIB, 2 * MIB, 0, 5, 7 * MIB, 14))
+        self.assertEqual(Settings.from_env({"JUDGE_DRAFT_TTL_DAYS": "3"}).files.draft_ttl_days, 3)
 
     def test_bad_values_stop_the_start(self):
         for name, value in (("JUDGE_SUBMISSION_FILES_MAX", "0"), ("JUDGE_SUBMISSION_FILE_MAX_MB", "-1"),
                             ("JUDGE_STUDENT_QUOTA_MB", "-1"), ("JUDGE_ATTACHMENT_MAX_MB", "0"),
-                            ("JUDGE_ITEM_ATTACHMENTS_MAX", "много")):
+                            ("JUDGE_ITEM_ATTACHMENTS_MAX", "много"), ("JUDGE_DRAFT_TTL_DAYS", "0")):
             with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                 Settings.from_env({name: value})
 
-    def test_the_example_env_lists_all_six(self):
+    def test_the_example_env_lists_all_seven(self):
         example = (ROOT / "deploy/env/backend.env.example").read_text(encoding="utf-8")
-        for name in ("JUDGE_SUBMISSION_FILES_MAX=10", "JUDGE_SUBMISSION_FILE_MAX_MB=20",
-                     "JUDGE_SUBMISSION_TOTAL_MAX_MB=50", "JUDGE_STUDENT_QUOTA_MB=200", "JUDGE_ITEM_ATTACHMENTS_MAX=20",
-                     "JUDGE_ATTACHMENT_MAX_MB=50"):
+        for name in ("JUDGE_SUBMISSION_FILES_MAX=20", "JUDGE_SUBMISSION_FILE_MAX_MB=30",
+                     "JUDGE_SUBMISSION_TOTAL_MAX_MB=200", "JUDGE_STUDENT_QUOTA_MB=1024",
+                     "JUDGE_ITEM_ATTACHMENTS_MAX=20", "JUDGE_ATTACHMENT_MAX_MB=50", "JUDGE_DRAFT_TTL_DAYS=14"):
             self.assertIn(f"# {name}\n", example)
 
 

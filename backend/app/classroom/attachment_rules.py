@@ -18,7 +18,9 @@ so is `run.py.exe` (.exe is not in the list), while `отчёт.v2.pdf` passes. 
 * pdf - %PDF-;
 * pictures - the PNG / JPEG / WebP signature that matches the suffix (.png - PNG, .jpg/.jpeg - JPEG, .webp - WebP).
   Stricter than serving (D-070 serves a .jpg holding a PNG as image/png): at upload the student can still save it
-  again. SVG, HTML, executables and everything else are not in the list.
+  again. SVG, HTML, executables and everything else are not in the list;
+* HEIC / HEIF photos of an iPhone (.heic, .heif; 4b.2, D-097) - an ISO BMFF `ftyp` box with a HEIF brand. Taken as
+  they are: never converted, and served only as a download (content_files does not know them as pictures).
 
 Links are data: the server never opens them (no preview, no SSRF). Only http and https with a host, no user:pass@,
 no whitespace or control characters, at most LINK_URL_MAX characters.
@@ -44,20 +46,27 @@ LINK_TITLE_MAX = 200
 
 MIB = 1024 * 1024
 # the defaults of the settings (the service passes the configured values)
-SUBMISSION_FILES_MAX = 10  # JUDGE_SUBMISSION_FILES_MAX: files and links of one hand-in (answer.md not counted)
-SUBMISSION_FILE_MAX_BYTES = 20 * MIB  # JUDGE_SUBMISSION_FILE_MAX_MB
-SUBMISSION_TOTAL_MAX_BYTES = 50 * MIB  # JUDGE_SUBMISSION_TOTAL_MAX_MB
-STUDENT_QUOTA_BYTES = 200 * MIB  # JUDGE_STUDENT_QUOTA_MB: distinct blobs of all the student's hand-ins
+# (4b.2, D-097: phone photos - a file 30 MB, 20 files, 200 MB a hand-in, 1 GB a student)
+SUBMISSION_FILES_MAX = 20  # JUDGE_SUBMISSION_FILES_MAX: files and links of one hand-in (answer.md not counted)
+SUBMISSION_FILE_MAX_BYTES = 30 * MIB  # JUDGE_SUBMISSION_FILE_MAX_MB: also the body limit of a draft upload
+SUBMISSION_TOTAL_MAX_BYTES = 200 * MIB  # JUDGE_SUBMISSION_TOTAL_MAX_MB: the files of one hand-in (and of a draft)
+STUDENT_QUOTA_BYTES = 1024 * MIB  # JUDGE_STUDENT_QUOTA_MB: distinct blobs of the student's hand-ins and drafts
+DRAFT_TTL_DAYS = 14  # JUDGE_DRAFT_TTL_DAYS: a draft file (deleted or not) is removed this long after its upload
 ITEM_ATTACHMENTS_MAX = 20  # JUDGE_ITEM_ATTACHMENTS_MAX: files and links of one feed item
 ATTACHMENT_MAX_BYTES = 50 * MIB  # JUDGE_ATTACHMENT_MAX_MB: one file of a teacher
 
-TEXT, ZIP, PDF = "text", "zip", "pdf"
+TEXT, ZIP, PDF, HEIF = "text", "zip", "pdf", "heif"
+# major brands of the ftyp box of a HEIF picture (an iPhone writes heic); a file whose major brand is another one is
+# still HEIF when heic / heix is among its compatible brands
+HEIF_MAJOR_BRANDS = frozenset({b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"mif1", b"msf1"})
+HEIF_COMPATIBLE_BRANDS = frozenset({b"heic", b"heix"})
 # the whitelist: suffix -> what its content must be ("png" / "jpeg" / "webp": that picture signature)
 ALLOWED = {
     **{s: TEXT for s in (".py", ".c", ".cpp", ".h", ".hpp", ".txt", ".md", ".csv", ".json", ".ipynb")},
     **{s: ZIP for s in (".zip", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".sb3")},
     ".pdf": PDF,
     ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp",
+    ".heic": HEIF, ".heif": HEIF,
 }
 SEPARATORS = frozenset("/\\")
 # a URL is ASCII-printable or letters of a non-ASCII host / path; none of these categories belongs in it
@@ -92,9 +101,20 @@ TEACHER_LIMITS = Limits(files_max=ITEM_ATTACHMENTS_MAX, file_max_bytes=ATTACHMEN
 
 
 # --------------------------------------------------------------------------- what the bytes are
+def _heif(head: bytes) -> bool:
+    """An ISO BMFF file starts with its ftyp box: size (4 bytes), b"ftyp", the major brand, a minor version, then the
+    compatible brands up to the end of the box."""
+    if len(head) < 12 or head[4:8] != b"ftyp":
+        return False
+    if head[8:12] in HEIF_MAJOR_BRANDS:
+        return True
+    end = min(int.from_bytes(head[:4], "big"), len(head))
+    return any(head[i:i + 4] in HEIF_COMPATIBLE_BRANDS for i in range(16, end - 3, 4))
+
+
 def signature(head: bytes) -> Optional[str]:
-    """"png" / "jpeg" / "webp" / "zip" / "zip-empty" / "pdf" by the start of the file, or None. The first four agree
-    with content_files.sniff (a unit test keeps them in step)."""
+    """"png" / "jpeg" / "webp" / "zip" / "zip-empty" / "pdf" / "heif" by the start of the file, or None. The first
+    four agree with content_files.sniff (a unit test keeps them in step); heif is not a picture there."""
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
         return "png"
     if head.startswith(b"\xff\xd8\xff"):
@@ -107,6 +127,8 @@ def signature(head: bytes) -> Optional[str]:
         return "zip-empty"
     if head.startswith(b"%PDF-"):
         return "pdf"
+    if _heif(head):
+        return HEIF
     return None
 
 
@@ -245,9 +267,42 @@ def _check_list(files, links, limits: Limits, *, existing_names):
     return OK
 
 
+def check_draft_name(existing_names: Iterable[str], existing_count: int, name, limits: Limits = Limits()):
+    """What can be decided about one more file of a student's draft before its body arrives (4b.2): too_many_files
+    (the draft already holds limits.files_max files), the name (file_name_invalid, file_type_not_allowed),
+    duplicate_name (a live draft file of that name, case ignored). OK or a Refusal (index 0)."""
+    if existing_count + 1 > limits.files_max:
+        return Refusal("too_many_files")
+    named = check_name(name)
+    if not named:
+        return Refusal(named.reason, 0)
+    if any(same_name(name, other) for other in existing_names):
+        return Refusal("duplicate_name", 0)
+    return OK
+
+
+def check_draft_file(existing_names: Iterable[str], existing_count: int, existing_bytes: int, file,
+                     limits: Limits = Limits()):
+    """One more file (name, size, head) of a student's draft next to the `existing_count` live files of
+    `existing_bytes` bytes, named `existing_names` - decided again after the body, under the student's lock. In this
+    order: too_many_files, the codes of check_file with limits.file_max_bytes, duplicate_name, submission_too_large
+    (the draft would no longer fit one hand-in). A draft holds files only: links come with the hand-in, which
+    check_hand_in decides as a whole. OK or a Refusal (index 0)."""
+    if existing_count + 1 > limits.files_max:
+        return Refusal("too_many_files")
+    one = _check_list([file], [], Limits(limits.files_max, limits.file_max_bytes, None), existing_names=existing_names)
+    if not one:
+        return one
+    if limits.total_max_bytes is not None and existing_bytes + file.size > limits.total_max_bytes:
+        return Refusal("submission_too_large")
+    return OK
+
+
 def quota_ok(used: int, adding: int, quota: Optional[int] = STUDENT_QUOTA_BYTES) -> Decision:
-    """The student's quota: `used` - the sizes of the distinct blobs in all their hand-ins; `adding` - the sizes of
-    the blobs of the new hand-in they do not have yet (the same file again costs nothing). Up to the quota inclusive;
+    """The student's quota: `used` - the sizes of the distinct blobs in all their hand-ins and draft files (4b.2: a
+    deleted draft file still counts until it is removed, so uploading and deleting cannot get round the quota);
+    `adding` - the sizes of the blobs of the new hand-in or draft file they do not have yet (the same file again
+    costs nothing). Up to the quota inclusive;
     a hand-in that adds nothing new always passes (also when the quota was lowered below `used`); quota None or 0:
     no limit. quota_exceeded otherwise."""
     return _no("quota_exceeded") if quota and adding and used + adding > quota else OK
