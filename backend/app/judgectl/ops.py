@@ -165,6 +165,31 @@ def worker_token_create(ctx: Context, args) -> int:
     return 0
 
 
+def worker_token_list(ctx: Context, args) -> int:
+    """Every worker token with what is safe to show: name, capabilities, created, revoked, last used and how many
+    workers are online with it now - never the token, never its hash (D-096). For a rotation (DEPLOY_WSL2 §6): the
+    new token has its workers online, the old one 0, then the old one is revoked by its name."""
+    with ctx.session() as db:
+        q.read_one_moment(db)
+        online = dict(db.execute(text(
+            "SELECT token_id, count(*) FROM workers WHERE state <> 'stopped'"
+            " AND last_heartbeat >= now() - make_interval(secs => :timeout) GROUP BY token_id"),
+            {"timeout": ctx.settings.queue.heartbeat_timeout_s}).all())
+        tokens = db.execute(select(WorkerToken.id, WorkerToken.name, WorkerToken.capabilities, WorkerToken.created_at,
+                                   WorkerToken.revoked_at, WorkerToken.last_used_at)
+                            .order_by(WorkerToken.created_at, WorkerToken.id)).all()
+    rows = [{"name": t.name, "capabilities": list(t.capabilities or []), "created": t.created_at,
+             "revoked": t.revoked_at, "last_used": t.last_used_at, "workers_online": online.get(t.id, 0)}
+            for t in tokens]
+    if ctx.json:
+        emit_json(ctx, rows)
+        return 0
+    show(ctx, [dict(r, capabilities=",".join(r["capabilities"])) for r in rows],
+         [("name", "NAME"), ("capabilities", "CAPS"), ("created", "CREATED"), ("revoked", "REVOKED"),
+          ("last_used", "LAST USED"), ("workers_online", "ONLINE")])
+    return 0
+
+
 def worker_token_revoke(ctx: Context, args) -> int:
     with ctx.session() as db:
         now = ctx.clock()

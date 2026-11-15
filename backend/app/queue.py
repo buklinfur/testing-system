@@ -104,7 +104,12 @@ def register_worker(session: Session, token: WorkerToken, name: str, capabilitie
         raise TokenError(f"token {token.name!r} does not allow capabilities {sorted(set(capabilities) - set(token.capabilities))}")
     worker = session.execute(select(Worker).where(Worker.name == name).with_for_update()).scalar_one_or_none()
     if worker is not None and worker.token_id != token.id:
-        raise TokenError(f"worker name {name!r} belongs to another token")
+        # a token rotation (D-096): the same worker names come back with a new token. The name moves to it only
+        # while nobody alive holds it - the worker stopped, or silent past the heartbeat timeout, or its token
+        # revoked; a live worker of a live token keeps its name
+        if not _name_free(session, worker, settings):
+            raise TokenError(f"worker name {name!r} belongs to another token")
+        worker.token_id = token.id
     if worker is None:
         worker = Worker(name=name, token_id=token.id, capabilities=list(capabilities))
         session.add(worker)
@@ -125,6 +130,16 @@ def register_worker(session: Session, token: WorkerToken, name: str, capabilitie
     session.flush()
     _event(session, "worker_registered", worker.id, name=name)
     return worker
+
+
+def _name_free(session: Session, worker: Worker, settings: QueueSettings) -> bool:
+    """May another token take over the row of `worker` (D-096)? Yes when it is stopped, silent longer than the
+    heartbeat timeout by the database clock, or its token is revoked."""
+    return bool(session.execute(text(
+        "SELECT w.state = 'stopped' OR w.last_heartbeat IS NULL"
+        " OR w.last_heartbeat < now() - make_interval(secs => :timeout) OR t.revoked_at IS NOT NULL"
+        " FROM workers w JOIN worker_tokens t ON t.id = w.token_id WHERE w.id = :id"),
+        {"id": worker.id, "timeout": settings.heartbeat_timeout_s}).scalar())
 
 
 def _held_by(session: Session, worker_id: int) -> list:

@@ -105,6 +105,19 @@ class WorkerTokenScriptTests(unittest.TestCase):
                 self.assertNotIn('ENVIRON["TOKEN"]', text)
                 self.assertIsNone(re.search(r"echo \"?\$\(?cat [^\n]*token", text))
 
+    def test_install_names_each_token_by_its_moment(self):
+        """A rotation (DEPLOY_WSL2 §6, D-096) runs install-wsl.sh a second time: the new token must not take the
+        old one's name (create refuses a taken name, revoked ones included), so the name carries the second it was
+        made; reset-production.sh names it `main` in a database it has just created."""
+        lines = [l.strip() for l in INSTALL.read_text().splitlines() if l.strip().startswith("name=")]
+        self.assertEqual(lines, ['name="$(hostname -s)-$(date +%Y%m%d%H%M%S)"'])
+        expr = lines[0][len("name="):]
+        out = subprocess.run(["bash", "-c", f"printf %s {expr}"], capture_output=True, text=True, check=True).stdout
+        self.assertRegex(out, r"^[^\s/]+-20\d{12}$")
+        self.assertLessEqual(len(out), 64)  # worker_tokens.name is varchar(64); hostname -s is at most 63, in practice short
+        self.assertIn('judge_worker_token_new "$name" /etc/judge/worker.env', INSTALL.read_text())
+        self.assertIn("judge_worker_token_new main ", RESET.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

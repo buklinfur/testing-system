@@ -336,6 +336,35 @@ class JudgectlTests(PgCase):
         self.assertNotIn("w5", tokens())
         self.assertEqual([a.action for a in self.actions()], ["worker.token_create", "worker.token_create"])
 
+    def test_worker_token_list_shows_neither_token_nor_hash(self):
+        """D-096: what a rotation needs (names, which token has workers online) and nothing that authenticates."""
+        paths = [os.path.join(self.tmp.name, n) for n in ("old", "new")]
+        for name, path in zip(("host-20261101120000", "host-20261115090000"), paths):
+            self.assertEqual(self.run_cli("worker", "token", "create", name, "--out", path, "--caps", "cpu")[0], 0)
+        secrets = [Path(p).read_text().strip() for p in paths]
+        new = q.authenticate(self.s, secrets[1])
+        q.register_worker(self.s, new, "host-w0", ["cpu"], {}, self.settings)
+        self.s.commit()
+        self.assertEqual(self.run_cli("worker", "token", "revoke", "host-20261101120000")[0], 0)
+        hashes = self.s.execute(select(WorkerToken.token_hash)).scalars().all()
+        code, out, err = self.run_cli("worker", "token", "list")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertEqual(lines[0].split(), ["NAME", "CAPS", "CREATED", "REVOKED", "LAST", "USED", "ONLINE"])
+        old, cur = lines[1].split(), lines[2].split()
+        self.assertEqual((old[0], old[1], old[-1]), ("host-20261101120000", "cpu", "0"))
+        self.assertEqual((cur[0], cur[-1]), ("host-20261115090000", "1"))
+        code, jout, err = self.run_cli("worker", "token", "list", "--json")
+        rows = json.loads(jout)
+        self.assertEqual([(r["name"], r["capabilities"], r["revoked"] is None, r["workers_online"]) for r in rows],
+                         [("host-20261101120000", ["cpu"], False, 0), ("host-20261115090000", ["cpu"], True, 1)])
+        self.assertEqual(set(rows[0]), {"name", "capabilities", "created", "revoked", "last_used", "workers_online"})
+        self.assertIsNotNone(rows[1]["last_used"])  # authenticate marked it
+        for text_ in (out + err, jout):
+            self.assertNotIn("jw_", text_)
+            for secret in secrets + hashes:
+                self.assertNotIn(secret, text_)
+
     def test_admin_cli_alias(self):
         path = os.path.join(self.tmp.name, "w1")
         code, out, err = self.run_cli("create-worker-token", "w1", "--out", path, alias=True)

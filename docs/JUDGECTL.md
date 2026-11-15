@@ -102,7 +102,7 @@ judgectl submission show <id>
                            | --problem-version <slug>@<версия>) [--verdicts WA,TL]
 judgectl queue  status | reap | judgements [--last N] | events [--last N]
                 | rejudge (--submission <id> | --contest-problem <id>) [--verdicts WA,TL]     # устарело
-judgectl worker list | token create <имя> --out <новый-файл> [--caps cpu,gpu] | token revoke <имя>
+judgectl worker list | token create <имя> --out <новый-файл> [--caps cpu,gpu] | token list | token revoke <имя>
 judgectl status [--details]
 ```
 
@@ -206,7 +206,10 @@ j .venv/bin/python -m app.judgectl user import /var/lib/judge/<класс>.csv -
 |---|---|
 | `list` | Воркеры: состояние, возраст heartbeat, текущее задание, ядра, число проверок, capabilities |
 | `token create <имя> --out <новый-файл> [--caps cpu,gpu]` | Новый токен воркера (по умолчанию `cpu,problem_check`: `problem_check` — проверки версий задач, 4а.4). Токен пишется **только** в новый файл `--out` (0600, `O_EXCL`, символическая ссылка не открывается) и **не печатается нигде** — ни в stdout, ни в stderr, ни в `--json` (там `{name, capabilities, out}`), D-089. Без `--out` или с `--out -` — код 2; существующий файл — отказ, файл не тронут, токен не создан; занятое имя (отозванные токены его хранят) — отказ. Сбой базы или записи после создания файла (и `commit` тоже) удаляет файл: файла с токеном, которого нет в базе, не бывает. В `/etc/judge/worker.env` его пишут `install-wsl.sh` и `reset-production.sh` (`deploy/lib/worker-token.sh`) |
+| `token list` | Все токены воркеров: имя, capabilities, создан, отозван, последнее использование и `ONLINE` — сколько воркеров с этим токеном онлайн сейчас (не `stopped`, heartbeat моложе `JUDGE_HEARTBEAT_TIMEOUT_S`). **Ни токена, ни его хеша** — ни в таблице, ни в `--json` (`[{name, capabilities, created, revoked, last_used, workers_online}]`), D-096. Нужен для ротации (`DEPLOY_WSL2.md` §6 «Обновление до 4б.1»): у нового токена воркеры онлайн, у старого `ONLINE 0` — тогда старый отзывается по имени |
 | `token revoke <имя>` | Отозвать живой токен; если такого нет — ошибка |
+
+**Имя воркера при новом токене** (D-096). Строка воркера (`<машина>-w<N>`) принадлежит токену, с которым он зарегистрировался. Воркер с другим токеном занимает это имя, только если прежний воркер не жив: остановлен (`stopped`), молчит дольше таймаута heartbeat или его токен отозван; иначе `register` — 403 «belongs to another token». Так ротация не требует менять `JUDGE_MACHINE_NAME`.
 
 ### problem — задачи ([`PROBLEM_IMPORT.md`](PROBLEM_IMPORT.md))
 

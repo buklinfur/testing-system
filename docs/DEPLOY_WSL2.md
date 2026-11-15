@@ -502,6 +502,115 @@ sudo ./deploy/dev/check-reset-db.sh                       # выход 0: баз
 `alembic downgrade` здесь не годится: миграции 4в отказывают, ничего не меняя, пока в базе есть их данные
 (элементы ленты, комментарии, вложения, материалы и ссылки — D-079, D-084), а после smoke они есть.
 
+**Обновление до 4б.1 (API ученика).** Исходное состояние — установка с `master` после слияния `module-4v`
+(последняя миграция `b8e0cbcc4cda`, раздел выше выполнен). Команды — из рабочей копии на ветке `module-4b` **после
+push** (до слияния 4б.1 в `master`).
+
+Что меняется:
+- **схема** — две миграции: `f2e12ff59f1c` (у проверок `max_score` и отметка сервера о снятии проверки отдельными
+  колонками, индекс участий по ученику; D-090) → `f7d82e85a178` (`contest_entry_attempts` — попытки входа в контест
+  по коду; D-093);
+- **публичное приложение** — маршруты ученика `/api/contests…`, `/api/submissions…`, `/api/load` (`STUDENT_API.md` §6);
+- **воркер** — тексты вердиктов перенесены из `runner/explain.py` в `protocol/verdicts.py` (проверки песочницы ниже);
+  сервер отказывает результату с баллами вне 0…max (D-090) и проваливает такую попытку (D-092); токен воркера только в файл
+  (D-089); имя воркера переходит к новому токену, когда прежний воркер остановлен (D-096);
+- **четыре новые необязательные переменные** `backend.env` (ниже); новых пакетов Python нет.
+
+| Переменная | По умолчанию | Что |
+|---|---|---|
+| `JUDGE_SOURCE_MAX_KB` | `256` | файл посылки; не больше, чем берёт раннер (256), иначе приложение не стартует |
+| `JUDGE_ARCHIVE_MAX_KB` | `1024` | архив посылки; не больше 1024 и не больше `max_archive_kb` задачи |
+| `JUDGE_SUBMIT_RATE_PER_MIN` | `6` | посылок одного ученика в минуту, все контесты вместе; `0` — без лимита |
+| `JUDGE_ENTER_RATE` | `10` | попыток входа в контест (с кодом и без) за 10 минут — коды не подобрать |
+
+**Ротация токена воркера.** Прежний токен мог оказаться в выводе терминала, пока `worker token create` печатал его
+(до D-089), поэтому при этом обновлении он меняется на новый: `install-wsl.sh` пишет новый токен в `worker.env`, если
+там `CHANGE_ME`. Имя нового — `<машина>-<ГГГГММДДччммсс>`, не совпадает с прежним. Ни одна команда ниже токен не
+выводит: `worker token list` показывает только имена (D-096).
+
+```bash
+# 0. резервная копия базы, вне репозитория (D-064)
+(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4b1.dump)
+
+# 1. код: ветка module-4b, ничего не изменено, совпадает с отправленной
+git switch module-4b && git status --short          # пусто
+git fetch testing-system && git status -sb | head -1  # ## module-4b...testing-system/module-4b (без ahead/behind)
+
+# 2. прежний токен: запомнить его имя (живой, с недавним LAST USED; ONLINE — воркеры с ним сейчас)
+j .venv/bin/python -m app.judgectl worker token list
+
+# 3. остановка; публичное приложение (python -m app.public_main) — Ctrl-C в его терминале
+sudo systemctl stop judge-worker judge-reaper judge-api-internal
+
+# 4. код, alembic upgrade head: b8e0cbcc4cda → f2e12ff59f1c → f7d82e85a178
+sudo $P ./deploy/install-wsl.sh
+
+# 5. переменные: строки со значениями по умолчанию (можно не добавлять)
+for kv in JUDGE_SOURCE_MAX_KB=256 JUDGE_ARCHIVE_MAX_KB=1024 JUDGE_SUBMIT_RATE_PER_MIN=6 JUDGE_ENTER_RATE=10; do
+  sudo grep -q "^${kv%%=*}=" /etc/judge/backend.env || echo "$kv" | sudo tee -a /etc/judge/backend.env
+done
+
+# 6. ротация токена: копия прежнего worker.env для отката (root:judge 640, как он сам), CHANGE_ME вместо прежнего
+#    токена, install-wsl.sh пишет новый (печатает только имя)
+sudo cp -p /etc/judge/worker.env /etc/judge/worker.env.before-4b1
+sudo sed -i 's/^JUDGE_WORKER_TOKEN=.*/JUDGE_WORKER_TOKEN=CHANGE_ME/' /etc/judge/worker.env
+sudo grep -c '^JUDGE_WORKER_TOKEN=CHANGE_ME$' /etc/judge/worker.env        # 1
+sudo $P ./deploy/install-wsl.sh                       # worker token '<машина>-<время>' written to /etc/judge/worker.env (not shown)
+sudo stat -c '%a %U:%G' /etc/judge/worker.env         # 640 root:judge
+sudo grep -c '^JUDGE_WORKER_TOKEN=jw_' /etc/judge/worker.env               # 1 (сам токен не выводится)
+
+# 7. проверки до запуска
+w .venv/bin/python -m runner.cli sandbox-check            # все ok (менялся runner/explain.py)
+w .venv/bin/python -m runner.cli redteam                  # все ok
+j .venv/bin/python -m app.judgectl status                 # migration f7d82e85a178 = head, config без замечаний
+# контесты со slug не по contest.schema.json: посылки к ним читаются в память до 1 МБ (STUDENT_API §6); ожидается 0 строк
+sudo -u postgres psql -X -d judge -c "SELECT id, slug, state FROM contests WHERE slug !~ '^[a-z0-9][a-z0-9-]{1,62}\$'"
+
+# 8. запуск; воркеры онлайн с новым токеном
+sudo systemctl start judge-api-internal judge-reaper judge-worker
+systemctl status judge-worker --no-pager | head -3        # active (running), не failed 78/CONFIG
+j .venv/bin/python -m app.judgectl worker list            # STATE idle у каждого воркера, HEARTBEAT несколько секунд
+j .venv/bin/python -m app.judgectl worker token list      # новый токен — ONLINE = число воркеров; прежний — ONLINE 0
+
+# 9. только теперь — отзыв прежнего (имя из шага 2)
+j .venv/bin/python -m app.judgectl worker token revoke <прежнее-имя>
+j .venv/bin/python -m app.judgectl worker token list      # у прежнего REVOKED — время; новый ONLINE не изменился
+j .venv/bin/python -m app.public_main                     # публичное приложение, в отдельном терминале
+
+# 10. smoke (в третьем терминале); у каждого свой код TOTP — второй ввести, когда в телефоне сменится код
+tools/smoke-student-api.sh http://127.0.0.1:8000 https://<домен>                                   # failures: 0
+SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>     # failures: 0
+
+# 11. всё зелёное — копия с прежним (уже отозванным) токеном больше не нужна
+sudo shred -u /etc/judge/worker.env.before-4b1
+```
+
+Если в шаге 7 запрос нашёл контесты (такой slug бывает только у исправленного руками в базе) — они работают, но тело
+посылки к ним сначала читается в память под общим лимитом 1 МБ, а не после дешёвых отказов; сообщить разработчику.
+
+Если в шаге 8 воркер `failed` с `status=78/CONFIG`: `journalctl -u judge-worker -n 20`. «cannot register: … belongs to
+another token» — прежний воркер под этим именем ещё жив (не остановлен в шаге 3): `systemctl stop`, подождать
+`JUDGE_HEARTBEAT_TIMEOUT_S` (30 с), `systemctl start`. 401 — в `worker.env` не новый токен: повторить шаг 6. Прежний
+токен до шага 9 не отозван: пока что-то не так, воркеры можно вернуть на него только откатом (ниже).
+
+**Проверки вживую** (после smoke):
+* **Загрузка** без входа: `curl -s --noproxy '*' http://127.0.0.1:8000/api/load` — `401 not_authenticated`;
+  ученику — блок «the load» smoke.
+* **Таблица** — строки `standings: 5 requests, ms …` в выводе smoke ученика: медиана в десятки миллисекунд при
+  нескольких участниках (на машине разработчика: 30 участников × 8 задач — ~30 мс, 300 — ~230 мс, растёт линейно).
+
+**Данные, которые остаются в рабочей базе** после smoke ученика: группа `smoke <время> pupils` (архивная), два
+ученика `uchenik.*` (отключены: у них посылки, удалить нельзя), контесты `smoke-<время>` и `smoke-<время>-code`
+(архивные) с посылками (OK, WA, CE и серия до `rate_limited`), их блобы, попытки входа по коду, записи аудита. Всё это
+убирает `deploy/dev/reset-production.sh` перед учениками (D-073).
+
+**Откат** — только из дампа (D-064), по шаблону ниже: дамп `~/judge-before-4b1.dump`, код — `git switch master`.
+Токен: дамп снят **до** ротации — в нём нет нового токена, а прежний снова жив (даже если в шаге 9 его отозвали), и
+строки воркеров в нём принадлежат прежнему. Новый токен код `master` под этими именами не зарегистрирует (D-096 там
+нет: 403, выход 78). Поэтому в откате, между `pg_restore` и `install-wsl.sh`, вернуть прежний `worker.env`:
+`sudo mv /etc/judge/worker.env.before-4b1 /etc/judge/worker.env` (`stat` — `640 root:judge`). Ротацию повторить
+вместе со следующей попыткой обновления.
+
 ### Откат обновления: пересоздание базы из дампа (D-064)
 
 Любое обновление начинается с дампа (шаг 0: `(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-<что>.dump)`,
@@ -626,6 +735,7 @@ JUDGE_DEV=1 python -m app.dev_seed --package problems-examples/sum-of-two --sour
 python -m app.judgectl queue judgements --last 20
 python -m app.judgectl worker token create smoke --out ~/.config/judge/smoke-worker-token   # новый файл 0600
 tools/smoke-internal-api.sh ~/.config/judge/smoke-worker-token http://127.0.0.1:8002   # протокол воркера curl-ом, код выхода = число провалов
+tools/smoke-student-api.sh http://127.0.0.1:8010 https://judge.example.ru   # API ученика: приватный стек с публичным приложением и воркером
 ```
 Токен воркера для проверок — в `~/.config/judge/smoke-worker-token` (каталог 700, файл 600), не в `/tmp`.
 `worker token create` пишет токен **только в новый файл** `--out` (0600, существующий не перезаписывается) и не

@@ -12,7 +12,7 @@
 
 | Запрос | Назначение |
 |---|---|
-| `POST /register` `{name, capabilities, info}` → `{worker_id, instance}` | создаёт/перехватывает воркера по имени, новый `instance`; возвращает прошлые задания в очередь |
+| `POST /register` `{name, capabilities, info}` → `{worker_id, instance}` | создаёт/перехватывает воркера по имени, новый `instance`; возвращает прошлые задания в очередь. Имя, занятое воркером **другого** токена, переходит к новому, только если тот не жив (`stopped`, heartbeat старше таймаута или токен отозван), иначе 403 (D-096: ротация токена) |
 | `POST /claim` → `{job: {...} \| null}` | следующее задание: посылка в справедливом порядке с учётом `capabilities`, иначе проверка задачи (ниже) |
 | `POST /heartbeat` `{state, judgement_id \| check_id, attempt, phase, tests_done, tests_total, stats}` → `{cancel, reclaimed}` | жив / прогресс; `cancel=true`: задание отобрано; `reclaimed: [{kind: judgement \| check, id, attempt, result: requeued \| gave_up}]` — задания, которые числились за воркером, но heartbeat их не назвал, и они выданы дольше `heartbeat_timeout_s` назад: возвращены в очередь как провал попытки (D-069). Поле новое, старый воркер его игнорирует |
 | `GET /problem-versions/{id}/manifest` → `{manifest_sha256, manifest}` | описание задачи, файлы по sha256 |
