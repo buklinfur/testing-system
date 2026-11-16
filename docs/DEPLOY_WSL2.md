@@ -626,7 +626,8 @@ another token» — прежний воркер под этим именем е�
   `/api/materials…` (`STUDENT_API.md` §6, D-101, D-103); пересдача при неопубликованной оценке (D-102);
 - **reaper** раз в час удаляет черновики, срок которых вышел (`JUDGE_DRAFT_TTL_DAYS` после личного срока задания или
   последнего изменения черновика), и старые файлы `<корень блобов>/tmp`. Юнит `judge-reaper` получил
-  `ReadWritePaths=/var/lib/judge/blobs/tmp` — писать он может только туда; каталог создаёт `install-wsl.sh` (D-099, D-100);
+  `ReadWritePaths=/var/lib/judge/blobs/tmp` — писать он может только туда; каталог создаёт `install-wsl.sh` с правами
+  `0700 judge:judge` (уже созданный — ужесточает), файлы в нём — `0600` (D-099, D-100, D-105);
 - **лимиты файлов ученика** — по умолчанию под фото с телефона (D-097); строки прежних значений, которые раздел 4в
   дописал в `backend.env`, надо поправить (шаг 4), иначе прежние лимиты останутся;
 - **runner, воркер, протокол воркера не меняются** — `sandbox-check` и `redteam` не нужны; новых пакетов Python нет;
@@ -670,9 +671,10 @@ sudo grep -E '^JUDGE_(SUBMISSION_FILES_MAX|SUBMISSION_FILE_MAX_MB|SUBMISSION_TOT
   /etc/judge/backend.env                             # по одной строке каждой: 20, 30, 200, 1024, 14
 sudo stat -c '%a %U:%G' /etc/judge/backend.env        # 640 root:judge (sed -i его сохраняет)
 
-# 5. reaper: пишет только в blobs/tmp
+# 5. reaper: пишет только в blobs/tmp; каталог — только judge (D-105), принимаемые файлы в нём — 0600
 systemctl show judge-reaper -p ReadWritePaths         # ReadWritePaths=/var/lib/judge/blobs/tmp
-sudo stat -c '%a %U:%G' /var/lib/judge/blobs/tmp      # 755 judge:judge
+sudo stat -c '%a %U:%G %n' /var/lib/judge /var/lib/judge/blobs /var/lib/judge/blobs/tmp
+#   750 judge:judge /var/lib/judge   755 judge:judge /var/lib/judge/blobs   700 judge:judge /var/lib/judge/blobs/tmp
 
 # 6. проверки до запуска
 j .venv/bin/python -m app.judgectl status             # migration d2f4a6b8c0e1 = head, config без замечаний

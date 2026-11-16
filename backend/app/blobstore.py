@@ -67,9 +67,10 @@ class BlobStore:
         return self.root / sha256[:2] / sha256
 
     def staging(self) -> Path:
-        """<root>/tmp, created on demand: the directory of files being received."""
+        """<root>/tmp, created on demand: the directory of files being received, 0700 (install-wsl.sh makes it so on
+        the installation; the files in it are 0600: tempfile.mkstemp, D-105)."""
         path = self.root / TMP_DIR
-        path.mkdir(exist_ok=True)
+        path.mkdir(mode=0o700, exist_ok=True)
         return path
 
     def sweep_tmp(self, max_age_s: float = TMP_MAX_AGE_S, now: Optional[float] = None) -> int:

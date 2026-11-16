@@ -85,6 +85,17 @@ class IncomingTests(unittest.TestCase):
         self.assertFalse(blobstore.valid_sha256(staging.name))
         self.assertNotEqual(len(staging.name), 2, "a directory of blobs has a two-letter name")
 
+    def test_the_temporary_directory_is_0700_and_its_files_0600(self):
+        """D-105: under the usual umask 022 the directory of files being received is judge's alone, and so is every
+        file in it, before it is adopted."""
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        store = BlobStore(Path(self.dir.name) / "fresh")
+        with store.incoming("фото.heic") as up:
+            up.write(b"x")
+            self.assertEqual(oct(os.stat(store.staging()).st_mode & 0o777), oct(0o700))
+            self.assertEqual(oct(os.stat(up.path).st_mode & 0o777), oct(0o600))
+
     def test_a_blob_that_is_there_stays_and_the_copy_goes(self):
         sha = self.store.put(b"x = 1\n")
         with self.store.incoming("a.py") as up:

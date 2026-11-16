@@ -613,7 +613,9 @@ class DeployFilesTests(unittest.TestCase):
         for line in ("ProtectSystem=strict", "ProtectHome=true", "PrivateTmp=true", "NoNewPrivileges=true"):
             self.assertIn(line, lines)
         install = (ROOT / "deploy/install-wsl.sh").read_text()
-        self.assertRegex(install, rf"install -d -o judge -g judge [^\n]*{blob_dir}/tmp\b")
+        # judge's alone: 0700 (D-105), its own line so that -m applies to it only
+        self.assertRegex(install, rf"\ninstall -d -o judge -g judge -m 700 {blob_dir}/tmp\n")
+        self.assertNotRegex(install, rf"install -d [^\n]*{blob_dir}/tmp [^\n]")
 
     def test_unit_stop_timeout_exceeds_drain_timeout(self):
         unit = (ROOT / "deploy/systemd/judge-worker.service").read_text()
