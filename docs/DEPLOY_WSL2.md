@@ -404,6 +404,7 @@ j .venv/bin/python -m app.judgectl worker list            # online, CAPS cpu,pro
 j .venv/bin/python -m app.public_main                     # публичное приложение, в отдельном терминале
 
 # 8. smoke (в третьем терминале): все блоки, в том числе лента, картинки, комментарии, файлы, материалы
+#    (seed-as-judge.sh есть в коде до 4б.2; с 4б.2 smoke админа обходится без SEED_CMD — раздел «Обновление до 4б.2»)
 SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>   # failures: 0
 # SKIP бывает только у сдач, если dev-student-1/-2 ещё не созданы: тогда запустить smoke ещё раз
 ```
@@ -579,6 +580,7 @@ j .venv/bin/python -m app.judgectl worker token list      # у прежнего 
 j .venv/bin/python -m app.public_main                     # публичное приложение, в отдельном терминале
 
 # 10. smoke (в третьем терминале); у каждого свой код TOTP — второй ввести, когда в телефоне сменится код
+#     (код 4б.1; с 4б.2 smoke админа обходится без SEED_CMD)
 tools/smoke-student-api.sh http://127.0.0.1:8000 https://<домен>                                   # failures: 0
 SEED_CMD=tools/seed-as-judge.sh tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>     # failures: 0
 
@@ -611,6 +613,115 @@ another token» — прежний воркер под этим именем е�
 нет: 403, выход 78). Поэтому в откате, между `pg_restore` и `install-wsl.sh`, вернуть прежний `worker.env`:
 `sudo mv /etc/judge/worker.env.before-4b1 /etc/judge/worker.env` (`stat` — `640 root:judge`). Ротацию повторить
 вместе со следующей попыткой обновления.
+
+**Обновление до 4б.2 (класс у ученика: лента, работы с черновиками, комментарии, материалы).** Исходное состояние —
+установка с `master` после слияния 4б.1 (последняя миграция `f7d82e85a178`, раздел выше выполнен). Команды — из
+рабочей копии на ветке `module-4b` **после push** (до слияния 4б.2 в `master`).
+
+Что меняется:
+- **схема** — две миграции, `alembic upgrade head` проходит обе: `c5a9e3f1d27b` (`work_draft_files` — черновые
+  файлы ученика до сдачи; D-098) → `d2f4a6b8c0e1` (номер события работы `seq` у сдач и рецензий, счётчик
+  `assignment_works.last_seq`; существующие события нумеруются в прежнем порядке; D-102);
+- **публичное приложение** — маршруты ученика `/api/feed…`, `/api/works`, `/api/comments…`, `/api/library`,
+  `/api/materials…` (`STUDENT_API.md` §6, D-101, D-103); пересдача при неопубликованной оценке (D-102);
+- **reaper** раз в час удаляет черновики, срок которых вышел (`JUDGE_DRAFT_TTL_DAYS` после личного срока задания или
+  последнего изменения черновика), и старые файлы `<корень блобов>/tmp`. Юнит `judge-reaper` получил
+  `ReadWritePaths=/var/lib/judge/blobs/tmp` — писать он может только туда; каталог создаёт `install-wsl.sh` (D-099, D-100);
+- **лимиты файлов ученика** — по умолчанию под фото с телефона (D-097); строки прежних значений, которые раздел 4в
+  дописал в `backend.env`, надо поправить (шаг 4), иначе прежние лимиты останутся;
+- **runner, воркер, протокол воркера не меняются** — `sandbox-check` и `redteam` не нужны; новых пакетов Python нет;
+- **smoke админа** больше не нужен `SEED_CMD`: ученики в нём сдают, пишут и загружают через API ученика
+  (`tools/seed-as-judge.sh` удалён, D-104).
+
+| Переменная | Было (строка из раздела 4в) | Стало (по умолчанию) | Что |
+|---|---|---|---|
+| `JUDGE_SUBMISSION_FILES_MAX` | `10` | `20` | файлов и ссылок в одной сдаче |
+| `JUDGE_SUBMISSION_FILE_MAX_MB` | `20` | `30` | один файл сдачи и черновика (больше — 413 `file_too_large`) |
+| `JUDGE_SUBMISSION_TOTAL_MAX_MB` | `50` | `200` | все файлы одной сдачи |
+| `JUDGE_STUDENT_QUOTA_MB` | `200` | `1024` | различные файлы сдач и черновиков ученика (удалённые черновики — до уборки) |
+| `JUDGE_DRAFT_TTL_DAYS` | — (новая) | `14` | сколько дней живёт черновик после личного срока или последнего изменения |
+
+```bash
+# 0. резервная копия базы, вне репозитория (D-064)
+(umask 077; sudo -u postgres pg_dump -Fc judge > ~/judge-before-4b2.dump)
+
+# 1. код: ветка module-4b, ничего не изменено, совпадает с отправленной
+git switch module-4b && git status --short          # пусто
+git fetch testing-system && git status -sb | head -1  # ## module-4b...testing-system/module-4b (без ahead/behind)
+
+# 2. остановка; публичное приложение (python -m app.public_main) — Ctrl-C в его терминале
+sudo systemctl stop judge-worker judge-reaper judge-api-internal
+
+# 3. код, юниты, каталог blobs/tmp, alembic upgrade head: f7d82e85a178 → c5a9e3f1d27b → d2f4a6b8c0e1
+sudo $P ./deploy/install-wsl.sh
+sudo systemctl daemon-reload                          # install-wsl.sh уже сделал; повтор безвреден
+j .venv/bin/alembic current                           # d2f4a6b8c0e1 (head) — обе миграции прошли
+
+# 4. переменные: прежние строки лимитов — по имени на новые значения; срок черновика — дописать, если нет
+for kv in JUDGE_SUBMISSION_FILES_MAX=20 JUDGE_SUBMISSION_FILE_MAX_MB=30 JUDGE_SUBMISSION_TOTAL_MAX_MB=200 \
+          JUDGE_STUDENT_QUOTA_MB=1024 JUDGE_DRAFT_TTL_DAYS=14; do
+  if sudo grep -q "^${kv%%=*}=" /etc/judge/backend.env; then
+    sudo sed -i "s/^${kv%%=*}=.*/$kv/" /etc/judge/backend.env
+  else
+    echo "$kv" | sudo tee -a /etc/judge/backend.env
+  fi
+done
+sudo grep -E '^JUDGE_(SUBMISSION_FILES_MAX|SUBMISSION_FILE_MAX_MB|SUBMISSION_TOTAL_MAX_MB|STUDENT_QUOTA_MB|DRAFT_TTL_DAYS)=' \
+  /etc/judge/backend.env                             # по одной строке каждой: 20, 30, 200, 1024, 14
+sudo stat -c '%a %U:%G' /etc/judge/backend.env        # 640 root:judge (sed -i его сохраняет)
+
+# 5. reaper: пишет только в blobs/tmp
+systemctl show judge-reaper -p ReadWritePaths         # ReadWritePaths=/var/lib/judge/blobs/tmp
+sudo stat -c '%a %U:%G' /var/lib/judge/blobs/tmp      # 755 judge:judge
+
+# 6. проверки до запуска
+j .venv/bin/python -m app.judgectl status             # migration d2f4a6b8c0e1 = head, config без замечаний
+
+# 7. запуск; reaper работает
+sudo systemctl start judge-api-internal judge-reaper judge-worker
+systemctl status judge-reaper --no-pager | head -3    # active (running)
+journalctl -u judge-reaper --since "-2 min" --no-pager | tail -5   # без Traceback и «Read-only file system»
+systemctl status judge-worker --no-pager | head -3    # active (running), не failed 78/CONFIG
+j .venv/bin/python -m app.judgectl worker list        # STATE idle у каждого воркера
+j .venv/bin/python -m app.public_main                 # публичное приложение, в отдельном терминале
+
+# 8. smoke (в третьем терминале); у каждого свой код TOTP — второй ввести, когда в телефоне сменится код
+tools/smoke-student-api.sh http://127.0.0.1:8000 https://<домен>   # failures: 0 (блок класса: «--- the class (4b.2)»)
+tools/smoke-admin-api.sh http://127.0.0.1:8000 https://<домен>     # failures: 0, skipped: 0 — SEED_CMD больше не нужен
+```
+
+Если в шаге 3 `alembic current` не `d2f4a6b8c0e1`: `install-wsl.sh` печатает ошибку миграции — сервисы не запускать,
+откат (ниже). Если в шаге 7 reaper `failed` или в журнале «Read-only file system»: `systemctl show judge-reaper -p
+ReadWritePaths` — пусто значит старый юнит (повторить `install-wsl.sh` и `daemon-reload`); каталога нет — повторить
+`install-wsl.sh`.
+
+**Проверка сброса базы** (`reset_check` сеет и черновики, и номера событий: живой и удалённый черновой файл, `seq`;
+D-073, D-098) — от root, из корня репозитория, не трогает `judge`:
+
+```bash
+sudo ./deploy/dev/check-reset-db.sh   # последняя строка «OK: the reset database is the same as a fresh installation», выход 0
+```
+
+**Проверки вживую** (после smoke):
+* **HEIC** — блок класса smoke ученика: фото HEIC в черновике отдаётся только скачиванием (`attachment`), PNG — inline.
+* **Пересдача при неопубликованной оценке** (D-102) — тот же блок: оценка не видна ученику, пересдача проходит,
+  в карточке у преподавателя `resubmitted_after_grade`, публикация такой оценки — `nothing_to_release`.
+* **Частота комментариев** — `429 after 10 comments` и `Retry-After` в smoke ученика (при `JUDGE_COMMENT_RATE_PER_MIN`
+  не больше 14; иначе `SKIP`).
+* **Уборка черновиков** вживую не ждётся (14 дней); метрики нет — журнал reaper без ошибок раз в час.
+
+**Данные, которые остаются в рабочей базе** после smoke: у smoke ученика — ещё задание `Проект <время>` (архивное) с
+работой, черновыми и сданными файлами (HEIC в том числе), комментарии, материалы `smoke-<время>-memo` и
+`smoke-<время>-hidden` (архивные: материал не удаляется); у smoke админа — два ученика `smouk.*` (отключены: у них
+посылки и сдачи), их работы, черновики, комментарии; блобы всего этого. Всё это убирает
+`deploy/dev/reset-production.sh` перед учениками (D-073). Удалённые и просроченные черновики освобождают квоту, но не
+диск: блобы, на которые больше никто не ссылается, удалит только сборщик блобов модуля 6.
+
+**Откат** — только из дампа (D-064), по шаблону ниже: дамп `~/judge-before-4b2.dump`, код — `git switch master`.
+`install-wsl.sh` с `master` вернёт юнит reaper без `ReadWritePaths` (`daemon-reload` он делает сам); каталог
+`blobs/tmp` остаётся — он пуст или с недогруженными файлами, прежнему коду не мешает. Строки лимитов в `backend.env`
+можно не возвращать: код `master` читает те же имена, новые значения для него только щедрее; `JUDGE_DRAFT_TTL_DAYS` он
+не читает.
 
 ### Откат обновления: пересоздание базы из дампа (D-064)
 
