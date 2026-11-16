@@ -123,12 +123,13 @@ def student_attachment(row) -> dict:
     return {"id": row.id, "kind": "link", "url": row.url, "title": row.title}
 
 
-def _can_submit(user: User, item: FeedItem, now: datetime, in_audience: bool, extensions, work) -> dict:
+def _can_submit(user: User, item: FeedItem, now: datetime, in_audience: bool, extensions, status) -> dict:
     """Whether a hand-in would be accepted now, the answer itself aside: access.can_submit_work with a stand-in
-    answer of the item's kind, so the code is about the item, the deadline and the grade (late: accepted as late)."""
+    answer of the item's kind, so the code is about the item, the deadline and the grade (late: accepted as late).
+    `status`: the one the student sees (grading.student_status, D-102)."""
     kind = _v(item.answer_kind)
     d = access.can_submit_work(user, item, now, in_audience=in_audience, extensions=extensions,
-                               work_status=_v(work.status) if work is not None else None,
+                               work_status=status,
                                text="x" if kind in ("text", "text_or_files") else None,
                                attachments=1 if kind == "files" else 0)
     return {"allowed": d.allowed, "reason": d.reason, "late": d.late}
@@ -142,7 +143,7 @@ def _history(db: Session, blobs: BlobStore, work) -> list:
         return []
     out = []
     for sub in db.execute(select(AssignmentSubmission).where(AssignmentSubmission.work_id == work.id)
-                          .order_by(AssignmentSubmission.created_at, AssignmentSubmission.id)).scalars():
+                          .order_by(AssignmentSubmission.seq)).scalars():
         listed = works.submission_files(db, sub)
         out.append({"id": sub.id, "at": sub.created_at, "late": sub.late, "text": works.answer_text(db, blobs, sub),
                     "files": [{"id": f["id"], "name": f["name"], "size": f["size"]} for f in listed["files"]
@@ -178,7 +179,8 @@ def item_page(db: Session, user: User, item_id: int, now: datetime, *, blobs: Bl
         extensions = feed.due_moments(db, item, user)
         work = works.work_of(db, item, user)
         out["assignment"] = _assignment(db, user, item, now, extensions)
-        out["can_submit"] = _can_submit(user, item, now, feed.in_audience(db, item, user), extensions, work)
+        out["can_submit"] = _can_submit(user, item, now, feed.in_audience(db, item, user), extensions,
+                                       works.seen_status(db, item, work))
         out["hand_ins"] = _history(db, blobs, work)
         out["draft"] = drafts.draft_view(db, user, item, now, ttl_days)
         out["comments"]["private_unread"] = _unread(db, user, item, now, user)

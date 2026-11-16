@@ -321,6 +321,16 @@ class StatusTests(unittest.TestCase):
                     self.assertTrue(t)
                     self.assertEqual(t.status, expected)
 
+    def test_a_grade_the_student_has_not_seen_does_not_close_the_hand_in(self):
+        """D-102: (graded, submit) is refused only for a grade the student sees; the default is the closed one."""
+        self.assertEqual(grading.next_status("graded", "submit", grade_seen=False).status, "submitted")
+        self.assertEqual(grading.next_status("graded", "submit", grade_seen=True).reason, "already_graded")
+        for (status, event), expected in self.EXPECTED.items():
+            if (status, event) != ("graded", "submit"):
+                with self.subTest(status=status, event=event):  # grade_seen changes nothing else
+                    self.assertEqual(grading.next_status(status, event, grade_seen=False),
+                                     grading.next_status(status, event))
+
     def test_enum_members_and_unknown_events(self):
         self.assertEqual(grading.next_status(NS(value="returned"), "submit").status, "submitted")
         with self.assertRaises(ValueError):
@@ -383,20 +393,71 @@ def handed(late=False):
     return ("submission", NS(late=late))
 
 
-def reviews(events):
-    return [row for kind, row in events if kind == "review"]
-
-
 class ReleaseTests(unittest.TestCase):
     def test_release_target(self):
         manual = assignment()
-        self.assertEqual(grading.release_target(assignment(grades_release="immediate"), reviews([graded(1, 5)])),
+        self.assertEqual(grading.release_target(assignment(grades_release="immediate"), [handed(), graded(1, 5)]),
                          (None, "release_not_needed"))
         self.assertEqual(grading.release_target(manual, []), (None, "nothing_to_release"))
-        row, code = grading.release_target(manual, reviews([graded(1, 5), released(2, 1), graded(3, 6)]))
+        row, code = grading.release_target(manual, [handed(), graded(1, 5), released(2, 1), graded(3, 6)])
         self.assertEqual((row.id, code), (3, None))  # the regrade
-        self.assertEqual(grading.release_target(manual, reviews([graded(1, 5), released(2, 1)])),
+        self.assertEqual(grading.release_target(manual, [handed(), graded(1, 5), released(2, 1)]),
                          (None, "already_released"))
+        # D-102: a grade for an earlier hand-in is never released, not even with no other grade after it
+        self.assertEqual(grading.release_target(manual, [handed(), graded(1, 5), handed()]),
+                         (None, "nothing_to_release"))
+        row, code = grading.release_target(manual, [handed(), graded(1, 5), handed(), graded(2, 8)])
+        self.assertEqual((row.id, code), (2, None))
+
+
+class ResubmitOverAnUnreleasedGradeTests(unittest.TestCase):
+    """D-102: a hand-in over a grade the student has not seen takes it off the work; the student sees exactly what
+    they would without that grade; the teacher sees it in the history «к прежней сдаче» and the work marked."""
+
+    def test_the_student_sees_the_same_with_and_without_an_unreleased_grade(self):
+        for name, before in (("first hand-in", [handed()]),
+                             ("after a released grade and a return", [handed(), graded(1, 4), released(2, 1),
+                                                                      returned(3), handed()]),
+                             ("graded without a hand-in, never released", [graded(1, 0)])):
+            with self.subTest(name):
+                hidden = before + [graded(9, 7, comment="черновая")]
+                self.assertEqual(grading.student_view(assignment(), DURING, hidden),
+                                 grading.student_view(assignment(), DURING, before))
+                self.assertEqual(grading.student_status(assignment(), hidden),
+                                 grading.student_status(assignment(), before))
+
+    def test_superseded_current_grade_and_the_mark(self):
+        item = assignment()
+        events = [handed(), graded(1, 5), handed()]
+        self.assertEqual(grading.superseded(item, events), {1})
+        self.assertIsNone(grading.current_grade(item, events))
+        self.assertTrue(grading.resubmitted_after_grade(item, events))
+        events.append(graded(2, 8))  # graded again: the new grade is current, the mark is gone
+        self.assertEqual((grading.superseded(item, events), grading.current_grade(item, events).id), ({1}, 2))
+        self.assertFalse(grading.resubmitted_after_grade(item, events))
+        # a released grade, returned, handed in again, graded, handed in again: only the unreleased one goes
+        events = [handed(), graded(1, 4), released(2, 1), returned(3), handed(), graded(4, 6), handed()]
+        self.assertEqual(grading.superseded(item, events), {4})
+        self.assertEqual(grading.current_grade(item, events).id, 1)
+        self.assertTrue(grading.resubmitted_after_grade(item, events))
+        # a return after the grade: the mark is about the grade, not the return
+        self.assertFalse(grading.resubmitted_after_grade(item, [handed(), graded(1, 5), returned(2), handed()]))
+        # seen at once: a grade is never superseded (it closed the hand-in until a return)
+        immediate = assignment(grades_release="immediate")
+        events = [handed(), graded(1, 5), returned(2), handed()]
+        self.assertEqual(grading.superseded(immediate, events), set())
+        self.assertEqual(grading.current_grade(immediate, events).id, 1)
+
+    def test_status_seen_decides_the_refusal(self):
+        item = assignment()
+        for events, expected in (([handed(), graded(1, 5)], "ok"),
+                                 ([handed(), graded(1, 5), released(2, 1)], "already_graded"),
+                                 ([handed(), graded(1, 5), released(2, 1), graded(3, 6)], "already_graded"),
+                                 ([handed(), graded(1, 5), released(2, 1), returned(3), graded(4, 6)], "ok")):
+            with self.subTest(events=[getattr(row, "action", kind) for kind, row in events]):
+                d = access.can_submit_work(PUPIL, item, DURING, in_audience=True, text="x",
+                                           work_status=grading.student_status(item, events))
+                self.assertEqual(d.reason, expected)
 
 
 class StudentViewTests(unittest.TestCase):
@@ -457,7 +518,7 @@ class StudentViewTests(unittest.TestCase):
         item = assignment(grading="none", max_points=None, grades_release="manual")
         v = self.view([handed(), graded(1, comment="принято")], item)
         self.assertEqual((v["status"], v["grade"]["comment"]), ("graded", "принято"))
-        self.assertEqual(grading.release_target(item, reviews([graded(1)])), (None, "release_not_needed"))
+        self.assertEqual(grading.release_target(item, [handed(), graded(1)]), (None, "release_not_needed"))
 
     def test_late_and_missing_are_computed_flags(self):
         self.assertEqual(self.view([handed(late=False), handed(late=True)])["late"], True)

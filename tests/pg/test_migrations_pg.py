@@ -741,6 +741,54 @@ class MigrationTests(PgCase):
             self.assertEqual(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one(), "e73284028c20")
             self.assertEqual(conn.execute(text("SELECT count(*) FROM thread_reads")).scalar_one(), 1)
 
+    # ---------------------------------------------------------------- d2f4a6b8c0e1: seq of a work's events (D-102)
+    BEFORE_SEQ = """
+        INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
+          (1, 'admin', '!', 'A', 'admin', true), (2, 'pupil', '!', 'P', 'student', true),
+          (3, 'other', '!', 'O', 'student', true);
+        INSERT INTO feed_items (id, kind, state, title, body_md, grading, max_points, answer_kind, grades_release,
+                                published_at, created_by)
+          VALUES (1, 'assignment', 'published', 'З', '', 'points', 5, 'text', 'manual', '2026-11-06 09:00+00', 1);
+        INSERT INTO assignment_works (id, item_id, user_id, status, status_at)
+          VALUES (1, 1, 2, 'graded', '2026-11-06 12:00+00'), (2, 1, 3, 'submitted', '2026-11-06 10:00+00'),
+                 (3, 1, 1, 'graded', '2026-11-06 10:00+00');
+        INSERT INTO assignment_submissions (id, work_id, created_at)
+          VALUES (1, 1, '2026-11-06 10:00+00'), (2, 1, '2026-11-06 11:00+00'), (3, 2, '2026-11-06 10:00+00');
+        INSERT INTO assignment_reviews (id, work_id, action, score, at)
+          VALUES (1, 1, 'returned', NULL, '2026-11-06 10:30+00'), (2, 1, 'graded', 4, '2026-11-06 11:00+00'),
+                 (3, 3, 'graded', 0, '2026-11-06 10:00+00');
+        INSERT INTO assignment_reviews (id, work_id, action, release_of, at)
+          VALUES (4, 1, 'released', 2, '2026-11-06 11:00+00')
+    """
+
+    def seqs(self, conn):
+        return (conn.execute(text("SELECT array_agg(seq ORDER BY id) FROM assignment_submissions")).scalar_one(),
+                conn.execute(text("SELECT array_agg(seq ORDER BY id) FROM assignment_reviews")).scalar_one(),
+                conn.execute(text("SELECT array_agg(last_seq ORDER BY id) FROM assignment_works")).scalar_one())
+
+    def test_seq_migration_numbers_the_events_in_the_old_order_up_down_up(self):
+        """The rows of before are numbered as works.events ordered them (moment, a hand-in before a review at the
+        same moment, id); last_seq is the work's last; the downgrade drops the columns and nothing else."""
+        _schema, engine = self.scratch_schema()
+        with engine.begin() as conn:
+            self.alembic(conn, "upgrade", "c5a9e3f1d27b")
+            self.run_sql(conn, self.BEFORE_SEQ)
+            self.alembic(conn, "upgrade", "d2f4a6b8c0e1")
+            # work 1: hand-in 10:00, return 10:30, hand-in 11:00, grade 11:00 and its release (same moment, by id)
+            self.assertEqual(self.seqs(conn), ([1, 3, 1], [2, 4, 1, 5], [5, 1, 1]))
+            self.alembic(conn, "upgrade", "head")
+            diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+            self.assertEqual(diff, [], "alembic check after the upgrade: models.py and the migration differ")
+            self.alembic(conn, "downgrade", "c5a9e3f1d27b")
+            for table, column in (("assignment_submissions", "seq"), ("assignment_reviews", "seq"),
+                                  ("assignment_works", "last_seq")):
+                self.assertIsNone(conn.execute(text(
+                    "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+                    "AND table_name = :t AND column_name = :c"), {"t": table, "c": column}).scalar_one_or_none())
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM assignment_reviews")).scalar_one(), 4)
+            self.alembic(conn, "upgrade", "head")
+            self.assertEqual(self.seqs(conn), ([1, 3, 1], [2, 4, 1, 5], [5, 1, 1]))
+
     # ---------------------------------------------------------------- 32cd8723a2bc: attachments and links (4v.3, D-079)
     BEFORE_ATTACHMENTS = BEFORE_COMMENTS + """;
         INSERT INTO blobs (sha256, size_bytes) VALUES (repeat('d', 64), 6), (repeat('e', 64), 7);

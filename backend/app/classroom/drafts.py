@@ -131,7 +131,7 @@ def _decide(db: Session, user: User, item: FeedItem, now: datetime) -> None:
     text = "x" if getattr(item.answer_kind, "value", item.answer_kind) == "text" else None
     d = access.can_submit_work(user, item, now, in_audience=feed.in_audience(db, item, user),
                                extensions=feed.due_moments(db, item, user),
-                               work_status=current.status.value if current is not None else None, text=text,
+                               work_status=works.seen_status(db, item, current), text=text,
                                attachments=1)
     if not d:
         raise FeedError(d.reason, d.reason)

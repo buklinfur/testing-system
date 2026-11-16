@@ -234,7 +234,7 @@ Origin → сессия и CSRF → `Content-Type` (415) → `?name=` (422) → 
 |---|---|
 | 404 | `item_not_found`, `attachment_not_found`, `file_not_found`, `draft_file_not_found` |
 | 403 | `no_access` (убран из группы: элемент виден по своей работе, сдать нельзя), `student_required` |
-| 409 | `not_an_assignment`, `item_archived`, `already_graded`, `deadline_passed`, `quota_exceeded` (+ `used`, `adding`, `quota`) |
+| 409 | `not_an_assignment`, `item_archived`, `already_graded` (только оценка, которую ученик видит; неопубликованная пересдачу не закрывает и ни в одном ответе не видна, D-102), `deadline_passed`, `quota_exceeded` (+ `used`, `adding`, `quota`) |
 | 422 | `answer_required`, `text_not_expected`, `text_too_long`, `files_required`, `files_not_expected`, `too_many_files`, `submission_too_large`, `file_type_not_allowed`, `file_content_mismatch`, `file_empty`, `duplicate_name`, `link_invalid`, `link_title_invalid` (у кодов файла и ссылки — `index`), `invalid_request`; недостижимы: `file_name_invalid` (имя сначала очищается), `not_a_student` (админу раньше — `student_required`) |
 | 413 | `file_too_large` |
 

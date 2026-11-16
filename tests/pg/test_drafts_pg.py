@@ -277,7 +277,7 @@ class DraftServiceTests(AttachmentServiceTests):
         self.assertEqual(self.live(), ["B.HEIC", "a.jpg"])
         self.assertEqual(works.quota_used(self.s, self.a)[0], used + len(HEIC) + 1, "copies cost nothing")
         self.refused("too_many_files", drafts.from_last, self.s, self.a, self.files, T0, limits=ar.Limits(1, KIB, KIB))
-        works.grade_work(self.s, self.actor, self.files, self.a, T0, passed=True)
+        works.grade_work(self.s, self.actor, self.files, self.a, T0, passed=True, release=True)
         self.s.commit()
         self.refused("already_graded", drafts.from_last, self.s, self.a, self.files, T0)
 

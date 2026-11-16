@@ -390,6 +390,62 @@ class StudentClassroomApiTests(ApiCase):
                                  headers=UPLOAD), 201)
         self.assertEqual(seen, {"work": work_id, "student": True, "open": 0})
 
+    # ---------------------------------------------------------------- D-102: an unreleased grade does not show
+    def answers(self, b, item) -> dict:
+        """Every answer a student can get about one item without changing anything: the reads, and refusals of a
+        hand-in, an upload and from-last that come after the grade's check (server_time aside)."""
+        def body(r):
+            out = r.json()
+            if isinstance(out, dict):
+                out.pop("server_time", None)
+            return r.status_code, out
+        return {
+            "feed": body(b.get("/api/feed")), "page": body(b.get(f"/api/feed/{item.id}")),
+            "works": body(b.get("/api/works")), "draft": body(b.get(f"/api/feed/{item.id}/draft")),
+            "hand-in": body(self.hand_in(b, item, text="  ")),  # answer_required, decided after already_graded
+            "upload": body(self.upload(b, item, "a.png", PNG)),  # duplicate_name, after the item's check
+            "upload-type": body(self.upload(b, item, "a.svg", PNG)),
+            "from-last": body(b.post(f"/api/feed/{item.id}/draft/from-last")),
+        }
+
+    def test_an_unreleased_grade_changes_no_answer_and_does_not_close_the_hand_in(self):
+        task = self.item(grades_release="manual")
+        self.put(self.ab, task, "a.png", PNG)
+        first = self.put(self.ab, task, "b.png", PNG + b"b")
+        self.expect(self.hand_in(self.ab, task, files=[first["id"]]), 201)
+        self.expect(self.ab.post(f"/api/feed/{task.id}/draft/from-last"), 200)  # from now on it copies nothing
+        before = self.answers(self.ab, task)
+        self.assertEqual(self.answers(self.ab, task), before, "asking changes nothing")
+        self.assertEqual((before["hand-in"][1]["detail"], before["upload"][1]["detail"]),
+                         ("answer_required", "duplicate_name"))
+        self.assertEqual(before["page"][1]["can_submit"], {"allowed": True, "reason": "ok", "late": False})
+
+        works.grade_work(self.s, self.actor, task, self.a, self.now, passed=False, comment="черновая оценка")
+        self.s.commit()
+        self.assertEqual(self.answers(self.ab, task), before, "the student can tell an unreleased grade exists")
+
+        # the hand-in over it passes and takes it off the work: the teacher sees «пересдано после оценки»
+        draft = self.ab.get(f"/api/feed/{task.id}/draft").json()["draft"]
+        out = self.expect(self.hand_in(self.ab, task, files=[f["id"] for f in draft]), 201).json()
+        self.assertEqual((out["work"]["status"], out["work"]["grade"], out["work"]["submissions"]),
+                         ("submitted", None, 2))
+        self.s.expire_all()
+        card = works.work_card(self.s, self.blobs, task, self.a, self.now)
+        self.assertTrue(card["resubmitted_after_grade"])
+        self.assertEqual([e["superseded"] for e in card["events"] if e.get("action") == "graded"], [True])
+        self.assertEqual(works.release_grades(self.s, self.actor, task, self.now, [self.a])[0]["result"],
+                         "nothing_to_release")
+        self.s.rollback()
+        self.assertNotIn("черновая", self.ab.get(f"/api/feed/{task.id}").text)
+
+        # a released grade closes the hand-in and the upload, as before
+        works.grade_work(self.s, self.actor, task, self.a, self.now, passed=True, release=True)
+        self.s.commit()
+        page = self.ab.get(f"/api/feed/{task.id}").json()
+        self.assertEqual((page["assignment"]["status"], page["can_submit"]["reason"]), ("graded", "already_graded"))
+        self.expect(self.upload(self.ab, task, "c.png", PNG + b"c"), 409, "already_graded")
+        self.expect(self.hand_in(self.ab, task, text="ещё"), 409, "already_graded")
+
 
 if __name__ == "__main__":
     unittest.main()

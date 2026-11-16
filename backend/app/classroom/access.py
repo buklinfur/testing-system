@@ -81,8 +81,10 @@ def can_see_own_work(user, item, has_work: bool) -> bool:
 def can_submit_work(user, item, now: datetime, *, in_audience: bool, extensions: Iterable[datetime] = (),
                     work_status: Optional[str] = None, text: Optional[str] = None,
                     text_limit: int = ANSWER_TEXT_MAX_BYTES, attachments: int = 0) -> Decision:
-    """Whether a hand-in received at `now` is accepted, and whether it is late. `work_status`: the cached status of
-    the student's work (None: no work yet); `text`: the text answer (None or blank: none); `attachments`: how many
+    """Whether a hand-in received at `now` is accepted, and whether it is late. `work_status`: the status of the
+    student's work as the student sees it (grading.student_status; None: no work yet or nothing they see) - never
+    the cached one: a grade not released yet does not close the hand-in and no refusal may tell it exists (D-102);
+    `text`: the text answer (None or blank: none); `attachments`: how many
     files and links come with it (4v.3; what they are is checked by attachment_rules.check_hand_in after this). The
     order of the checks is fixed (docs/CLASSROOM.md §6): the first that fails gives the code."""
     if is_admin(user):

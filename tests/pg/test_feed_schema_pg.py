@@ -27,6 +27,9 @@ class FeedSchemaTests(PgCase):
 
     # ---------------------------------------------------------------- helpers
     def insert(self, table, **values):
+        if table in ("assignment_submissions", "assignment_reviews"):  # D-102: the order of the work's events
+            self.seq = getattr(self, "seq", 0) + 1
+            values.setdefault("seq", self.seq)
         cols = ", ".join(values)
         params = ", ".join(f":{k}" for k in values)
         return self.s.execute(text(f"INSERT INTO {table} ({cols}) VALUES ({params}) RETURNING id"), values).scalar_one()
@@ -153,6 +156,24 @@ class FeedSchemaTests(PgCase):
         self.refused("uq_assignment_reviews_release_of", review, action="released", release_of=graded)
         regraded = self.accepted(review, action="graded", score=9)
         self.accepted(review, action="released", release_of=regraded)  # another grade is released once too
+
+    def test_seq_of_the_events_of_a_work(self):
+        """D-102: seq is positive and unique per work in each table; last_seq is never negative."""
+        work, other = self.work(), self.work(user=self.student(2).id)
+        self.refused("ck_assignment_submissions_seq_positive", self.insert, "assignment_submissions", work_id=work,
+                     seq=0)
+        self.refused("ck_assignment_reviews_seq_positive", self.insert, "assignment_reviews", work_id=work,
+                     action="returned", seq=0)
+        self.accepted(self.insert, "assignment_submissions", work_id=work, seq=1)
+        self.refused("uq_assignment_submissions_work_seq", self.insert, "assignment_submissions", work_id=work, seq=1)
+        self.accepted(self.insert, "assignment_submissions", work_id=other, seq=1)  # another work
+        self.accepted(self.insert, "assignment_reviews", work_id=work, action="returned", seq=2)
+        self.refused("uq_assignment_reviews_work_seq", self.insert, "assignment_reviews", work_id=work,
+                     action="returned", seq=2)
+        self.refused("ck_assignment_works_last_seq_non_negative", self.s.execute,
+                     text(f"UPDATE assignment_works SET last_seq = -1 WHERE id = {work}"))
+        self.assertEqual(self.s.execute(text(f"SELECT last_seq FROM assignment_works WHERE id = {other}")).scalar_one(),
+                         0, "the default")
 
     # ---------------------------------------------------------------- deadline_extensions: a second target
     def test_extension_one_target_and_uniqueness_per_target(self):
