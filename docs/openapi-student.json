@@ -1,6 +1,22 @@
 {
   "components": {
     "schemas": {
+      "CommentBody": {
+        "additionalProperties": false,
+        "description": "Markdown, at most 4000 characters (comment_too_long); the generous limit here only guards the parser.",
+        "properties": {
+          "body": {
+            "maxLength": 100000,
+            "title": "Body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "CommentBody",
+        "type": "object"
+      },
       "EnterBody": {
         "additionalProperties": false,
         "properties": {
@@ -173,6 +189,27 @@
           "timezone"
         ],
         "title": "ProfileBody",
+        "type": "object"
+      },
+      "ReadBody": {
+        "additionalProperties": false,
+        "properties": {
+          "up_to": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "a comment of this thread; by default the last one",
+            "title": "Up To"
+          }
+        },
+        "title": "ReadBody",
         "type": "object"
       },
       "TotpBody": {
@@ -463,6 +500,41 @@
           }
         },
         "summary": "Totp"
+      }
+    },
+    "/api/comments/{comment_id}/delete": {
+      "post": {
+        "description": "Soft: nobody but the teachers sees it any more; it still counts in the rate. 404 comment_not_found (not seen:\nanother student's private thread, an item outside the feed, deleted already, missing); 403 not_your_comment.",
+        "operationId": "delete_comment_api_comments__comment_id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "comment_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Comment Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Comment"
       }
     },
     "/api/contests": {
@@ -1058,6 +1130,181 @@
         "summary": "Get Attachment"
       }
     },
+    "/api/feed/{item_id}/comments": {
+      "get": {
+        "description": "Oldest first, a page of at most 100 after the id `after` (next_after: the cursor of the next page); can_post\nand cannot_post (the code a comment would get now, the body and the rate aside); unread: the student's own.\nReading sets no mark. 404 item_not_found, thread_not_found (the statement hidden, an archived item).",
+        "operationId": "shared_thread_api_feed__item_id__comments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Shared Thread"
+      },
+      "post": {
+        "description": "A comment in the shared thread: 201, the comment. 403 no_access (not in the audience now, the statement\nhidden); 409 item_archived, comments_disabled, comments_teacher_only (a contest item); 422 comment_required,\ncomment_too_long, comment_invalid; 429 rate_limited.",
+        "operationId": "post_shared_api_feed__item_id__comments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommentBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Shared"
+      }
+    },
+    "/api/feed/{item_id}/comments/read": {
+      "post": {
+        "description": "The student's mark: up to `up_to` (a comment of this thread they see) or the last one; it only grows.\n{unread}: what is left. 404 comment_not_found (up_to of another thread, deleted, missing).",
+        "operationId": "read_shared_api_feed__item_id__comments_read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReadBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Shared"
+      }
+    },
     "/api/feed/{item_id}/draft": {
       "get": {
         "description": "The live files of the own draft in the order of upload, each with expires_at (the whole draft goes then).",
@@ -1295,6 +1542,180 @@
         "summary": "Draft From Last"
       }
     },
+    "/api/feed/{item_id}/my-thread": {
+      "get": {
+        "description": "The student's own private thread with the teachers on an assignment: once it exists always (archived, after\nthe due moment, removed from the group), before that while the assignment is in the feed. thread_id null:\nnobody has written yet. 404 item_not_found, thread_not_found; 409 not_an_assignment.",
+        "operationId": "my_thread_api_feed__item_id__my_thread_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "My Thread"
+      },
+      "post": {
+        "description": "A message to the teachers in the own thread (made by the first one); the due moment, a hidden statement and\ncomments_enabled do not matter. 403 no_access (not in the audience now); 409 not_an_assignment, item_archived;\n422 and 429 as the shared thread.",
+        "operationId": "post_mine_api_feed__item_id__my_thread_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommentBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Mine"
+      }
+    },
+    "/api/feed/{item_id}/my-thread/read": {
+      "post": {
+        "operationId": "read_mine_api_feed__item_id__my_thread_read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReadBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Mine"
+      }
+    },
     "/api/feed/{item_id}/work": {
       "post": {
         "description": "A hand-in: the text, the draft files named by id (they leave the draft) and the links. 201 {submission: {id,\nat, late}, work}. 404 item_not_found, draft_file_not_found; 403 no_access; 409 not_an_assignment, item_archived,\ndeadline_passed, already_graded, quota_exceeded; 422 answer_required, text_not_expected, text_too_long,\nfiles_required, files_not_expected, too_many_files, submission_too_large, duplicate_name, link_invalid, ...",
@@ -1396,6 +1817,52 @@
         "summary": "Get Work File"
       }
     },
+    "/api/library": {
+      "get": {
+        "description": "«Справочник» as the student sees it: the sections (two levels) with their materials in the teacher's order,\nonly the sections with something for them, and `unsorted`; no archived material. With q: {query, materials},\nthe titles containing q, ignoring case (%, _ and \\ taken literally).",
+        "operationId": "get_library_api_library_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Library"
+      }
+    },
     "/api/load": {
       "get": {
         "description": "{level: free | busy | overloaded | offline, queue_length, workers_online, workers_busy, typical_seconds,\nmy_position, my_wait_seconds} (my_* only for a student with something queued).",
@@ -1411,6 +1878,97 @@
           }
         },
         "summary": "Get Load"
+      }
+    },
+    "/api/materials/{material_id}": {
+      "get": {
+        "description": "The latest version: the text (Markdown), the files and links, the links [[памятка:…]] of the text with\n`available` for this student. 404 material_not_found.",
+        "operationId": "get_material_api_materials__material_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Material"
+      }
+    },
+    "/api/materials/{material_id}/attachments/{attachment_id}": {
+      "get": {
+        "description": "A file of the latest version. 404 material_not_found, attachment_not_found.",
+        "operationId": "get_material_file_api_materials__material_id__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Material Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Attachment Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Material File"
       }
     },
     "/api/submissions": {

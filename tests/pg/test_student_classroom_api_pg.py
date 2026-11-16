@@ -4,6 +4,9 @@ time, from-last, the list of own works. Every code of CLASSROOM_STATUS reached b
 404 on every route; nothing of another student, no sha256, author or unreleased grade in the JSON; every cheap
 refusal of an upload before a byte of the body is read and with nothing left in the store's tmp; no lock and no
 transaction while the body arrives; 413 file_too_large by Content-Length and without it; a HEIC photo never inline.
+Stage 6 (D-103): comments, materials and the library - their codes reached too (429 with Retry-After), no comment of
+another thread reached by up_to or delete, a material only with a basis, a file only of its latest version, nothing
+archived in the library.
 
 Skipped unless JUDGE_TEST_DATABASE_URL is set."""
 import dataclasses
@@ -24,8 +27,10 @@ if URL and HAVE_SA and HAVE_API:
     from app.auth import audit
     from app.blobstore import BlobStore
     from app.classroom import attachments as svc
-    from app.classroom import items, works
-    from app.models import AssignmentWork, Contest, WorkDraftFile
+    from app.classroom import comments, items, works
+    from app.materials import library
+    from app.materials import service as ms
+    from app.models import AssignmentWork, Contest, Material, WorkDraftFile
     from app.settings import AuthSettings, FileSettings, Settings
     from app.student_api.deps import CLASSROOM_STATUS, UNREACHABLE
     from tests.pg.apibase import ORIGIN
@@ -248,6 +253,8 @@ class StudentClassroomApiTests(ApiCase):
         self.s.commit()
         self.expect(self.upload(self.bb, graded, "a.png", PNG), 409, "already_graded")
 
+        self.comment_codes()
+
         kept = self.item()
         self.expect(self.hand_in(self.bb, kept, text="ответ"), 201)
         g.remove_members(self.s, self.actor, self.group, [self.b], self.now)
@@ -260,6 +267,33 @@ class StudentClassroomApiTests(ApiCase):
         self.assertEqual(sorted(set(CLASSROOM_STATUS) - set(UNREACHABLE) - self.reached), [],
                          "codes of CLASSROOM_STATUS no request reached")
         self.assertEqual(self.reached & set(UNREACHABLE), set())
+
+    def comment_codes(self):
+        """The codes of comments, materials and the library (D-103), reached by student a of the class."""
+        talk = self.item(comments_enabled=True)
+        hidden = self.item(due_at=self.now - timedelta(hours=1), after_due_statement="hidden",
+                           after_due_submit="late", comments_enabled=True)
+        self.expect(self.ab.get(f"/api/feed/{hidden.id}/comments"), 404, "thread_not_found")
+        self.expect(self.ab.post("/api/comments/999999/delete"), 404, "comment_not_found")
+        self.expect(self.ab.get("/api/materials/999999"), 404, "material_not_found")
+        teacher = comments.teacher_post(self.s, self.actor, talk, self.now, "объявление")
+        self.s.commit()
+        self.expect(self.ab.post(f"/api/comments/{teacher.id}/delete"), 403, "not_your_comment")
+        self.expect(self.ab.post(f"/api/feed/{self.item().id}/comments", json={"body": "?"}), 409,
+                    "comments_disabled")
+        self.expect(self.ab.post(f"/api/feed/{self.contest_item().id}/comments", json={"body": "?"}), 409,
+                    "comments_teacher_only")
+        self.expect(self.ab.post(f"/api/feed/{talk.id}/comments", json={"body": " \u200b\u3000"}), 422,
+                    "comment_required")
+        self.expect(self.ab.post(f"/api/feed/{talk.id}/comments", json={"body": "x" * 4001}), 422,
+                    "comment_too_long")
+        self.expect(self.ab.post(f"/api/feed/{talk.id}/comments", json={"body": "a\x00b"}), 422, "comment_invalid")
+        self.expect(self.ab.post(f"/api/feed/{talk.id}/my-thread", json={"body": "вопрос"}), 201)
+        settings = self.app.state.settings
+        self.app.state.settings = dataclasses.replace(settings, comment_rate_per_min=1)
+        r = self.expect(self.ab.post(f"/api/feed/{talk.id}/comments", json={"body": "ещё"}), 429, "rate_limited")
+        self.assertEqual((r.headers["Retry-After"], r.json()["retry_after_s"]), ("60", 60))
+        self.app.state.settings = settings
 
     # ---------------------------------------------------------------- identifiers of others
     def test_nothing_of_another_student_on_any_route(self):
@@ -314,6 +348,126 @@ class StudentClassroomApiTests(ApiCase):
         self.assertNotIn("чужой.jpg", json.dumps(self.ab.get(f"/api/feed/{task.id}").json(), ensure_ascii=False))
         page = self.ab.get(f"/api/feed/{task.id}").json()
         self.assertEqual((page["assignment"]["grade"], page["assignment"]["status"]), (None, "submitted"))
+
+    # ---------------------------------------------------------------- comments, materials, the library (D-103)
+    def material(self, slug, title="Памятка", body="Текст", **kw):
+        result = ms.create_material(self.s, self.actor, self.now, slug=slug, title=title, body_md=body, **kw)
+        self.s.commit()
+        return self.s.get(Material, result.version.material_id)
+
+    def material_file(self, material, name, data):
+        with self.blobs.incoming(name) as up:
+            up.write(data)
+            ms.add_file(self.s, self.actor, material, up, self.now)
+        self.s.commit()
+        return self.expect(self.ab.get(f"/api/materials/{material.id}"), 200).json()["attachments"]
+
+    def test_comments_of_others_are_never_reached(self):
+        task = self.item(comments_enabled=True)
+        other = self.item(comments_enabled=True)
+        b_private = self.expect(self.bb.post(f"/api/feed/{task.id}/my-thread", json={"body": "вопрос Б"}), 201).json()
+        b_shared = self.expect(self.bb.post(f"/api/feed/{task.id}/comments", json={"body": "всем от Б"}), 201).json()
+        a_private = self.expect(self.ab.post(f"/api/feed/{task.id}/my-thread", json={"body": "вопрос А"}), 201).json()
+        a_other = self.expect(self.ab.post(f"/api/feed/{other.id}/comments", json={"body": "другое"}), 201).json()
+        comments.teacher_post(self.s, self.actor, task, self.now, "ответ Б", student=self.b)
+        self.s.commit()
+
+        # the own private thread is the only one: b's question and the teacher's answer to b never show
+        mine = self.expect(self.ab.get(f"/api/feed/{task.id}/my-thread"), 200).json()
+        self.assertEqual([c["body"] for c in mine["comments"]], ["вопрос А"])
+        self.assertNotEqual(mine["thread_id"], b_private["thread_id"])
+        dump = json.dumps(mine, ensure_ascii=False)
+        self.assertNotIn("Б", dump.replace("Борис", ""))  # no comment of b's thread
+        self.assertEqual(set(keys(mine)) & FORBIDDEN_KEYS, set())
+        # another's comment in delete: unseen (b's private) is 404, seen (b's shared) is 403; nothing changes
+        self.expect(self.ab.post(f"/api/comments/{b_private['id']}/delete"), 404, "comment_not_found")
+        self.expect(self.ab.post(f"/api/comments/{b_shared['id']}/delete"), 403, "not_your_comment")
+        self.expect(self.cb.post(f"/api/comments/{a_private['id']}/delete"), 404, "comment_not_found")
+        self.expect(self.cb.post(f"/api/comments/{b_shared['id']}/delete"), 404, "comment_not_found")
+        shared = self.expect(self.ab.get(f"/api/feed/{task.id}/comments"), 200).json()
+        self.assertEqual([c["body"] for c in shared["comments"]], ["всем от Б"])
+        self.assertEqual([c["mine"] for c in shared["comments"]], [False])
+        self.assertEqual(self.expect(self.bb.get(f"/api/feed/{task.id}/my-thread"), 200).json()["comments"][0]["body"],
+                         "вопрос Б")
+        # up_to taken from another thread: b's private, the shared one of this item, the shared one of another item
+        for path, up_to in [(f"/api/feed/{task.id}/my-thread/read", b_private["id"]),
+                            (f"/api/feed/{task.id}/my-thread/read", b_shared["id"]),
+                            (f"/api/feed/{task.id}/comments/read", a_private["id"]),
+                            (f"/api/feed/{task.id}/comments/read", a_other["id"])]:
+            with self.subTest(path=path, up_to=up_to):
+                self.expect(self.ab.post(path, json={"up_to": up_to}), 404, "comment_not_found")
+        self.expect(self.ab.post(f"/api/feed/{task.id}/comments/read", json={"up_to": b_shared["id"]}), 200)
+        # another class's student sees no thread of the item, and nothing of a non-assignment is a private thread
+        for path in (f"/api/feed/{task.id}/comments", f"/api/feed/{task.id}/my-thread"):
+            self.expect(self.cb.get(path), 404, "item_not_found")
+        self.expect(self.ab.get(f"/api/feed/{self.contest_item().id}/my-thread"), 409, "not_an_assignment")
+        # a deleted own comment is gone for the student, and a second delete is the same 404
+        self.expect(self.ab.post(f"/api/comments/{a_private['id']}/delete"), 204)
+        self.expect(self.ab.post(f"/api/comments/{a_private['id']}/delete"), 404, "comment_not_found")
+        self.assertEqual(self.ab.get(f"/api/feed/{task.id}/my-thread").json()["comments"], [])
+
+    def test_materials_need_a_basis_and_files_are_of_the_latest_version(self):
+        shown = self.material("shown", "Циклы", body="См. [[памятка:secret]] и [[памятка:nowhere]]",
+                              library="all_students")
+        secret = self.material("secret", "Секрет")
+        other = self.material("other", "Другая", library="all_students")
+        old = self.material_file(shown, "v2.py", b"print(2)")[0]["id"]
+        new = self.material_file(shown, "v3.py", b"print(3)")
+        self.assertEqual([a["name"] for a in new], ["v2.py", "v3.py"])
+        self.assertNotIn(old, [a["id"] for a in new])  # a new version copies its files under new ids
+        other_file = self.material_file(other, "чужой.py", b"print(0)")[0]["id"]
+        with self.blobs.incoming("секрет.py") as up:
+            up.write(b"print(42)")
+            ms.add_file(self.s, self.actor, secret, up, self.now)
+        ms.add_link(self.s, self.actor, shown, "https://e.ru/x", self.now)
+        self.s.commit()
+        view = self.expect(self.ab.get(f"/api/materials/{shown.id}"), 200).json()
+        link = next(a["id"] for a in view["attachments"] if a["kind"] == "link")
+        latest = next(a["id"] for a in view["attachments"] if a.get("name") == "v3.py")
+        self.assertNotIn(latest, [a["id"] for a in new])  # the link made one more version
+        self.assertEqual(set(keys(view)) & FORBIDDEN_KEYS, set())
+
+        # a material without basis is the same 404 as no material; a link from another material is no basis
+        missing = self.expect(self.ab.get("/api/materials/999999"), 404, "material_not_found").json()
+        self.assertEqual(self.expect(self.ab.get(f"/api/materials/{secret.id}"), 404).json()["detail"],
+                         missing["detail"])
+        self.assertEqual(view["links"], [{"slug": "secret", "available": False},
+                                         {"slug": "nowhere", "available": False}])
+        secret_file = self.s.execute(select(text("max(id) from attachments"))).scalar_one()
+        self.expect(self.ab.get(f"/api/materials/{secret.id}/attachments/{secret_file}"), 404, "material_not_found")
+        # a file of another version, of another material, a link: 404
+        for att in (old, new[1]["id"], other_file, link, secret_file):
+            with self.subTest(attachment=att):
+                self.expect(self.ab.get(f"/api/materials/{shown.id}/attachments/{att}"), 404,
+                            "attachment_not_found")
+        r = self.expect(self.ab.get(f"/api/materials/{shown.id}/attachments/{latest}"), 200)
+        self.assertEqual((r.content, r.headers["X-Content-Type-Options"]), (b"print(3)", "nosniff"))
+        self.assertTrue(r.headers["Content-Disposition"].startswith("attachment"))
+        # a link in an item the student sees is a basis; the same link in another class's item is not
+        self.item(body_md="Читай [[памятка:secret]]")
+        self.expect(self.ab.get(f"/api/materials/{secret.id}"), 200)
+        self.expect(self.cb.get(f"/api/materials/{secret.id}"), 404, "material_not_found")
+        self.assertEqual(self.ab.get(f"/api/materials/{shown.id}").json()["links"][0],
+                         {"slug": "secret", "available": True, "id": secret.id, "title": "Секрет"})
+
+        # the library: no archived material, in the tree or in the search; then its page is 404 too
+        section = library.create_section(self.s, self.actor, self.now, "Основы")
+        library.place(self.s, self.actor, other, section, self.now)
+        self.s.commit()
+        tree = self.expect(self.ab.get("/api/library"), 200).json()
+        self.assertEqual([m["slug"] for m in tree["sections"][0]["materials"]], ["other"])
+        self.assertEqual([m["slug"] for m in tree["unsorted"]], ["shown"])
+        self.assertEqual([m["slug"] for m in self.ab.get("/api/library", params={"q": "ДРУГ"}).json()["materials"]],
+                         ["other"])
+        ms.archive(self.s, self.actor, other, self.now)
+        self.s.commit()
+        tree = self.expect(self.ab.get("/api/library"), 200).json()
+        self.assertEqual((tree["sections"], [m["slug"] for m in tree["unsorted"]]), ([], ["shown"]))
+        self.assertEqual(self.ab.get("/api/library", params={"q": "друг"}).json()["materials"], [])
+        self.expect(self.ab.get(f"/api/materials/{other.id}"), 404, "material_not_found")
+        self.expect(self.ab.get(f"/api/materials/{other.id}/attachments/{other_file}"), 404, "material_not_found")
+        self.assertEqual(self.ab.get("/api/library", params={"q": "%"}).json()["materials"], [])
+        self.expect(self.ab.get("/api/library", params={"q": "x" * 201}), 422, "invalid_request")
 
     # ---------------------------------------------------------------- the body of an upload
     def test_every_cheap_refusal_comes_before_the_body_and_leaves_nothing(self):

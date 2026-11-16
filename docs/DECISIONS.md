@@ -1491,3 +1491,32 @@ D-070 (отдача файлов), D-097 (HEIC только вложением).
 времени ожидания блокировки.
 Связи: D-059 (работы и оценки), D-041 (момент получения), D-099 (черновик), D-101 (HTTP), заменяет правило
 «пересдать оценённую нельзя» `CLASSROOM.md` §4 в части неопубликованных оценок.
+
+### D-103. HTTP комментариев, материалов и Справочника ученика
+2026-11-16 · принято · 4б.2b
+Этап 6 сессии 4б.2 (`STUDENT_API.md` §6 «Комментарии, материалы, Справочник», `student_api/comments.py`,
+`student_api/materials.py`):
+- **маршруты** `GET|POST /api/feed/{item}/comments`, `POST …/comments/read`, `GET|POST /api/feed/{item}/my-thread`,
+  `POST …/my-thread/read`, `POST /api/comments/{id}/delete` (204), `GET /api/library?q=`, `GET /api/materials/{id}`,
+  `GET /api/materials/{id}/attachments/{att}`; id — `ids.Id` (int4), `after` — `ids.After`. `PREFIXES` +=
+  `/api/comments`, `/api/library`, `/api/materials`.
+- **ученик — только пользователь сессии**: ни путь, ни тело, ни query не называют ученика; `up_to` и id в `delete`
+  ищутся только в ветках, которые ученик читает (`comment_not_found` иначе), видимый чужой комментарий —
+  `not_your_comment` (403).
+- **личная ветка — только у ручного задания**: `my-thread*` у любого другого элемента — 409 `not_an_assignment`, и
+  чтение тоже (как работа и черновик, D-101; раньше сервис отвечал на чтение `thread_not_found`).
+- **материал**: только последняя версия и только с основанием; без основания — тот же 404 `material_not_found`, что у
+  несуществующего; ссылка из другого материала основанием не является (тест).
+- **429 `rate_limited`** комментариев — с `Retry-After` и `retry_after_s` (`refused` уже умел, D-101); лимит —
+  `JUDGE_COMMENT_RATE_PER_MIN` из настроек приложения.
+- **коды**: `CLASSROOM_STATUS` += 404 `thread_not_found`, `comment_not_found`, `material_not_found`; 403
+  `not_your_comment`; 409 `comments_disabled`, `comments_teacher_only`; 422 `comment_required`, `comment_too_long`,
+  `comment_invalid`; 429 `rate_limited`. Тест полноты сканирует ещё `comment_rules.py`; из общих сервисов —
+  `thread_not_found`, `comment_not_found`, `material_not_found`; исключения с причиной: `already_deleted` (удалённый
+  ученик не видит), `not_addressed` (преподавателя). Все новые коды достигаются запросом.
+- **один список префиксов**: `tools/gen-openapi.py` берёт префиксы ученика из `student_api.PREFIXES` (раньше свой
+  список — новые маршруты не попали бы в `openapi-student.json`).
+Почему: те же правила, что в админском API и judgectl (D-074..D-077, D-083..D-087), открыты ученику без новых;
+ответ «нет такого» на всё, чего ученик не видит, не выдаёт ни чужих веток, ни скрытых материалов.
+Связи: D-074 (правила комментариев), D-077 (админский API комментариев), D-083, D-087 (материалы), D-100 (сервисы
+чтения), D-101 (HTTP ленты).

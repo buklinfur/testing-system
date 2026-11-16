@@ -31,7 +31,8 @@ def student_session(request: Request, response: Response, db: Session = Depends(
 # never valid, 413 too large, 429 wait (Retry-After). Two parts, one table: the contests of 4b.1 (app/student/*:
 # StudentError, the refusals of access.can_enter, can_start and can_submit, deadline_rules, standings_open_for, and
 # the intake) and the class feed of 4b.2 (FeedError of app/student/feed.py, classroom.py and the classroom services
-# they call, the Decision and Refusal codes of classroom/access.py and attachment_rules.py). A code of both has one
+# they call, the Decision and Refusal codes of classroom/access.py, attachment_rules.py and comment_rules.py; D-103:
+# comments, materials, the library). A code of both has one
 # status. tests/test_student_api_units.py keeps it complete; tests/pg/test_student_api_pg.py reaches every code of
 # CONTEST_STATUS by a request, tests/pg/test_student_classroom_api_pg.py every code of CLASSROOM_STATUS.
 CONTEST_STATUS = {
@@ -50,24 +51,30 @@ CONTEST_STATUS = {
     # 429: wait
     "rate_limited": 429, "cooldown": 429,
 }
-# The class feed (D-101). Not here although the classroom rules have them: not_published and not_available_yet of an
-# item (feed.seen_item answers item_not_found first; both codes are the contests' and reached there - UNREACHABLE is
-# kept by code, not by route), too_many_attachments (a teacher's limit).
+# The class feed (D-101), its comments, materials and library (D-103). Not here although the classroom rules have them:
+# not_published and not_available_yet of an item (feed.seen_item answers item_not_found first; both codes are the
+# contests' and reached there - UNREACHABLE is kept by code, not by route), too_many_attachments (a teacher's limit),
+# already_deleted (a student never sees a deleted comment: comment_not_found), not_addressed (a teacher's).
 CLASSROOM_STATUS = {
     # 404
     "item_not_found": 404, "attachment_not_found": 404, "file_not_found": 404, "draft_file_not_found": 404,
-    # 403: removed from the group, the item still seen through the own work
-    "no_access": 403, "student_required": 403,
+    "thread_not_found": 404, "comment_not_found": 404, "material_not_found": 404,
+    # 403: removed from the group, the item still seen through the own work; a comment of someone else seen
+    "no_access": 403, "student_required": 403, "not_your_comment": 403,
     # 409: the state or the time
     "not_an_assignment": 409, "item_archived": 409, "already_graded": 409, "deadline_passed": 409,
-    "quota_exceeded": 409,
+    "quota_exceeded": 409, "comments_disabled": 409, "comments_teacher_only": 409,
     # 422: the answer, the files, the links
     "answer_required": 422, "text_not_expected": 422, "text_too_long": 422, "files_required": 422,
     "files_not_expected": 422, "too_many_files": 422, "submission_too_large": 422, "file_type_not_allowed": 422,
     "file_content_mismatch": 422, "file_empty": 422, "file_name_invalid": 422, "duplicate_name": 422,
     "link_invalid": 422, "link_title_invalid": 422, "not_a_student": 422, "invalid_request": 422,
+    # 422: the text of a comment
+    "comment_required": 422, "comment_too_long": 422, "comment_invalid": 422,
     # 413: a draft file over JUDGE_SUBMISSION_FILE_MAX_MB, by Content-Length or while the body arrives
     "file_too_large": 413,
+    # 429: too many comments a minute (JUDGE_COMMENT_RATE_PER_MIN), Retry-After
+    "rate_limited": 429,
 }
 STUDENT_STATUS = {**CONTEST_STATUS, **CLASSROOM_STATUS}
 # codes no request of a student can reach (the tests of reachability skip them, each with its reason); kept by code:

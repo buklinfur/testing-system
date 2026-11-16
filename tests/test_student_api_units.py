@@ -15,17 +15,23 @@ sys.path[:0] = [str(ROOT), str(ROOT / "backend")]
 # rate (rates.window_ok) and the intake (intake.CODES)
 STUDENT_SOURCES = sorted(str(p.relative_to(ROOT)) for p in (ROOT / "backend" / "app" / "student").glob("*.py"))
 RULE_SOURCES = ["backend/app/contests/access.py", "backend/app/deadline_rules.py", "backend/app/rates.py"]
-# the class feed (4b.2, D-101): what the student routes call - FeedError("...", "<code>") of the student services and
-# of the draft, Decision(False, "<code>") of classroom/access.py, Refusal / _no("<code>") of attachment_rules
+# the class feed (4b.2, D-101, D-103): what the student routes call - FeedError("...", "<code>") of the student
+# services and of the draft, Decision(False, "<code>") of classroom/access.py, Refusal / _no("<code>") of
+# attachment_rules and comment_rules
 CLASSROOM_SOURCES = ["backend/app/classroom/access.py", "backend/app/classroom/attachment_rules.py",
-                     "backend/app/classroom/drafts.py"]
+                     "backend/app/classroom/drafts.py", "backend/app/classroom/comment_rules.py"]
 # codes of the shared services (works.py, attachments.py: their other codes are a teacher's) a student route reaches
 SHARED_CODES = {"file_not_found": "works.work_file", "draft_file_not_found": "works.submit_work (_take_drafts)",
-                "quota_exceeded": "works.submit_work", "attachment_not_found": "attachments.item_file"}
+                "quota_exceeded": "works.submit_work", "attachment_not_found": "attachments.item_file",
+                "thread_not_found": "comments._readable_thread", "comment_not_found": "comments.delete_own, mark_read",
+                "material_not_found": "materials.material_view, material_file"}
 # codes of the scanned classroom sources no student route can produce, each with its reason
 NOT_STUDENT = {"too_many_attachments": "attachment_rules: the limit of a teacher's attachments of an item",
                "not_published": "classroom/access.py: an unpublished item is item_not_found first (it stays in the "
-                                "table for the contests)"}
+                                "table for the contests)",
+               "already_deleted": "comment_rules.can_delete: a student never sees a deleted comment, delete_own "
+                                  "answers comment_not_found first",
+               "not_addressed": "comment_rules.can_post_private: a teacher writing to a student who is not addressed"}
 
 try:
     from app.student_api.deps import CLASSROOM_STATUS, CONTEST_STATUS, STUDENT_STATUS, UNREACHABLE
@@ -78,7 +84,8 @@ class StudentStatusTests(unittest.TestCase):
                      "deadline_passed", "standings_closed", "press_start", "label_needs_contest", "student_required",
                      "already_started", "not_personal", "source_encoding", "invalid_request", "statement_hidden",
                      "not_started_yet", "item_not_found", "not_an_assignment", "already_graded", "duplicate_name",
-                     "file_content_mismatch", "too_many_files"):
+                     "file_content_mismatch", "too_many_files", "not_your_comment", "comments_teacher_only",
+                     "comment_too_long"):
             self.assertIn(seen, codes)  # the scan really sees each source
         self.assertTrue(set(NOT_STUDENT) <= codes)  # each one is really there
         codes = (codes - {c for c in NOT_STUDENT if c not in CONTEST_STATUS}) | set(SHARED_CODES)
@@ -102,7 +109,7 @@ class StudentStatusTests(unittest.TestCase):
         self.assertEqual({c for c, s in STUDENT_STATUS.items() if s == 429}, {"rate_limited", "cooldown"})
         self.assertEqual({c for c, s in STUDENT_STATUS.items() if s == 413}, {"source_too_large", "file_too_large"})
         self.assertEqual({c for c, s in STUDENT_STATUS.items() if s == 403},
-                         {"no_access", "standings_closed", "wrong_code", "student_required"})
+                         {"no_access", "standings_closed", "wrong_code", "student_required", "not_your_comment"})
         for code, status in INTAKE_CODES.items():
             self.assertEqual(STUDENT_STATUS[code], status)  # the intake's own statuses
         self.assertLessEqual(set(UNREACHABLE), set(STUDENT_STATUS))

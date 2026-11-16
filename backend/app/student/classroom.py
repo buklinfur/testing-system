@@ -100,6 +100,8 @@ def hand_in(db: Session, user: User, item_id: int, now: datetime, *, blobs: Blob
 
 
 # ----------------------------------------------------------------------------- comments
+# The private thread is the pair (manual assignment, the student): my_thread, post_private and read_mine find the item
+# with assignment() (not_an_assignment for any other kind, as the work and the draft, D-103).
 def shared_thread(db: Session, user: User, item_id: int, now: datetime, *, after: Optional[int] = None,
                   limit: int = comments.PAGE_MAX) -> dict:
     return comments.shared_thread(db, user, seen_item(db, user, item_id, now), now, after=after, limit=limit)
@@ -107,7 +109,7 @@ def shared_thread(db: Session, user: User, item_id: int, now: datetime, *, after
 
 def my_thread(db: Session, user: User, item_id: int, now: datetime, *, after: Optional[int] = None,
               limit: int = comments.PAGE_MAX) -> dict:
-    return comments.private_thread(db, user, seen_item(db, user, item_id, now), user, now, after=after, limit=limit)
+    return comments.private_thread(db, user, assignment(db, user, item_id, now), user, now, after=after, limit=limit)
 
 
 def post_shared(db: Session, user: User, item_id: int, now: datetime, body: Optional[str], *,
@@ -118,7 +120,7 @@ def post_shared(db: Session, user: User, item_id: int, now: datetime, body: Opti
 
 def post_private(db: Session, user: User, item_id: int, now: datetime, body: Optional[str], *,
                  limit: Optional[int] = comment_rules.RATE_PER_WINDOW) -> dict:
-    item = seen_item(db, user, item_id, now)
+    item = assignment(db, user, item_id, now)
     return comments.comment_card(db, user, comments.post_private(db, user, item, now, body, limit=limit))
 
 
@@ -127,7 +129,7 @@ def read_shared(db: Session, user: User, item_id: int, now: datetime, up_to: Opt
 
 
 def read_mine(db: Session, user: User, item_id: int, now: datetime, up_to: Optional[int] = None) -> int:
-    return comments.mark_read(db, user, seen_item(db, user, item_id, now), now, student=user, up_to=up_to)
+    return comments.mark_read(db, user, assignment(db, user, item_id, now), now, student=user, up_to=up_to)
 
 
 def delete_comment(db: Session, user: User, comment_id: int, now: datetime) -> None:

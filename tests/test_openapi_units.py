@@ -39,9 +39,12 @@ class OpenApiFileTests(unittest.TestCase):
     def test_the_student_file_holds_the_student_and_auth_api_only(self):
         found = paths("openapi-student.json")
         self.assertTrue(all(p.startswith(("/api/contests", "/api/submissions", "/api/load", "/api/feed", "/api/works",
-                                          "/api/auth/")) for p in found))
+                                          "/api/comments/", "/api/library", "/api/materials/", "/api/auth/"))
+                            for p in found))
         for path in ("/api/contests", "/api/contests/{slug}/problems/{label}/submissions", "/api/submissions/{submission_id}",
-                     "/api/load", "/api/auth/login", "/api/feed", "/api/feed/{item_id}/draft/files", "/api/works"):
+                     "/api/load", "/api/auth/login", "/api/feed", "/api/feed/{item_id}/draft/files", "/api/works",
+                     "/api/feed/{item_id}/my-thread", "/api/comments/{comment_id}/delete", "/api/library",
+                     "/api/materials/{material_id}/attachments/{attachment_id}"):
             self.assertIn(path, found)
         draft = found["/api/feed/{item_id}/draft/files"]["post"]["requestBody"]["content"]
         self.assertEqual(sorted(draft), ["application/octet-stream"])

@@ -137,7 +137,8 @@ class StudentApiTests(ApiCase):
         out = [(m, p) for p, ops in doc["paths"].items() if p.startswith(PREFIXES) for m in ops]
         unknown = [p for p in doc["paths"] if not p.startswith(("/api/admin/", "/api/auth/") + PREFIXES)]
         self.assertEqual(unknown, [], "a new prefix of the public app: declare it (student_api.PREFIXES or admin)")
-        self.assertEqual(len(out), 23)  # 12 of 4b.1, 11 of the feed, works and drafts (4b.2 stage 5)
+        # 12 of 4b.1, 11 of the feed, works and drafts (4b.2 stage 5), 10 of comments, materials and the library (D-103)
+        self.assertEqual(len(out), 33)
         return out
 
     def test_only_a_fully_logged_in_student_with_csrf_gets_in(self):

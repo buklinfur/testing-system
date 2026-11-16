@@ -1,12 +1,13 @@
-"""The router of the student API (docs/STUDENT_API.md §6): /api/contests, /api/submissions, /api/feed and /api/works
-need a fully logged-in student (deps.student_session); /api/load any fully logged-in user."""
+"""The router of the student API (docs/STUDENT_API.md §6): /api/contests, /api/submissions, /api/feed, /api/works,
+/api/comments, /api/library and /api/materials need a fully logged-in student (deps.student_session); /api/load any
+fully logged-in user."""
 from __future__ import annotations
 
 import re
 
 from fastapi import APIRouter, Depends
 
-from . import contests, drafts, feed, load, problems, submissions
+from . import comments, contests, drafts, feed, load, materials, problems, submissions
 from .deps import student_session
 from .types import ID_PATTERN, LABEL_PATTERN, SLUG_PATTERN
 
@@ -17,6 +18,8 @@ student.include_router(problems.router)
 student.include_router(submissions.router)
 student.include_router(feed.router)
 student.include_router(drafts.router)
+student.include_router(comments.router)
+student.include_router(materials.router)
 router.include_router(student)
 router.include_router(load.router)
 
@@ -30,4 +33,5 @@ UPLOAD_PATTERNS: tuple = (
     ("POST", re.compile(rf"/api/feed/{ID_PATTERN}/draft/files")),
 )
 # the path prefixes of the student API (tools/gen-openapi.py, the sweeps of the tests)
-PREFIXES = ("/api/contests", "/api/submissions", "/api/load", "/api/feed", "/api/works")
+PREFIXES = ("/api/contests", "/api/submissions", "/api/load", "/api/feed", "/api/works", "/api/comments",
+            "/api/library", "/api/materials")
