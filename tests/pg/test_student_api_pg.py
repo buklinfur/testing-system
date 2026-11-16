@@ -1,5 +1,5 @@
 """The HTTP API of a student (4b.1, docs/STUDENT_API.md §6) on a real PostgreSQL: every route behind a student
-session (the sweep takes the routes from the app itself), every refusal code of STUDENT_STATUS reached by a request,
+session (the sweep takes the routes from the app itself), every refusal code of CONTEST_STATUS reached by a request (CLASSROOM_STATUS: test_student_classroom_api_pg),
 identifiers of others refused on every endpoint, nothing of a hidden test, a judgement's error or stderr anywhere in
 the JSON, the submission body read after the cheap refusals with no transaction open and cut at the problem's limit,
 the poll interval and the load indicator. Skipped unless JUDGE_TEST_DATABASE_URL is set."""
@@ -28,7 +28,7 @@ if URL and HAVE_SA and HAVE_API:
                             Verdict, VersionStatus, Visibility)
     from app.settings import AuthSettings, QueueSettings, Settings, SubmitSettings
     from app.student_api import PREFIXES
-    from app.student_api.deps import STUDENT_STATUS, UNREACHABLE
+    from app.student_api.deps import CONTEST_STATUS, UNREACHABLE
 
 SAFE = {"get", "head", "options"}
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -137,7 +137,7 @@ class StudentApiTests(ApiCase):
         out = [(m, p) for p, ops in doc["paths"].items() if p.startswith(PREFIXES) for m in ops]
         unknown = [p for p in doc["paths"] if not p.startswith(("/api/admin/", "/api/auth/") + PREFIXES)]
         self.assertEqual(unknown, [], "a new prefix of the public app: declare it (student_api.PREFIXES or admin)")
-        self.assertEqual(len(out), 12)
+        self.assertEqual(len(out), 23)  # 12 of 4b.1, 11 of the feed, works and drafts (4b.2 stage 5)
         return out
 
     def test_only_a_fully_logged_in_student_with_csrf_gets_in(self):
@@ -336,8 +336,8 @@ class StudentApiTests(ApiCase):
         self.s.commit()
         self.expect(d.get("/api/contests/lesson/problems/A"), 403, "no_access")
 
-        self.assertEqual(sorted(set(STUDENT_STATUS) - set(UNREACHABLE) - self.reached), [],
-                         "codes of STUDENT_STATUS no request reached")
+        self.assertEqual(sorted(set(CONTEST_STATUS) - set(UNREACHABLE) - self.reached), [],
+                         "codes of CONTEST_STATUS no request reached")
         self.assertEqual(self.reached & set(UNREACHABLE), set())
 
     # ---------------------------------------------------------------- identifiers of others

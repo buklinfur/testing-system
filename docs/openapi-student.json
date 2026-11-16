@@ -34,6 +34,72 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HandInBody": {
+        "additionalProperties": false,
+        "description": "Limits of the schema above those of the rules (JUDGE_ASSIGNMENT_TEXT_MAX_KB, JUDGE_SUBMISSION_FILES_MAX): more\nis text_too_long / too_many_files from the rules.",
+        "properties": {
+          "files": {
+            "items": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "maxItems": 200,
+            "title": "Files",
+            "type": "array"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/LinkIn"
+            },
+            "maxItems": 200,
+            "title": "Links",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 1000000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "title": "HandInBody",
+        "type": "object"
+      },
+      "LinkIn": {
+        "additionalProperties": false,
+        "description": "Limits of the schema above those of the rules (2000 and 200 characters): a longer value is link_invalid /\nlink_title_invalid from the rules, not invalid_request.",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "maxLength": 10000,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "LinkIn",
+        "type": "object"
+      },
       "LoginBody": {
         "properties": {
           "login": {
@@ -842,6 +908,494 @@
         "summary": "Start Contest"
       }
     },
+    "/api/feed": {
+      "get": {
+        "description": "The student's feed, newest first: their current groups and personal addressing, each item once\n(next_cursor: pass it as cursor; at most 100 a page). An assignment row carries the own deadline with extensions,\nstatus, released grade, late and missing; a contest row the contest's row of /api/contests (it gives no access by\nitself); a material row {id, title}; every row the number of unread comments.",
+        "operationId": "get_feed_api_feed_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Feed"
+      }
+    },
+    "/api/feed/{item_id}": {
+      "get": {
+        "description": "The page of one item. The statement (body_md), the teacher's files and links and the links of [[памятка:…]]\nonly while the statement is open (statement_hidden otherwise); of an assignment the own work, hand-ins, draft\n(with expires_at) and can_submit always. 404 item_not_found.",
+        "operationId": "get_item_api_feed__item_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Item"
+      }
+    },
+    "/api/feed/{item_id}/attachments/{attachment_id}": {
+      "get": {
+        "description": "A teacher's file of the item, while the student sees the statement. 404 item_not_found, attachment_not_found\n(another item's, a link, a hidden statement).",
+        "operationId": "get_attachment_api_feed__item_id__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Attachment Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Attachment"
+      }
+    },
+    "/api/feed/{item_id}/draft": {
+      "get": {
+        "description": "The live files of the own draft in the order of upload, each with expires_at (the whole draft goes then).",
+        "operationId": "get_draft_api_feed__item_id__draft_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Draft"
+      }
+    },
+    "/api/feed/{item_id}/draft/files": {
+      "post": {
+        "description": "One more file of the draft (see the module docstring). 201 {file, draft}. 415 another Content-Type; 422\ninvalid_request (no name, twice, broken UTF-8), file_type_not_allowed, file_content_mismatch, file_empty,\nduplicate_name, too_many_files, submission_too_large; 413 file_too_large; 409 quota_exceeded and the refusals of\na hand-in now (deadline_passed, already_graded, files_not_expected, ...).",
+        "operationId": "upload_draft_file_api_feed__item_id__draft_files_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the file name with its extension, UTF-8 percent-encoded (encodeURIComponent)",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Draft File"
+      }
+    },
+    "/api/feed/{item_id}/draft/files/{file_id}": {
+      "get": {
+        "description": "A live file of one's own draft of this item. 404 draft_file_not_found: another student's, another item's,\ndeleted, missing.",
+        "operationId": "get_draft_file_api_feed__item_id__draft_files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "File Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Draft File"
+      }
+    },
+    "/api/feed/{item_id}/draft/files/{file_id}/delete": {
+      "post": {
+        "description": "Delete a file of the draft: its name is free at once; its bytes stay in the quota until the draft expires.\n404 draft_file_not_found.",
+        "operationId": "delete_draft_file_api_feed__item_id__draft_files__file_id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "File Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Draft File"
+      }
+    },
+    "/api/feed/{item_id}/draft/from-last": {
+      "post": {
+        "description": "The files of the last own hand-in copied into the draft (the same bytes: no upload, no quota; a name the draft\nhas is skipped). 200 {draft}; with no hand-in nothing changes, expires_at included. 409/422 as an upload.",
+        "operationId": "draft_from_last_api_feed__item_id__draft_from_last_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft From Last"
+      }
+    },
+    "/api/feed/{item_id}/work": {
+      "post": {
+        "description": "A hand-in: the text, the draft files named by id (they leave the draft) and the links. 201 {submission: {id,\nat, late}, work}. 404 item_not_found, draft_file_not_found; 403 no_access; 409 not_an_assignment, item_archived,\ndeadline_passed, already_graded, quota_exceeded; 422 answer_required, text_not_expected, text_too_long,\nfiles_required, files_not_expected, too_many_files, submission_too_large, duplicate_name, link_invalid, ...",
+        "operationId": "hand_in_api_feed__item_id__work_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandInBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hand In"
+      }
+    },
+    "/api/feed/{item_id}/work/files/{file_id}": {
+      "get": {
+        "description": "A file of one's own hand-in (the ids are in the page of the item: hand_ins[].files); the text answer, when\nasked by its id, as text. 404 file_not_found: another student's, another item's, missing.",
+        "operationId": "get_work_file_api_feed__item_id__work_files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "File Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Work File"
+      }
+    },
     "/api/load": {
       "get": {
         "description": "{level: free | busy | overloaded | offline, queue_length, workers_online, workers_busy, typical_seconds,\nmy_position, my_wait_seconds} (my_* only for a student with something queued).",
@@ -1030,6 +1584,23 @@
           }
         },
         "summary": "Get Source"
+      }
+    },
+    "/api/works": {
+      "get": {
+        "description": "Every work of the student - archived items and items they are no longer addressed by included - the latest\nown hand-in first; the status and the grade as the student sees them (an unreleased grade never).",
+        "operationId": "list_works_api_works_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Works"
       }
     }
   }

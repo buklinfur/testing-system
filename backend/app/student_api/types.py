@@ -9,6 +9,7 @@ from pydantic import Field
 
 SLUG_PATTERN = r"[a-z0-9][a-z0-9-]{1,62}"  # contest.schema.json "slug"
 LABEL_PATTERN = r"[A-Z][A-Z0-9]{0,7}"  # contest.schema.json "label"
+ID_PATTERN = r"[1-9][0-9]{0,9}"  # a row id in a path (a larger one than int4 is then 422 by ids.Id)
 
 Slug = Annotated[str, Field(min_length=1, max_length=64)]
 Label = Annotated[str, Field(min_length=1, max_length=8)]

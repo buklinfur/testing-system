@@ -1,7 +1,8 @@
 # API ученика (модули 4б.1 и 4б.2)
 
 Статус: 4б.1 — правила (этап 4, D-091), сервисы (этап 5, D-093) и HTTP (этап 6, D-095, §6) готовы. 4б.2 (класс:
-лента, работы, черновики, комментарии, материалы) — сервисы чтения готовы (§5 «Класс», D-100), HTTP — этапы 5–6.
+лента, работы, черновики, комментарии, материалы) — сервисы чтения готовы (§5 «Класс», D-100); HTTP ленты, работ и
+черновика готов (этап 5, D-101, §6 «Класс»), комментарии, материалы и Справочник — этап 6.
 Планы — сессии 4б.1 и 4б.2, ROADMAP. Машиночитаемое описание — [`openapi-student.json`](openapi-student.json) (маршруты ученика и
 `/api/auth`; пишет `tools/gen-openapi.py`, по сети приложение его не отдаёт).
 
@@ -124,7 +125,7 @@
 админском API (`ADMIN_API.md` §2): `{"detail": "<код>", "message"?, "problems"?}`; у 429 ещё `retry_after_s` и
 заголовок `Retry-After`.
 
-**Доступ.** Маршруты `/api/contests…` и `/api/submissions…` — только ученик с полной сессией (`student_session`):
+**Доступ.** Маршруты `/api/contests…`, `/api/submissions…`, `/api/feed…` и `/api/works` — только ученик с полной сессией (`student_session`):
 без сессии — 401 `not_authenticated`; админ между паролем и кодом TOTP — 401 `mfa_required`; админ — 403
 `student_required`. `/api/load` — любая полная сессия, и админ. Небезопасные методы — `Origin` ==
 `JUDGE_PUBLIC_ORIGIN` (иначе 403 `origin_not_allowed`, до всего) и `X-CSRF-Token` == токен сессии (иначе 403
@@ -164,8 +165,9 @@ query ничего не значит; чужое и несуществующее
 поля нет. Проверяется — 2 с; в очереди — `min(10, 2 + 2·⌊(место − 1) / воркеров онлайн⌋)` по месту в честном
 порядке (`queue.poll_inputs`); ни одного воркера онлайн — сразу 10 с.
 
-**Коды → HTTP** (`student_api/deps.py` `STUDENT_STATUS`; тест полноты — `tests/test_student_api_units.py`, тест «каждый
-код достижим запросом» — `tests/pg/test_student_api_pg.py`):
+**Коды → HTTP** (`student_api/deps.py` `STUDENT_STATUS` = `CONTEST_STATUS` + `CLASSROOM_STATUS`; тест полноты —
+`tests/test_student_api_units.py`, тест «каждый код достижим запросом» — `tests/pg/test_student_api_pg.py` для
+контестов, `tests/pg/test_student_classroom_api_pg.py` для класса; коды класса — ниже, «Класс»):
 
 | HTTP | Смысл | Коды |
 |---|---|---|
@@ -179,6 +181,73 @@ query ничего не значит; чужое и несуществующее
 
 Вход по коду: каждая попытка записывается (и неверная, и к несуществующему контесту), ответ — по коду отказа; сверх
 `JUDGE_ENTER_RATE` за 10 минут — 429 без записи.
+
+### Класс (4б.2, D-101)
+
+Сервисы — §5 «Класс» и [`student/classroom.py`](../backend/app/student/classroom.py) (`assignment`, черновик, сдача);
+маршруты — `student_api/feed.py` и `student_api/drafts.py`. Элемент, которого ученик не видит (нет, чужой класс,
+черновик, до `available_from`), — 404 `item_not_found`; маршруты работы и черновика у элемента, который не ручное
+задание, — 409 `not_an_assignment`, и чтение тоже. Файлы — только через `content_files.file_response` (`FILES.md`):
+вложение с `nosniff`; inline — только PNG, JPEG и WebP, у которых байты и имя совпадают; HEIC/HEIF — **никогда**, только
+скачивание.
+
+| Метод и путь | Что | Ответ |
+|---|---|---|
+| `GET /api/feed?cursor=&limit=` | лента (§5 `my_feed`, `limit` до 100) | `{items, next_cursor, server_time}` |
+| `GET /api/feed/{item}` | страница элемента (§5 `item_page`) | страница + `server_time` |
+| `GET /api/feed/{item}/attachments/{id}` | файл преподавателя, пока видно условие | файл |
+| `POST /api/feed/{item}/work` | сдача JSON `{text?, files: [id файлов черновика по порядку], links: [{url, title?}]}` | 201 `{submission: {id, at, late}, work}` (`work` — `grading.student_view`) |
+| `GET /api/feed/{item}/work/files/{id}` | файл своей сдачи (`answer.md` — текстом) | файл |
+| `GET /api/feed/{item}/draft` | черновик: живые файлы по порядку загрузки, у каждого `expires_at` | `{draft}` |
+| `POST /api/feed/{item}/draft/files?name=` | ещё один файл (ниже) | 201 `{file, draft}` |
+| `GET /api/feed/{item}/draft/files/{id}` | свой файл черновика | файл |
+| `POST /api/feed/{item}/draft/files/{id}/delete` | удалить (имя свободно сразу, квота — до уборки черновика) | 204 |
+| `POST /api/feed/{item}/draft/from-last` | файлы последней сдачи — в черновик (те же блобы, квоту не тратит; имя, которое в черновике уже есть, пропускается) | `{draft}` |
+| `GET /api/works` | свои работы (§5 `my_works`) | `{items, server_time}` |
+
+**Сдача** забирает перечисленные файлы черновика (их строки удаляются, блобы становятся файлами сдачи), остальные
+остаются. id, который не живой файл черновика этого ученика у этого элемента (чужой, другого элемента, удалённый), —
+404 `draft_file_not_found`. Пределы схемы тела выше пределов правил (текст до 1 000 000 символов, до 200 id и
+ссылок, URL до 10 000, название до 1000): больше правил — код правил (`text_too_long`, `too_many_files`,
+`link_invalid`, `link_title_invalid`), а не `invalid_request`.
+
+**Загрузка файла черновика.** Тело — сырое, `Content-Type: application/octet-stream`, один файл; имя — в `?name=`
+(UTF-8 с процентной кодировкой, разбирается строго из сырой строки запроса — `http_body.upload_name`, общий с
+загрузками преподавателя: нет имени, два имени, не UTF-8, пустое — 422 `invalid_request`). Порядок (D-082, D-095):
+Origin → сессия и CSRF → `Content-Type` (415) → `?name=` (422) → объявленный `Content-Length` больше
+`JUDGE_SUBMISSION_FILE_MAX_MB` — 413 `file_too_large` до любого сервиса → `drafts.precheck` (элемент, задание,
+`can_submit_work`, число файлов черновика, имя и тип по нему, повтор имени, квота по объявленной длине как по новым
+байтам), затем rollback: **ни транзакции, ни блокировки, пока тело идёт** → тело потоком в `<корень блобов>/tmp`
+с лимитом (413 `file_too_large` сразу при превышении, с `Content-Length` и без него) → `drafts.add_file` в новой
+транзакции решает всё заново под блокировкой ученика `STUDENT_FILES`. Отказ на любом шаге не оставляет ничего ни в
+хранилище, ни в его `tmp`. Ответ на загрузку не зависит от того, хранились ли эти байты раньше (D-099). Маршрут
+освобождён от лимита JSON шаблоном `/api/feed/[1-9][0-9]{0,9}/draft/files` (`student_api.UPLOAD_PATTERNS`, тест
+соседних путей: слэш, двойной слэш, ведущий ноль, другие маршруты черновика, другой метод); id больше int4 — 422 по
+пути до чтения тела.
+
+**`from-last`**, которому нечего копировать (сдачи нет или все имена уже в черновике), черновик не меняет: его
+`expires_at` остаётся прежним.
+
+**Коды класса → HTTP** (`CLASSROOM_STATUS`):
+
+| HTTP | Коды |
+|---|---|
+| 404 | `item_not_found`, `attachment_not_found`, `file_not_found`, `draft_file_not_found` |
+| 403 | `no_access` (убран из группы: элемент виден по своей работе, сдать нельзя), `student_required` |
+| 409 | `not_an_assignment`, `item_archived`, `already_graded`, `deadline_passed`, `quota_exceeded` (+ `used`, `adding`, `quota`) |
+| 422 | `answer_required`, `text_not_expected`, `text_too_long`, `files_required`, `files_not_expected`, `too_many_files`, `submission_too_large`, `file_type_not_allowed`, `file_content_mismatch`, `file_empty`, `duplicate_name`, `link_invalid`, `link_title_invalid` (у кодов файла и ссылки — `index`), `invalid_request`; недостижимы: `file_name_invalid` (имя сначала очищается), `not_a_student` (админу раньше — `student_required`) |
+| 413 | `file_too_large` |
+
+`not_published` и `not_available_yet` у элемента не наступают (раньше — `item_not_found`), но в таблице остаются как
+коды контестов: `UNREACHABLE` ведётся по коду, а не по маршруту (D-101).
+
+Тесты класса (`tests/pg/test_student_classroom_api_pg.py`): путь ученика (лента, страница, загрузка PNG и HEIC, показ
+PNG inline и HEIC вложением, удаление, сдача, файл сдачи, мои работы), `from-last` после возврата и без сдачи, каждый
+код запросом, подмена (элемент чужого класса, чужой файл черновика по своему и чужому элементу, файл чужой работы,
+чужой и свой файл другого элемента в сдаче, вложение скрытого условия и другого элемента — всё 404), ключи и строки,
+которых в JSON быть не должно (sha256, логины, автор, неопубликованная оценка), каждый дешёвый отказ загрузки — до
+чтения тела и с пустым `tmp`, 413 без `Content-Length`, во время тела — ни блокировки работы и ученика, ни открытой
+транзакции.
 
 Тесты: обход всех маршрутов ученика из самого приложения (`tests/pg/test_student_api_pg.py`: аноним, админ, админ на
 полпути, без CSRF, чужой Origin; новый префикс приложения без объявления — ошибка), подмена на каждом эндпоинте,

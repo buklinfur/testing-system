@@ -1419,3 +1419,41 @@ ONLINE 0» перед отзывом — по имени токена, не по
 права для того, что reaper реально делает. Остальное — правила 4в, собранные для одного ученика без новых правил.
 Связи: D-099 (черновик и reaper — заменено здесь в двух пунктах), D-097, D-059 (контест-элемент доступа не даёт),
 D-074 (правила комментариев), D-083 (ссылки на памятки), D-091 (`rates.window_ok`), D-093 (сервисы ученика 4б.1).
+
+
+### D-101. HTTP ленты, работ и черновика ученика
+2026-11-16 · принято · 4б.2b
+Этап 5 сессии 4б.2 (`STUDENT_API.md` §6 «Класс», `student_api/feed.py`, `student_api/drafts.py`; ответы владельца на
+этапе 0 4б.2b):
+- **маршруты** `/api/feed`, `/api/feed/{item}`, `…/attachments/{id}`, `…/work` (сдача JSON), `…/work/files/{id}`,
+  `…/draft`, `…/draft/files?name=` (сырое тело), `…/draft/files/{id}`, `…/draft/files/{id}/delete`,
+  `…/draft/from-last`, `/api/works`; id — `ids.Id` (int4). `PREFIXES` += `/api/feed`, `/api/works`.
+- **ответы**: загрузка — 201 `{file, draft}` (новый файл сдвигает `expires_at` всего черновика, клиенту нужен весь);
+  `from-last` и `GET …/draft` — `{draft}`; сдача — 201 `{submission: {id, at, late}, work}` (`work` —
+  `works.student_work`, только выпущенное). `from-last`, которому нечего копировать, черновик не меняет и
+  `expires_at` не сдвигает (тест).
+- **работа и черновик только у ручного задания**: у любого другого элемента все маршруты `…/work*` и `…/draft*`, и
+  чтение тоже, — 409 `not_an_assignment` (`student.classroom.assignment`), а не пустой черновик.
+- **загрузка — порядок D-082/D-095**: Origin → сессия и CSRF → 415 → `?name=` (422) → `Content-Length` больше
+  `JUDGE_SUBMISSION_FILE_MAX_MB` — 413 `file_too_large` → `drafts.precheck` без блокировок → rollback → тело потоком
+  в `Incoming` с лимитом (413 `file_too_large` и без `Content-Length`: `too_large` из `save_body` переводится в код
+  правил) → `drafts.add_file` в новой транзакции. Шаблон `UPLOAD_PATTERNS` `/api/feed/[1-9][0-9]{0,9}/draft/files`
+  (`types.ID_PATTERN`) с тестом соседних путей.
+- **разбор `?name=` общий**: `upload_name` перенесён из `admin_api.attachments` в `http_body` (загрузки
+  преподавателя — вложения и материалы — и ученика); поведение то же.
+- **коды**: `STUDENT_STATUS` = `CONTEST_STATUS` (4б.1) + `CLASSROOM_STATUS` (класс); общий код — один статус
+  (тест). `refused` принимает и `FeedError`: его `data` (`index`, `used`/`adding`/`quota`, `id`) — в теле, несколько
+  причин — в `problems`, `retry_after_s` — с `Retry-After`. `file_too_large` у ученика — 413 (у преподавателя в
+  админском API — 422, недостижим). Достижимость проверяется по частям: контесты — `test_student_api_pg`, класс —
+  `test_student_classroom_api_pg`. **`UNREACHABLE` ведётся по коду, а не по маршруту**: `not_published` и
+  `not_available_yet` у элемента не наступают (`item_not_found` раньше), но код достижим в контестах и поэтому в
+  `UNREACHABLE` не входит; в `CLASSROOM_STATUS` их нет. Недостижимы: `file_name_invalid` (имя очищается),
+  `not_a_student` (раньше `student_required`).
+- **тест полноты** сканирует ещё `classroom/access.py`, `attachment_rules.py`, `drafts.py` (`FeedError`, `Refusal`,
+  `_no`) и берёт из общих сервисов явный список того, что достигает ученик (`file_not_found`,
+  `draft_file_not_found`, `quota_exceeded`, `attachment_not_found`); коды преподавателя в этих файлах
+  (`too_many_attachments`) — в списке исключений с причиной.
+Почему: порядок и шаблоны — уже принятые для посылки и вложений; деление таблицы позволяет каждому набору тестов
+доказывать достижимость своих кодов, не завися от другого.
+Связи: D-095 (HTTP ученика), D-082 (загрузка преподавателя), D-099, D-100 (черновик и сервисы чтения), D-088 (int4),
+D-070 (отдача файлов), D-097 (HEIC только вложением).
