@@ -21,20 +21,22 @@ teacher's solution, say): the answer and every code are the same either way. The
 rows (their hand-ins and drafts, quota_used): a blob someone else stored is new to them and costs its size; adopting
 it leaves the stored file as it is and drops the copy (Incoming.adopt).
 
-A deleted file keeps its row (deleted_at) and so its place in the quota until the reaper removes it
-JUDGE_DRAFT_TTL_DAYS after the upload (purge); the blob stays for the collector of module 6.
+A deleted file keeps its row (deleted_at) and so its place in the quota until the reaper removes it (purge); the blob
+stays for the collector of module 6. The draft of a pair lives as a whole (D-100): its files expire JUDGE_DRAFT_TTL_DAYS
+after the later of the student's own due moment (with extensions) and the last change of the draft (an upload, a
+delete, from_last); without a due moment, after the last change. Every file shows that moment (expires_at).
 
 Functions flush but never commit; a refusal raises FeedError and the caller rolls back.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Optional, Sequence
+from typing import Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .. import locks
+from .. import deadline_rules, locks
 from ..blobstore import Incoming
 from ..content_files import clean_name
 from ..models import AssignmentSubmissionFile, FeedItem, SubmissionFileKind, User, WorkDraftFile
@@ -55,9 +57,35 @@ def _live(db: Session, item: FeedItem, user: User, lock: bool = False) -> list[W
     return list(db.execute(query).scalars())
 
 
-def describe(row: WorkDraftFile) -> dict:
-    """What the student sees of a draft file: id, name, size, when uploaded. The content goes by draft_file only."""
-    return {"id": row.id, "name": row.name, "size": row.size, "created_at": row.created_at}
+def describe(row: WorkDraftFile, expires_at: Optional[datetime] = None) -> dict:
+    """What the student sees of a draft file: id, name, size, when uploaded, when the reaper removes it (expires_at,
+    the same for the whole draft). The content goes by draft_file only."""
+    return {"id": row.id, "name": row.name, "size": row.size, "created_at": row.created_at, "expires_at": expires_at}
+
+
+# the moment of a row's last change: its upload, or its delete
+_CHANGED = func.greatest(WorkDraftFile.created_at, func.coalesce(WorkDraftFile.deleted_at, WorkDraftFile.created_at))
+
+
+def last_change(db: Session, item_id: int, user_id: int) -> Optional[datetime]:
+    """The last upload or delete among the pair's rows (deleted ones included); None: no rows."""
+    return db.execute(select(func.max(_CHANGED)).where(WorkDraftFile.item_id == item_id,
+                                                       WorkDraftFile.user_id == user_id)).scalar_one()
+
+
+def expiry(item: FeedItem, extensions, changed: Optional[datetime], ttl_days: int) -> Optional[datetime]:
+    """When the draft of the pair expires: ttl_days after the later of the effective due moment (deadline_rules,
+    with the student's extensions) and the last change; without a due moment, after the last change. None: no
+    rows. The later of the two, so a file uploaded after the due moment (a late hand-in allowed) never expires at
+    once."""
+    if changed is None:
+        return None
+    due = deadline_rules.effective_due(item, extensions)
+    return (changed if due is None else max(due, changed)) + timedelta(days=ttl_days)
+
+
+def expires_at(db: Session, user: User, item: FeedItem, ttl_days: int = rules.DRAFT_TTL_DAYS) -> Optional[datetime]:
+    return expiry(item, feed.due_moments(db, item, user), last_change(db, item.id, user.id), ttl_days)
 
 
 def _visible(db: Session, user: User, item: FeedItem, now: datetime) -> None:
@@ -70,6 +98,14 @@ def list_draft(db: Session, user: User, item: FeedItem, now: datetime) -> list[W
     """The live files of the student's draft of the item, in the order of upload."""
     _visible(db, user, item, now)
     return _live(db, item, user)
+
+
+def draft_view(db: Session, user: User, item: FeedItem, now: datetime,
+               ttl_days: int = rules.DRAFT_TTL_DAYS) -> list[dict]:
+    """The student's draft as they see it: describe() of every live file, each with the draft's expires_at."""
+    rows = list_draft(db, user, item, now)
+    when = expires_at(db, user, item, ttl_days) if rows else None
+    return [describe(r, when) for r in rows]
 
 
 def draft_file(db: Session, user: User, item: FeedItem, file_id: int, now: datetime) -> WorkDraftFile:
@@ -198,7 +234,24 @@ def remove(db: Session, user: User, item: FeedItem, file_id: int, now: datetime)
 
 
 def purge(db: Session, now: datetime, ttl_days: int = rules.DRAFT_TTL_DAYS) -> int:
-    """The reaper: draft files uploaded more than ttl_days ago, deleted or not, go; the number removed. Their blobs
-    stay (the collector of module 6)."""
+    """The reaper: every draft whose expiry (see expiry) is before now goes as a whole, deleted files included; the
+    number of rows removed. Candidates are the pairs not changed for ttl_days; each is decided again under the
+    student's lock (an upload or a delete at that moment wins), with the due moment and the extensions as they are
+    now. Blobs stay (the collector of module 6)."""
     cutoff = now - timedelta(days=ttl_days)
-    return db.execute(delete(WorkDraftFile).where(WorkDraftFile.created_at < cutoff)).rowcount
+    pairs = db.execute(select(WorkDraftFile.item_id, WorkDraftFile.user_id)
+                       .group_by(WorkDraftFile.item_id, WorkDraftFile.user_id)
+                       .having(func.max(_CHANGED) < cutoff)
+                       .order_by(WorkDraftFile.user_id, WorkDraftFile.item_id)).all()
+    removed = 0
+    for item_id, user_id in pairs:
+        locks.take_pair(db, locks.STUDENT_FILES, user_id)
+        item, user = db.get(FeedItem, item_id), db.get(User, user_id)
+        if item is None or user is None:
+            continue
+        when = expiry(item, feed.due_moments(db, item, user), last_change(db, item_id, user_id), ttl_days)
+        if when is None or when >= now:
+            continue
+        removed += db.execute(delete(WorkDraftFile).where(WorkDraftFile.item_id == item_id,
+                                                          WorkDraftFile.user_id == user_id)).rowcount
+    return removed

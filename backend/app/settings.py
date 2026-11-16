@@ -63,7 +63,7 @@ class FileSettings:
     student_quota_bytes: int = 1024 * 1024 * 1024  # JUDGE_STUDENT_QUOTA_MB: distinct blobs of a student; 0 = none
     item_attachments_max: int = 20  # JUDGE_ITEM_ATTACHMENTS_MAX: files and links of one feed item
     attachment_max_bytes: int = 50 * 1024 * 1024  # JUDGE_ATTACHMENT_MAX_MB: one file of a teacher
-    draft_ttl_days: int = 14  # JUDGE_DRAFT_TTL_DAYS: the reaper removes draft files this long after their upload
+    draft_ttl_days: int = 14  # JUDGE_DRAFT_TTL_DAYS: a draft goes this long after the own due moment / its last change
 
 
 @dataclass(frozen=True)

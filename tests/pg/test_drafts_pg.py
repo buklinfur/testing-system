@@ -203,18 +203,64 @@ class DraftServiceTests(AttachmentServiceTests):
         self.assertEqual(works.quota_used(self.s, self.a)[0], 150)
         self.assertEqual(works.quota_used(self.s, self.b)[0], 0)
 
-    def test_purge_removes_old_draft_files_deleted_or_not(self):
-        old = self.add("old.py", b"o", now=T0)
-        old_deleted = self.add("gone.py", b"g", now=T0)
-        drafts.remove(self.s, self.a, self.files, old_deleted.id, T0)
-        fresh = self.add("fresh.py", b"f", now=T0 + timedelta(days=13))
+    # ---------------------------------------------------------------- how long a draft lives (D-100)
+    def test_without_a_due_moment_the_draft_lives_from_its_last_change(self):
+        free = self.item(due_at=None)
+        old = self.add("old.py", b"o", item=free, now=T0)
+        gone = self.add("gone.py", b"g", item=free, now=T0)
+        drafts.remove(self.s, self.a, free, gone.id, T0)
         self.s.commit()
         self.assertEqual(drafts.purge(self.s, T0 + timedelta(days=14), 14), 0, "exactly 14 days: not yet")
-        self.assertEqual(drafts.purge(self.s, T0 + timedelta(days=14, seconds=1), 14), 2)
+        self.assertEqual(drafts.purge(self.s, T0 + timedelta(days=14, seconds=1), 14), 2, "deleted files go too")
         self.s.commit()
-        self.assertEqual([r.id for r in self.rows()], [fresh.id])
+        self.assertEqual(self.rows(item_id=free.id), [])
         self.assertTrue(self.blobs.exists(old.blob_sha256), "the blob stays for the collector")
-        self.assertEqual(works.quota_used(self.s, self.a)[0], 1, "purged files leave the quota")
+        self.assertEqual(works.quota_used(self.s, self.a)[0], 0, "purged files leave the quota")
+
+    def test_any_change_of_the_draft_extends_it_as_a_whole(self):
+        free = self.item(due_at=None)
+        first = self.add("first.py", b"1", item=free, now=T0)
+        self.add("second.py", b"2", item=free, now=T0 + timedelta(days=10))  # an upload
+        self.assertEqual(drafts.purge(self.s, T0 + timedelta(days=20), 14), 0, "the first file lives on")
+        self.assertEqual([f["expires_at"] for f in drafts.draft_view(self.s, self.a, free, T0, 14)],
+                         [T0 + timedelta(days=24)] * 2, "one moment for the whole draft")
+        drafts.remove(self.s, self.a, free, first.id, T0 + timedelta(days=20))  # a delete
+        self.s.commit()
+        self.assertEqual(drafts.purge(self.s, T0 + timedelta(days=34), 14), 0)
+        self.assertEqual(drafts.purge(self.s, T0 + timedelta(days=34, seconds=1), 14), 2)
+        self.s.commit()
+        self.add("third.py", b"3", item=free, now=T0 + timedelta(days=40))
+        self.assertEqual(drafts.from_last(self.s, self.a, free, T0 + timedelta(days=50)), [])
+        self.assertEqual(drafts.expires_at(self.s, self.a, free, 14), T0 + timedelta(days=54),
+                         "from_last is a change even when it copies nothing")
+
+    def test_with_a_due_moment_a_month_away_a_file_of_twenty_days_lives(self):
+        now = T0 + timedelta(days=20)
+        later = self.item(due_at=now + timedelta(days=30))
+        self.add("photo.jpg", JPEG, item=later, now=T0)
+        self.assertEqual(drafts.purge(self.s, now, 14), 0)
+        self.assertEqual(drafts.draft_view(self.s, self.a, later, now, 14)[0]["expires_at"],
+                         now + timedelta(days=44))
+
+    def test_an_extension_moves_the_draft_of_that_student_only(self):
+        due = self.item(due_at=DUE, after_due_submit="yes")
+        self.add("a.jpg", JPEG, item=due, now=T0)
+        self.add("b.jpg", JPEG, item=due, user=self.b, now=T0)
+        self.assertEqual(drafts.expires_at(self.s, self.a, due, 14), DUE + timedelta(days=14))
+        items.add_extension(self.s, self.actor, due, DUE + timedelta(days=10), T0, user=self.a)
+        self.s.commit()
+        self.assertEqual(drafts.expires_at(self.s, self.a, due, 14), DUE + timedelta(days=24))
+        self.assertEqual(drafts.purge(self.s, DUE + timedelta(days=14, seconds=1), 14), 1)
+        self.s.commit()
+        self.assertEqual([r.user_id for r in self.rows(item_id=due.id)], [self.a.id], "the other student's went")
+        self.assertEqual(drafts.purge(self.s, DUE + timedelta(days=24, seconds=1), 14), 1)
+
+    def test_a_file_uploaded_after_the_due_moment_does_not_expire_at_once(self):
+        late = self.item(due_at=DUE, after_due_submit="late")
+        when = DUE + timedelta(days=20)
+        self.add("late.jpg", JPEG, item=late, now=when)
+        self.assertEqual(drafts.expires_at(self.s, self.a, late, 14), when + timedelta(days=14))
+        self.assertEqual(drafts.purge(self.s, when + timedelta(hours=1), 14), 0)
 
     # ---------------------------------------------------------------- after a return
     def test_from_last_copies_the_last_hand_in_after_a_return(self):

@@ -48,7 +48,7 @@ fi
 
 # 1. user and directories
 id judge >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/judge --shell /usr/sbin/nologin judge
-install -d -o judge -g judge /var/lib/judge/blobs /var/cache/judge/worker
+install -d -o judge -g judge /var/lib/judge/blobs /var/lib/judge/blobs/tmp /var/cache/judge/worker
 install -d -o root -g judge -m 750 /etc/judge
 install -d -o root -g root -m 755 /opt/judge
 

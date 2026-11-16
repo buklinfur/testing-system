@@ -1,9 +1,12 @@
 """Reaper: returns the judgements of lost workers to the queue. Runs as its own systemd unit.
 
 About once an hour it also prunes old authentication rows (failures, lockouts, dead sessions, QR tokens), removes
-students' draft files uploaded more than JUDGE_DRAFT_TTL_DAYS ago, deleted or not (4b.2, D-099), and files left in
-<JUDGE_BLOB_DIR>/tmp by a crash for more than a day (blobstore.sweep_tmp; the blobs themselves stay for the collector
-of module 6).
+students' drafts expired (JUDGE_DRAFT_TTL_DAYS after the later of the own due moment and the last change, deleted
+files included; 4b.2, D-099, D-100), and files left in <JUDGE_BLOB_DIR>/tmp by a crash for more than a day
+(blobstore.sweep_tmp; the blobs themselves stay for the collector of module 6).
+
+Files: it writes only in <JUDGE_BLOB_DIR>/tmp (the unit's only ReadWritePaths) and creates nothing there; everything
+else is the database and the journal.
 
     python -m app.maintenance
 
@@ -19,7 +22,7 @@ from datetime import datetime, timezone
 
 from . import queue as q
 from .auth import cleanup
-from .blobstore import BlobStore
+from . import blobstore
 from .classroom import drafts
 from .db import session_scope
 from .settings import Settings
@@ -63,7 +66,7 @@ def main() -> int:
             except Exception:  # noqa: BLE001
                 log.exception("draft purge failed")
             try:
-                swept = BlobStore(all_settings.blob_dir).sweep_tmp()
+                swept = blobstore.sweep_tmp(all_settings.blob_dir)
                 if swept:
                     log.info("removed stale files in the blob store's tmp: %d", swept)
             except Exception:  # noqa: BLE001

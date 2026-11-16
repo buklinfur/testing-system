@@ -34,6 +34,28 @@ def valid_sha256(value: str) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= HEX
 
 
+def sweep_tmp(root, max_age_s: float = TMP_MAX_AGE_S, now: Optional[float] = None) -> int:
+    """Remove the regular files directly in <root>/tmp not modified for max_age_s seconds - an Incoming whose process
+    died before close(); one being received is written to all the time. Symbolic links, directories and anything else
+    are left alone and never followed; nothing is created (no BlobStore: the reaper may write only in <root>/tmp,
+    D-100). The number removed. Run by the reaper (D-080, D-099)."""
+    path = Path(root) / TMP_DIR
+    if not path.is_dir():
+        return 0
+    cutoff = (time.time() if now is None else now) - max_age_s
+    removed = 0
+    with os.scandir(path) as entries:
+        for entry in entries:
+            try:
+                st = entry.stat(follow_symlinks=False)
+                if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
+                    os.unlink(entry.path)
+                    removed += 1
+            except OSError:
+                continue
+    return removed
+
+
 class BlobStore:
     def __init__(self, root) -> None:
         self.root = Path(root)
@@ -51,24 +73,7 @@ class BlobStore:
         return path
 
     def sweep_tmp(self, max_age_s: float = TMP_MAX_AGE_S, now: Optional[float] = None) -> int:
-        """Remove the regular files directly in <root>/tmp not modified for max_age_s seconds - an Incoming whose
-        process died before close(); one being received is written to all the time. Symbolic links, directories and
-        anything else are left alone and never followed. The number removed. Run by the reaper (D-080, D-099)."""
-        path = self.root / TMP_DIR
-        if not path.is_dir():
-            return 0
-        cutoff = (time.time() if now is None else now) - max_age_s
-        removed = 0
-        with os.scandir(path) as entries:
-            for entry in entries:
-                try:
-                    st = entry.stat(follow_symlinks=False)
-                    if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
-                        os.unlink(entry.path)
-                        removed += 1
-                except OSError:
-                    continue
-        return removed
+        return sweep_tmp(self.root, max_age_s, now)
 
     def incoming(self, name: str = "", limit: Optional[int] = None) -> "Incoming":
         """A new file being received (see Incoming); use it in a with block."""

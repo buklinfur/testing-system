@@ -188,6 +188,16 @@ class SweepTmpTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             self.assertEqual(BlobStore(Path(root)).sweep_tmp(), 0)
 
+    def test_the_reapers_sweep_creates_nothing(self):
+        """The reaper may write only in <root>/tmp (D-100): no root, no tmp is made when they are missing."""
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent) / "blobs"
+            self.assertEqual(blobstore.sweep_tmp(root), 0)
+            self.assertFalse(root.exists())
+            root.mkdir()
+            self.assertEqual(blobstore.sweep_tmp(root), 0)
+            self.assertEqual(list(root.iterdir()), [])
+
 
 class FileSettingsTests(unittest.TestCase):
     def test_defaults_are_the_rules(self):

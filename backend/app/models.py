@@ -930,7 +930,7 @@ class WorkDraftFile(Base):
     """A file a student uploaded to the draft of an assignment before handing it in (4b.2, D-097, D-098): one per
     upload, in the order of upload (id), private to the student until a hand-in names it - then the row goes and the
     blob becomes a file of the hand-in. Deleting by the student sets deleted_at; the row (and so its blob in the
-    student's quota) stays until the reaper removes it JUDGE_DRAFT_TTL_DAYS after the upload, deleted or not. Names
+    student's quota) stays until the reaper removes the whole draft of the pair (classroom/drafts.expiry, D-100). Names
     are unique among the live files of the pair (item, student), case ignored. Not a trace of the user: erased with
     it."""
 

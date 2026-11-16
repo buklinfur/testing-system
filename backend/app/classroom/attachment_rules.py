@@ -51,7 +51,7 @@ SUBMISSION_FILES_MAX = 20  # JUDGE_SUBMISSION_FILES_MAX: files and links of one 
 SUBMISSION_FILE_MAX_BYTES = 30 * MIB  # JUDGE_SUBMISSION_FILE_MAX_MB: also the body limit of a draft upload
 SUBMISSION_TOTAL_MAX_BYTES = 200 * MIB  # JUDGE_SUBMISSION_TOTAL_MAX_MB: the files of one hand-in (and of a draft)
 STUDENT_QUOTA_BYTES = 1024 * MIB  # JUDGE_STUDENT_QUOTA_MB: distinct blobs of the student's hand-ins and drafts
-DRAFT_TTL_DAYS = 14  # JUDGE_DRAFT_TTL_DAYS: a draft file (deleted or not) is removed this long after its upload
+DRAFT_TTL_DAYS = 14  # JUDGE_DRAFT_TTL_DAYS: a draft lives this long after the own due moment / its last change (D-100)
 ITEM_ATTACHMENTS_MAX = 20  # JUDGE_ITEM_ATTACHMENTS_MAX: files and links of one feed item
 ATTACHMENT_MAX_BYTES = 50 * MIB  # JUDGE_ATTACHMENT_MAX_MB: one file of a teacher
 

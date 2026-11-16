@@ -1,7 +1,8 @@
-# API ученика (модуль 4б.1)
+# API ученика (модули 4б.1 и 4б.2)
 
-Статус: правила (этап 4, D-091), сервисы (этап 5, D-093) и HTTP (этап 6, D-095, §6) готовы. План — сессия 4б.1,
-ROADMAP «4б.1». Машиночитаемое описание — [`openapi-student.json`](openapi-student.json) (маршруты ученика и
+Статус: 4б.1 — правила (этап 4, D-091), сервисы (этап 5, D-093) и HTTP (этап 6, D-095, §6) готовы. 4б.2 (класс:
+лента, работы, черновики, комментарии, материалы) — сервисы чтения готовы (§5 «Класс», D-100), HTTP — этапы 5–6.
+Планы — сессии 4б.1 и 4б.2, ROADMAP. Машиночитаемое описание — [`openapi-student.json`](openapi-student.json) (маршруты ученика и
 `/api/auth`; пишет `tools/gen-openapi.py`, по сети приложение его не отдаёт).
 
 Ученик — всегда `User` из сессии: идентификаторов пользователя, участия или группы API не принимает. Время `now` —
@@ -88,6 +89,34 @@ ROADMAP «4б.1». Машиночитаемое описание — [`openapi-s
 
 `counted` посылки не хранится: считается при чтении по окну участника (как лимит посылок). `dev_seed --contest`
 отправляет посылки через `submissions.submit` (много посылок в минуту — `JUDGE_SUBMIT_RATE_PER_MIN=0`).
+
+`problems.problem_view` с 4б.2 отдаёт ещё `links` — ссылки `[[памятка:…]]` всех условий версии, по одной на slug, как
+`materials.service.resolve` видит их этому ученику (`{slug, available: false}` без основания — как нет материала).
+
+### Класс (4б.2, D-100)
+
+Модули [`student/feed.py`](../backend/app/student/feed.py) (чтение) и
+[`student/classroom.py`](../backend/app/student/classroom.py) (тонкие обёртки сервисов класса). Правила — все из
+`CLASSROOM.md` (`classroom/access.py`, `deadline_rules`, `grading.student_view`, `comment_rules`, `materials/rules.py`);
+здесь только сбор и вид. Отказ — `FeedError` с кодом сервиса класса (у `rate_limited` — `retry_after_s`), HTTP —
+этапы 5–6. Ученику **никогда** не уходят sha256 файлов, автор вложения, неопубликованная оценка, чужое.
+
+**Элемент существует** для ученика только по `items.student_sees` (`feed.seen_item`): в его ленте или на нём его
+работа; иначе `item_not_found` — одинаково для «нет», черновика, чужого класса и до `available_from`. Отсюда начинается
+каждая функция с элементом.
+
+| Функция | Что | Отказы |
+|---|---|---|
+| `feed.my_feed(cursor, limit)` | лента (`items.student_feed`: свои группы и личная адресация, без дублей), новые первыми по `at` = `available_from` / `published_at` / `created_at`, затем id; курсор — id последнего элемента страницы (позиция в порядке: ушедший между страницами элемент ничего не сдвигает), `limit` до 100. Строка: `id`, `kind`, `title`, `at`, `archived`, `unread` (общая и своя личная ветка, `comments.unread_by_item`); у задания `assignment` — `answer_kind`, `grading`, `max_points`, `available_from`, свой `due_at` с продлениями, `after_due`, `status` (`null` — работы нет), `grade`, `late`, `missing`, `submissions`, `returned_comment`; у контест-элемента `contest` — строка `contests.my_contests` (**доступа не даёт**, D-059); у материала `material` — `{id, title}` | — |
+| `feed.item_page(item, blobs, ttl_days)` | страница: строка ленты + `statement_hidden`, `body_md`, `attachments` (без sha256 и автора), `links` (`resolve` по тексту) — только там, где ученик видит условие (`attachments.can_view`: у задания скрыто после срока при `after_due_statement = hidden` и в архиве — тогда `null`, `null`, `[]`); `comments`: `enabled`, `shared_unread`, `private_unread` (`null` — ветку не читает). У задания всегда: `assignment`, `can_submit` (`{allowed, reason, late}` — `can_submit_work` с подставным ответом нужного вида: код о задании, сроке и оценке, не об ответе), `hand_ins` (свои сдачи по порядку: `at`, `late`, `text`, `files` `{id, name, size}` без `answer.md`, `links`; рецензий нет — их видимое в `status` и `grade`), `draft` (`drafts.draft_view` с `expires_at`) | `item_not_found` |
+| `feed.my_works` | все свои работы (`can_see_own_work`: и в архиве, и после исключения из группы), новые сдачи первыми — порядок только по своим сдачам, рецензия (выпущенная или нет) ничего не двигает: `item` `{id, title, archived}`, срок, `status`, `grade`, `late`, `submissions`, `last_hand_in_at` | — |
+| `classroom.item_file` / `work_file` | файл преподавателя (где видно условие) / файл своей работы, в том числе `answer.md` | `item_not_found`, `attachment_not_found` / `file_not_found` |
+| `classroom.shared_thread` / `my_thread` | общая ветка / своя личная (`comments.*_thread`, ученик — сам) | `item_not_found`, `thread_not_found` |
+| `classroom.post_shared` / `post_private` | комментарий → `comment_card` (имя автора и `teacher`, `mine`; логинов нет) | `item_not_found`, коды `comment_rules`, `rate_limited` + `retry_after_s` |
+| `classroom.read_shared` / `read_mine` | отметка прочитанного (`up_to` — комментарий этой ветки, который ученик видит) → сколько осталось | `item_not_found`, `thread_not_found`, `comment_not_found` |
+| `classroom.delete_comment` | своё | `comment_not_found` (не видит), `not_your_comment` |
+| `classroom.material` / `material_file` | последняя версия материала с основанием, вложения без sha256 и автора / её файл | `material_not_found`, `attachment_not_found` |
+| `classroom.library(q)` | Справочник (`library.library_view`), с `q` — поиск | — |
 
 ## 6. HTTP (`app/student_api/`, D-095)
 
