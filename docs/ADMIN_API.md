@@ -282,8 +282,8 @@ D-059…D-063). Элемент — по `id`, группа и ученик — �
 
 | Метод и путь | Тело / параметры | Ответ |
 |---|---|---|
-| `GET /works` | `item_id`, `group_id` (**текущие** члены), `status=assigned\|submitted\|graded\|returned`, `late`, `missing`, курсор | `{items: [{item, item_title, user_id, login, display_name, work_id, status, status_at, submissions, last_submitted_at, late, missing, grade: {score, passed, released} \| null}], next_cursor}`. С `item_id` — все текущие адресаты и все, у кого есть работа (без работы — `assigned`), курсор — id ученика; без `item_id` — только существующие работы, курсор — id работы (D-060) |
-| `GET /items/{id}/works/{user_id}` | — | `{work_id, item, user_id, login, display_name, status, status_at, missing, events: [{kind: submission, id, at, late, text, files: [{id, kind: text\|file, name, size, sha256}], links: [{id, url, title}]} \| {kind: review, id, at, action, score, passed, comment, reviewer_id, release_of}], student_sees: {status, grade, returned_comment, submissions, late, missing}}`; текст ответа (`answer.md`) — строкой `text`. Адресат без работы — 200, `status: assigned`, событий нет |
+| `GET /works` | `item_id`, `group_id` (**текущие** члены), `status=assigned\|submitted\|graded\|returned`, `late`, `missing`, курсор | `{items: [{item, item_title, user_id, login, display_name, work_id, status, status_at, submissions, last_submitted_at, late, missing, resubmitted_after_grade, grade: {score, passed, released} \| null}], next_cursor}`. `grade` — текущая оценка: последняя, которую не сняла пересдача; `resubmitted_after_grade` — «пересдано после оценки, требует проверки» (D-102). С `item_id` — все текущие адресаты и все, у кого есть работа (без работы — `assigned`), курсор — id ученика; без `item_id` — только существующие работы, курсор — id работы (D-060) |
+| `GET /items/{id}/works/{user_id}` | — | `{work_id, item, user_id, login, display_name, status, status_at, missing, resubmitted_after_grade, events: [{kind: submission, id, at, late, text, files: [{id, kind: text\|file, name, size, sha256}], links: [{id, url, title}]} \| {kind: review, id, at, action, score, passed, comment, reviewer_id, release_of, superseded}], student_sees: {status, grade, returned_comment, submissions, late, missing}}`; текст ответа (`answer.md`) — строкой `text`. События — в порядке `seq` (порядок применения, D-102); `superseded: true` — оценка к прежней сдаче, снятая пересдачей, опубликовать её нельзя. Адресат без работы — 200, `status: assigned`, событий нет |
 | `POST /items/{id}/works/{user_id}/grade` | `{score? \| passed?, comment?, release?}` — `score` для `points`, `passed` для `pass_fail`, ничего для `none`; можно без сдачи | `{result: {work_id, review_id, status, released, seen_at_once}, work}` |
 | `POST /items/{id}/works/{user_id}/return` | `{comment}` | `{result: {work_id, review_id, status}, work}` — ученик видит возврат сразу |
 | `POST /items/{id}/release` | `{user_ids?}` (1–200) | `{results: [{user_id, login, result}]}` — по ученику: `released`, `nothing_to_release` (работы нет или она не оценена), `already_released`. Неизвестные `user_ids` — 404 `user_not_found` (все отсутствующие), ничего не опубликовано |
@@ -524,12 +524,14 @@ id. Ученических эндпоинтов здесь нет (4б.2): ад�
 ## 6. Проверка на работающем приложении
 
 `tools/smoke-admin-api.sh [BASE_URL] ORIGIN` — curl-сценарий проверки 4а.3 и 4а.4 через этот API (для 4а.4: загруженные задачи ждут `ready` до 120 с, пакет `tests/problems/check-broken-checker` получает `failed` с логом компиляции, закрепить его нельзя, `recheck` создаёт одну проверку и заканчивается `ready`; нужен работающий воркер с `problem_check`): класс из CSV со столбцом
-«Класс» (две группы), загрузка задач, контест только для группы (сроки с политиками `late` и `no`), добавление
-учеников, продление одному ученику, удаление из группы, посылки (список, фильтры `late` и `group_id`, вид
+«Класс» (две группы), два ученика прогона (создаются этим API, пароли — только в файлах; действуют через API ученика,
+`STUDENT_API.md` §6), загрузка задач, контест только для группы (сроки с политиками `late` и `no`; не из группы —
+404 `contest_not_found`), добавление учеников и вход через группу, посылки с опозданием, отказ `deadline_passed`,
+продление одному ученику, удаление из группы (посылка — 403 `no_access`), посылки (список, фильтры `late` и `group_id`, вид
 преподавателя, исходник вложением), перепроверка в два шага, откат импорта (К3: группа контеста остаётся, другая
 удаляется), архивация с контестами (К6), часовой пояс, `/system`, `/audit`, `/languages`; лента 4в.1b (отдельный
-блок): задание группе с `<script>` в названии, карточка адресата без работы (`assigned`, «не сдано»), сдачи через
-`SEED_CMD` (`dev_seed --item`: с опозданием и с продлением вовремя), очередь проверки с фильтрами, `score_invalid`,
+блок): задание группе с `<script>` в названии, карточка адресата без работы (`assigned`, «не сдано»), сдачи учеников
+(с опозданием и с продлением вовремя), очередь проверки с фильтрами, `score_invalid`,
 оценка, возврат и пересдача, переоценка, публикация по ученикам (неизвестный `user_id` — 404 без изменений),
 архивация группы с `feed_items`. Блок картинок 4б.0 (отдельно, после ленты): пакет с картинкой под кириллическим именем, PNG под `.jpg`
 и HTML под `.png` — предупреждение импорта о подделке, `inline` и `image/png` для настоящей картинки (имя целиком в
@@ -537,17 +539,18 @@ id. Ученических эндпоинтов здесь нет (4б.2): ад�
 вложением, без сессии `If-None-Match` ничего не меняет (401). Блок комментариев 4в.2 (§5.9, после картинок):
 комментарий в черновике — 409, админ в пути личной ветки — 404 `thread_not_found`, удаление несуществующего — 404,
 NUL — `comment_invalid`, одиночный суррогат — 422 `invalid_request`, личная ветка контест-элемента —
-`not_an_assignment`; с `SEED_CMD` (`dev_seed --item … --comment`): ученик при выключенных комментариях —
+`not_an_assignment`; ученик при выключенных комментариях —
 `comments_disabled`, после `comments_enabled: true` — общий комментарий и личный с `<script>` и ESC, входящие «ждёт
 ответа» (обе ветки), тело байт в байт, `GET` отметку не ставит, ответ преподавателя убирает ветку из «ждёт ответа»,
-`…/read` — `unread 0`, удаление с причиной, повтор — 409, ветка снова ждёт ответа. `rate_limited` не проверяется (он
-зависит от `JUDGE_COMMENT_RATE_PER_MIN` установки). Блок файлов 4в.3 (§5.10, после комментариев): вложение-PDF под
+`…/read` — `unread 0`, удаление с причиной, повтор — 409, ветка снова ждёт ответа. `rate_limited` ученика — в
+`tools/smoke-student-api.sh`. Блок файлов 4в.3 (§5.10, после комментариев): вложение-PDF под
 кириллическим именем и картинка; SVG, HTML под `.png`, `.exe`, имя не в UTF-8, повтор имени в другом регистре — 422,
 другой `Content-Type` — 415; ссылка с недоверенным заголовком, `javascript:` — `link_invalid`; скачивание теми же
 байтами, вложением с именем в `filename*`, `nosniff`, CSP `sandbox`, 304 по `ETag`, картинка — `inline`; ссылка как
-файл — 404; порядок и неполный порядок, удаление; с `SEED_CMD` (`dev_seed --item … --file … --link …`): `.exe`
-ученика — отказ, сдача текста, двух файлов и ссылки, карточка работы с файлами, скачивание `main.py` (304) и
-`answer.md`, тот же файл как файл другого ученика или под другим элементом — 404 `file_not_found`; архивный элемент —
+файл — 404; порядок и неполный порядок, удаление; `.exe` в черновик ученика — отказ, два файла в черновик по одному,
+сдача текста, этих файлов по id и ссылки (черновик после неё пуст), карточка работы с файлами, скачивание `main.py` (304) и
+`answer.md`, тот же файл как файл другого ученика, под другим элементом и у другого ученика через API ученика — 404
+`file_not_found`; архивный элемент —
 409. Блок материалов 4в.4 (§5.11, после файлов): материал со ссылкой на ещё не существующий slug — предупреждение,
 ссылка `unknown`; новая версия со ссылкой на другой материал — без предупреждений; тот же текст — `created: false`;
 другой slug — 422 `slug_immutable`; название — на месте, без версии; задание со ссылками на материал и на неизвестный
@@ -556,13 +559,12 @@ slug — одно `link_warnings`, `where` его видит (черновик �
 `GET /library`; поиск «циклы <время>» в нижнем регистре находит «Циклы <время>»; PDF в новую версию (версия 3), SVG —
 422; файл скачивается теми же байтами с `nosniff`, как файл версии 2 — 404; история 3, 2, 1; архив дважды
 (`changed` true, затем false), загрузка в архивный — 409; разделы удаляются. Остаются в базе архивными материалы
-`smoke-<время>-memo` и `-loops` (материал не удаляется) и их блобы. Файлы для `dev_seed` лежат в отдельном каталоге 755 (их читает `judge` через `seed-as-judge.sh`). Спрашивает админа и код
+`smoke-<время>-memo` и `-loops` (материал не удаляется) и их блобы; ученики прогона в конце отключаются (у них
+посылки и сдачи — удалить нельзя). Спрашивает админа и код
 TOTP (или `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `TOTP_CODE` из окружения); секреты передаются curl только через файлы во
 временном каталоге 700 и не печатаются. Всё создаётся с именами `smoke-<время>`, повторный запуск не мешает
 прежнему. Код выхода — число провалов.
 
-Посылать как ученик до API 4б можно только через `dev_seed`: `SEED_CMD=tools/seed-as-judge.sh` (dev,
-от `judge` через ваш `sudo`, ученики `dev-student-1` и `-2`). Без `SEED_CMD` проверки посылок пропускаются (`SKIP`),
-и каждая строка называет команду `dev_seed` и ожидаемый результат. Это только описание: к концу прогона контест
-архивирован, а импорт откачен, поэтому сроки и доступ через группу по-настоящему проверяются только с `SEED_CMD`.
+До 4б.2 ученики «действовали» через `dev_seed` (`SEED_CMD=tools/seed-as-judge.sh`, D-047); с 4б.2 всё идёт через
+API ученика, `SEED_CMD` и `seed-as-judge.sh` удалены (D-104), пропусков (`SKIP`) у smoke админа больше нет.
 

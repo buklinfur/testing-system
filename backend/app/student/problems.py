@@ -15,6 +15,7 @@ from .. import content_files, scores
 from ..blobstore import BlobStore
 from ..contests import access
 from ..contests import service as contests
+from ..materials import service as materials
 from ..models import ContestProblem, Language, ProblemVersion, Submission, TestCase, TestGroup, User, Visibility
 from ..settings import SubmitSettings
 from ..submissions import intake
@@ -107,6 +108,7 @@ def problem_view(db: Session, user: User, blobs: BlobStore, settings: SubmitSett
            "available_from": cp.available_from, "due_at": access.effective_due(cp, extensions),
            "after_due": {"statement": cp.after_due_statement, "submit": cp.after_due_submit},
            "examples": examples(db, blobs, version) if code else [],
+           "links": materials.resolve(db, user, list((version.statements or {}).values()), now),
            "mine": {"counted_submissions": counted, "limit": c.max_submissions_per_problem,
                     "cooldown_left_s": cooldown_left}}
     if code:

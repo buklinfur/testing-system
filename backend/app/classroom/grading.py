@@ -8,7 +8,9 @@ app/deadline_rules.py, through classroom/access.py.
 * parse_points: a score or max_points as given by a person (a string or a JSON number) -> Decimal, or None;
 * check_grade: a grade fits the scale of the assignment (points / pass_fail / none);
 * release_target: which graded row a release publishes (grades_release = manual);
-* student_view: the status, the grade and the flags a student sees.
+* student_status / student_view: the status, the grade and the flags a student sees;
+* superseded / resubmitted_after_grade: a grade the student never saw that a later hand-in took off the work, and
+  the teacher's mark «пересдано после оценки, требует проверки» (D-102).
 """
 from __future__ import annotations
 
@@ -44,7 +46,7 @@ REFUSALS = {
     (NONE, "return"): "nothing_to_return",
     (NONE, "release"): "nothing_to_release",
     (SUBMITTED, "release"): "nothing_to_release",
-    (GRADED, "submit"): "already_graded",  # until a teacher returns the work
+    (GRADED, "submit"): "already_graded",  # a grade the student sees, until a teacher returns the work (D-102)
     (RETURNED, "return"): "already_returned",
     (RETURNED, "release"): "nothing_to_release",
 }
@@ -64,9 +66,16 @@ class Transition:
         return self.allowed
 
 
-def next_status(status: Optional[str], event: str) -> Transition:
-    """The status of a work after an event, or a refusal. `status` None: the student has no work yet."""
+def next_status(status: Optional[str], event: str, *, grade_seen: bool = True) -> Transition:
+    """The status of a work after an event, or a refusal. `status` None: the student has no work yet.
+
+    `grade_seen` matters only for a hand-in on a graded work (D-102): a grade the student sees (released, or seen at
+    once) closes the hand-in (already_graded) until a return; a grade they have not seen (manual, not released yet)
+    does not - the work goes back to submitted and that grade stays in the history, for the earlier hand-in
+    (superseded). The default is the closed one; the service passes student_status(...) == GRADED."""
     key = (_v(status), event)
+    if key == (GRADED, "submit") and not grade_seen:
+        return Transition(True, status=SUBMITTED)
     if key in TRANSITIONS:
         return Transition(True, status=TRANSITIONS[key])
     if key in REFUSALS:
@@ -126,13 +135,17 @@ def _last(reviews: Sequence, action: str):
     return next((r for r in reversed(reviews) if _v(r.action) == action), None)
 
 
-def release_target(item, reviews: Sequence) -> tuple:
+def release_target(item, events: Sequence) -> tuple:
     """(the graded row a release publishes, None) or (None, the refusal code): the current grade (the last graded
-    row) of an assignment with grades_release = manual, once; with grading = none there is nothing to release."""
+    row) of an assignment with grades_release = manual, once; with grading = none there is nothing to release. A
+    grade given to an earlier hand-in (superseded: a hand-in came after it) is never released - nothing_to_release
+    (D-102; the status check of the service refuses it first, this is the same rule in the pure function).
+    `events`: the work's hand-ins and reviews in their order, as student_view takes them."""
     if seen_at_once(item):
         return None, "release_not_needed"
+    reviews = _reviews(events)
     current = _last(reviews, "graded")
-    if current is None:
+    if current is None or current.id in superseded(item, events):
         return None, "nothing_to_release"
     if current.id in _released_ids(reviews):
         return None, "already_released"
@@ -154,6 +167,59 @@ def _seen(item, reviews: Sequence) -> set:
     return graded if seen_at_once(item) else graded & _released_ids(reviews)
 
 
+def _reviews(events: Sequence) -> list:
+    return [row for kind, row in events if kind == "review"]
+
+
+def student_status(item, events: Sequence) -> Optional[str]:
+    """The status of the last event the student may see: a hand-in (submitted), a return (returned, seen at once) or
+    a grade they may see (graded); a grade not released yet (manual) and a release itself are skipped. None: no
+    event they see. Every refusal a student gets is decided on this status, never on the cached one, so no answer
+    tells whether an unreleased grade exists (D-102)."""
+    seen = _seen(item, _reviews(events))
+    status = NONE
+    for kind, row in events:
+        action = "submit" if kind == "submission" else _v(row.action)
+        if action == "submit":
+            status = SUBMITTED
+        elif action == "returned":
+            status = RETURNED
+        elif action == "graded" and row.id in seen:
+            status = GRADED
+    return status
+
+
+def superseded(item, events: Sequence) -> set:
+    """Ids of the graded rows taken off the work by a later hand-in (D-102): a grade the student never saw (not
+    released, manual) with a hand-in after it. It stays in the history «к прежней сдаче», is not the current grade
+    and is never released. A grade the student saw is never superseded: it closed the hand-in (already_graded) until
+    a return, and after a return it stays what the student sees until a new one is released."""
+    seen = _seen(item, _reviews(events))
+    out, pending = set(), []
+    for kind, row in events:
+        if kind == "submission":
+            out.update(pending)
+            pending = []
+        elif _v(row.action) == "graded" and row.id not in seen:
+            pending.append(row.id)
+    return out
+
+
+def current_grade(item, events: Sequence):
+    """The teacher's current grade of a work: the last graded row that a later hand-in did not take off (superseded),
+    or None."""
+    gone = superseded(item, events)
+    return next((r for r in reversed(_reviews(events)) if _v(r.action) == "graded" and r.id not in gone), None)
+
+
+def resubmitted_after_grade(item, events: Sequence) -> bool:
+    """The teacher's mark «пересдано после оценки, требует проверки»: the last grade or return of the work is a grade
+    a later hand-in took off (superseded), so the latest hand-in waits for a new grade (D-102)."""
+    last = next((row for kind, row in reversed(events) if kind == "review" and _v(row.action) in ("graded", "returned")),
+                None)
+    return last is not None and _v(last.action) == "graded" and last.id in superseded(item, events)
+
+
 def student_view(item, now: datetime, events: Sequence, extensions: Iterable[datetime] = ()) -> dict:
     """What a student sees of their work. `events`: the work's hand-ins and reviews in the order they happened, as
     pairs ("submission", row) / ("review", row) - the service reads them in that order; nothing here compares dates
@@ -165,24 +231,16 @@ def student_view(item, now: datetime, events: Sequence, extensions: Iterable[dat
     * grade - the last graded row they may see (visible_grade), with its comment;
     * returned_comment - while the work is returned;
     * late (of the latest hand-in) and missing («не сдано») - computed flags, not statuses."""
-    reviews = [row for kind, row in events if kind == "review"]
+    reviews = _reviews(events)
     submissions = [row for kind, row in events if kind == "submission"]
-    seen = _seen(item, reviews)
-    status, returned = NONE, None
-    for kind, row in events:
-        action = "submit" if kind == "submission" else _v(row.action)
-        if action == "submit":
-            status = SUBMITTED
-        elif action == "returned":
-            status, returned = RETURNED, row
-        elif action == "graded" and row.id in seen:
-            status = GRADED
+    status = student_status(item, events)
+    returned = _last(reviews, "returned") if status == RETURNED else None
     grade = visible_grade(item, reviews)
     return {
         "status": status,
         "grade": None if grade is None else {"score": grade.score, "passed": grade.passed, "comment": grade.comment,
                                              "at": grade.at},
-        "returned_comment": returned.comment if status == RETURNED else None,
+        "returned_comment": returned.comment if returned is not None else None,
         "submissions": len(submissions),
         "late": bool(submissions) and bool(submissions[-1].late),
         "missing": access.missing(item, now, bool(submissions), extensions),

@@ -19,20 +19,17 @@ larger number is 422, never a database error.
 from __future__ import annotations
 
 from typing import Optional
-from urllib.parse import unquote_to_bytes
-
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import Field, StrictStr
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..api_errors import ApiError
 from ..auth import audit
 from ..auth_api import Current, get_db, now
 from ..classroom import attachments
 from ..classroom.items import FeedError
 from ..content_files import file_response
-from ..http_body import require_type, save_body
+from ..http_body import require_type, save_body, upload_name
 from ..ids import Id, StrictId
 from ..jsonable import plain
 from .deps import admin_actor, admin_session
@@ -58,27 +55,6 @@ class LinkBody(Body):
 
 class OrderBody(Body):
     ids: list[StrictId] = Field(max_length=200)
-
-
-def upload_name(request: Request) -> str:
-    """?name= decoded strictly from the raw query string. Starlette's query_params replaces bytes that are not
-    UTF-8 with U+FFFD; a name changed that way would be stored silently, so a broken encoding is 422 instead. The name
-    must come exactly once and not be blank; the service then cleans it (content_files.clean_name) and checks it."""
-    found = []
-    for pair in request.scope.get("query_string", b"").split(b"&"):
-        key, _sep, value = pair.partition(b"=")
-        if pair and unquote_to_bytes(key.replace(b"+", b" ")) == b"name":
-            found.append(value)
-    if len(found) != 1:
-        raise ApiError(422, "invalid_request", problems=["name: give the file name once, as ?name=<percent-encoded "
-                                                         "UTF-8>"])
-    try:
-        name = unquote_to_bytes(found[0].replace(b"+", b" ")).decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ApiError(422, "invalid_request", problems=["name: not UTF-8 after percent-decoding"]) from exc
-    if not name.strip():
-        raise ApiError(422, "invalid_request", problems=["name: empty"])
-    return name
 
 
 def _item(db: Session, item_id: int):

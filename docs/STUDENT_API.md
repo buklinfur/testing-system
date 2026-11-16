@@ -1,7 +1,11 @@
-# API ученика (модуль 4б.1)
+# API ученика (модули 4б.1 и 4б.2)
 
-Статус: правила (этап 4, D-091), сервисы (этап 5, D-093) и HTTP (этап 6, D-095, §6) готовы. План — сессия 4б.1,
-ROADMAP «4б.1». Машиночитаемое описание — [`openapi-student.json`](openapi-student.json) (маршруты ученика и
+Статус: 4б.1 — правила (этап 4, D-091), сервисы (этап 5, D-093) и HTTP (этап 6, D-095, §6) готовы. 4б.2 (класс:
+лента, работы, черновики, комментарии, материалы) — сервисы чтения готовы (§5 «Класс», D-100); HTTP ленты, работ и
+черновика готов (этап 5, D-101, §6 «Класс»), комментариев, материалов и Справочника — тоже (этап 6, D-103,
+§6 «Комментарии, материалы, Справочник»); приёмка — этап 7 (D-104): `tools/smoke-student-api.sh` с блоком класса,
+обновление установки — `DEPLOY_WSL2.md` §6 «Обновление до 4б.2». 4б.2 готова.
+Планы — сессии 4б.1 и 4б.2, ROADMAP. Машиночитаемое описание — [`openapi-student.json`](openapi-student.json) (маршруты ученика и
 `/api/auth`; пишет `tools/gen-openapi.py`, по сети приложение его не отдаёт).
 
 Ученик — всегда `User` из сессии: идентификаторов пользователя, участия или группы API не принимает. Время `now` —
@@ -89,13 +93,42 @@ ROADMAP «4б.1». Машиночитаемое описание — [`openapi-s
 `counted` посылки не хранится: считается при чтении по окну участника (как лимит посылок). `dev_seed --contest`
 отправляет посылки через `submissions.submit` (много посылок в минуту — `JUDGE_SUBMIT_RATE_PER_MIN=0`).
 
+`problems.problem_view` с 4б.2 отдаёт ещё `links` — ссылки `[[памятка:…]]` всех условий версии, по одной на slug, как
+`materials.service.resolve` видит их этому ученику (`{slug, available: false}` без основания — как нет материала).
+
+### Класс (4б.2, D-100)
+
+Модули [`student/feed.py`](../backend/app/student/feed.py) (чтение) и
+[`student/classroom.py`](../backend/app/student/classroom.py) (тонкие обёртки сервисов класса). Правила — все из
+`CLASSROOM.md` (`classroom/access.py`, `deadline_rules`, `grading.student_view`, `comment_rules`, `materials/rules.py`);
+здесь только сбор и вид. Отказ — `FeedError` с кодом сервиса класса (у `rate_limited` — `retry_after_s`), HTTP —
+этапы 5–6. Ученику **никогда** не уходят sha256 файлов, автор вложения, неопубликованная оценка, чужое.
+
+**Элемент существует** для ученика только по `items.student_sees` (`feed.seen_item`): в его ленте или на нём его
+работа; иначе `item_not_found` — одинаково для «нет», черновика, чужого класса и до `available_from`. Отсюда начинается
+каждая функция с элементом.
+
+| Функция | Что | Отказы |
+|---|---|---|
+| `feed.my_feed(cursor, limit)` | лента (`items.student_feed`: свои группы и личная адресация, без дублей), новые первыми по `at` = `available_from` / `published_at` / `created_at`, затем id; курсор — id последнего элемента страницы (позиция в порядке: ушедший между страницами элемент ничего не сдвигает), `limit` до 100. Строка: `id`, `kind`, `title`, `at`, `archived`, `unread` (общая и своя личная ветка, `comments.unread_by_item`); у задания `assignment` — `answer_kind`, `grading`, `max_points`, `available_from`, свой `due_at` с продлениями, `after_due`, `status` (`null` — работы нет), `grade`, `late`, `missing`, `submissions`, `returned_comment`; у контест-элемента `contest` — строка `contests.my_contests` (**доступа не даёт**, D-059); у материала `material` — `{id, title}` | — |
+| `feed.item_page(item, blobs, ttl_days)` | страница: строка ленты + `statement_hidden`, `body_md`, `attachments` (без sha256 и автора), `links` (`resolve` по тексту) — только там, где ученик видит условие (`attachments.can_view`: у задания скрыто после срока при `after_due_statement = hidden` и в архиве — тогда `null`, `null`, `[]`); `comments`: `enabled`, `shared_unread`, `private_unread` (`null` — ветку не читает). У задания всегда: `assignment`, `can_submit` (`{allowed, reason, late}` — `can_submit_work` с подставным ответом нужного вида: код о задании, сроке и оценке, не об ответе), `hand_ins` (свои сдачи по порядку: `at`, `late`, `text`, `files` `{id, name, size}` без `answer.md`, `links`; рецензий нет — их видимое в `status` и `grade`), `draft` (`drafts.draft_view` с `expires_at`) | `item_not_found` |
+| `feed.my_works` | все свои работы (`can_see_own_work`: и в архиве, и после исключения из группы), новые сдачи первыми — порядок только по своим сдачам, рецензия (выпущенная или нет) ничего не двигает: `item` `{id, title, archived}`, срок, `status`, `grade`, `late`, `submissions`, `last_hand_in_at` | — |
+| `classroom.item_file` / `work_file` | файл преподавателя (где видно условие) / файл своей работы, в том числе `answer.md` | `item_not_found`, `attachment_not_found` / `file_not_found` |
+| `classroom.shared_thread` / `my_thread` | общая ветка / своя личная (`comments.*_thread`, ученик — сам; личная — только у ручного задания, D-103) | `item_not_found`, `thread_not_found`; у личной ещё `not_an_assignment` |
+| `classroom.post_shared` / `post_private` | комментарий → `comment_card` (имя автора и `teacher`, `mine`; логинов нет) | `item_not_found`, коды `comment_rules`, `rate_limited` + `retry_after_s` |
+| `classroom.read_shared` / `read_mine` | отметка прочитанного (`up_to` — комментарий этой ветки, который ученик видит) → сколько осталось | `item_not_found`, `thread_not_found`, `comment_not_found` |
+| `classroom.delete_comment` | своё | `comment_not_found` (не видит), `not_your_comment` |
+| `classroom.material` / `material_file` | последняя версия материала с основанием, вложения без sha256 и автора / её файл | `material_not_found`, `attachment_not_found` |
+| `classroom.library(q)` | Справочник (`library.library_view`), с `q` — поиск | — |
+
 ## 6. HTTP (`app/student_api/`, D-095)
 
 Публичное приложение, те же cookie-сессии, что у `/api/auth`. Формат ошибок, время (UTC с `Z`), курсоры — как в
 админском API (`ADMIN_API.md` §2): `{"detail": "<код>", "message"?, "problems"?}`; у 429 ещё `retry_after_s` и
 заголовок `Retry-After`.
 
-**Доступ.** Маршруты `/api/contests…` и `/api/submissions…` — только ученик с полной сессией (`student_session`):
+**Доступ.** Маршруты `/api/contests…`, `/api/submissions…`, `/api/feed…`, `/api/works`, `/api/comments…`,
+`/api/library` и `/api/materials…` — только ученик с полной сессией (`student_session`):
 без сессии — 401 `not_authenticated`; админ между паролем и кодом TOTP — 401 `mfa_required`; админ — 403
 `student_required`. `/api/load` — любая полная сессия, и админ. Небезопасные методы — `Origin` ==
 `JUDGE_PUBLIC_ORIGIN` (иначе 403 `origin_not_allowed`, до всего) и `X-CSRF-Token` == токен сессии (иначе 403
@@ -135,8 +168,9 @@ query ничего не значит; чужое и несуществующее
 поля нет. Проверяется — 2 с; в очереди — `min(10, 2 + 2·⌊(место − 1) / воркеров онлайн⌋)` по месту в честном
 порядке (`queue.poll_inputs`); ни одного воркера онлайн — сразу 10 с.
 
-**Коды → HTTP** (`student_api/deps.py` `STUDENT_STATUS`; тест полноты — `tests/test_student_api_units.py`, тест «каждый
-код достижим запросом» — `tests/pg/test_student_api_pg.py`):
+**Коды → HTTP** (`student_api/deps.py` `STUDENT_STATUS` = `CONTEST_STATUS` + `CLASSROOM_STATUS`; тест полноты —
+`tests/test_student_api_units.py`, тест «каждый код достижим запросом» — `tests/pg/test_student_api_pg.py` для
+контестов, `tests/pg/test_student_classroom_api_pg.py` для класса; коды класса — ниже, «Класс»):
 
 | HTTP | Смысл | Коды |
 |---|---|---|
@@ -151,7 +185,133 @@ query ничего не значит; чужое и несуществующее
 Вход по коду: каждая попытка записывается (и неверная, и к несуществующему контесту), ответ — по коду отказа; сверх
 `JUDGE_ENTER_RATE` за 10 минут — 429 без записи.
 
+### Класс (4б.2, D-101)
+
+Сервисы — §5 «Класс» и [`student/classroom.py`](../backend/app/student/classroom.py) (`assignment`, черновик, сдача);
+маршруты — `student_api/feed.py` и `student_api/drafts.py`. Элемент, которого ученик не видит (нет, чужой класс,
+черновик, до `available_from`), — 404 `item_not_found`; маршруты работы и черновика у элемента, который не ручное
+задание, — 409 `not_an_assignment`, и чтение тоже. Файлы — только через `content_files.file_response` (`FILES.md`):
+вложение с `nosniff`; inline — только PNG, JPEG и WebP, у которых байты и имя совпадают; HEIC/HEIF — **никогда**, только
+скачивание.
+
+| Метод и путь | Что | Ответ |
+|---|---|---|
+| `GET /api/feed?cursor=&limit=` | лента (§5 `my_feed`, `limit` до 100) | `{items, next_cursor, server_time}` |
+| `GET /api/feed/{item}` | страница элемента (§5 `item_page`) | страница + `server_time` |
+| `GET /api/feed/{item}/attachments/{id}` | файл преподавателя, пока видно условие | файл |
+| `POST /api/feed/{item}/work` | сдача JSON `{text?, files: [id файлов черновика по порядку], links: [{url, title?}]}` | 201 `{submission: {id, at, late}, work}` (`work` — `grading.student_view`) |
+| `GET /api/feed/{item}/work/files/{id}` | файл своей сдачи (`answer.md` — текстом) | файл |
+| `GET /api/feed/{item}/draft` | черновик: живые файлы по порядку загрузки, у каждого `expires_at` | `{draft}` |
+| `POST /api/feed/{item}/draft/files?name=` | ещё один файл (ниже) | 201 `{file, draft}` |
+| `GET /api/feed/{item}/draft/files/{id}` | свой файл черновика | файл |
+| `POST /api/feed/{item}/draft/files/{id}/delete` | удалить (имя свободно сразу, квота — до уборки черновика) | 204 |
+| `POST /api/feed/{item}/draft/from-last` | файлы последней сдачи — в черновик (те же блобы, квоту не тратит; имя, которое в черновике уже есть, пропускается) | `{draft}` |
+| `GET /api/works` | свои работы (§5 `my_works`) | `{items, server_time}` |
+
+**Сдача** забирает перечисленные файлы черновика (их строки удаляются, блобы становятся файлами сдачи), остальные
+остаются. id, который не живой файл черновика этого ученика у этого элемента (чужой, другого элемента, удалённый), —
+404 `draft_file_not_found`. Пределы схемы тела выше пределов правил (текст до 1 000 000 символов, до 200 id и
+ссылок, URL до 10 000, название до 1000): больше правил — код правил (`text_too_long`, `too_many_files`,
+`link_invalid`, `link_title_invalid`), а не `invalid_request`.
+
+**Загрузка файла черновика.** Тело — сырое, `Content-Type: application/octet-stream`, один файл; имя — в `?name=`
+(UTF-8 с процентной кодировкой, разбирается строго из сырой строки запроса — `http_body.upload_name`, общий с
+загрузками преподавателя: нет имени, два имени, не UTF-8, пустое — 422 `invalid_request`). Порядок (D-082, D-095):
+Origin → сессия и CSRF → `Content-Type` (415) → `?name=` (422) → объявленный `Content-Length` больше
+`JUDGE_SUBMISSION_FILE_MAX_MB` — 413 `file_too_large` до любого сервиса → `drafts.precheck` (элемент, задание,
+`can_submit_work`, число файлов черновика, имя и тип по нему, повтор имени, квота по объявленной длине как по новым
+байтам), затем rollback: **ни транзакции, ни блокировки, пока тело идёт** → тело потоком в `<корень блобов>/tmp`
+с лимитом (413 `file_too_large` сразу при превышении, с `Content-Length` и без него) → `drafts.add_file` в новой
+транзакции решает всё заново под блокировкой ученика `STUDENT_FILES`. Отказ на любом шаге не оставляет ничего ни в
+хранилище, ни в его `tmp`. Ответ на загрузку не зависит от того, хранились ли эти байты раньше (D-099). Маршрут
+освобождён от лимита JSON шаблоном `/api/feed/[1-9][0-9]{0,9}/draft/files` (`student_api.UPLOAD_PATTERNS`, тест
+соседних путей: слэш, двойной слэш, ведущий ноль, другие маршруты черновика, другой метод); id больше int4 — 422 по
+пути до чтения тела.
+
+**`from-last`**, которому нечего копировать (сдачи нет или все имена уже в черновике), черновик не меняет: его
+`expires_at` остаётся прежним.
+
+**Коды класса → HTTP** (`CLASSROOM_STATUS`):
+
+| HTTP | Коды |
+|---|---|
+| 404 | `item_not_found`, `attachment_not_found`, `file_not_found`, `draft_file_not_found` |
+| 403 | `no_access` (убран из группы: элемент виден по своей работе, сдать нельзя), `student_required` |
+| 409 | `not_an_assignment`, `item_archived`, `already_graded` (только оценка, которую ученик видит; неопубликованная пересдачу не закрывает и ни в одном ответе не видна, D-102), `deadline_passed`, `quota_exceeded` (+ `used`, `adding`, `quota`) |
+| 422 | `answer_required`, `text_not_expected`, `text_too_long`, `files_required`, `files_not_expected`, `too_many_files`, `submission_too_large`, `file_type_not_allowed`, `file_content_mismatch`, `file_empty`, `duplicate_name`, `link_invalid`, `link_title_invalid` (у кодов файла и ссылки — `index`), `invalid_request`; недостижимы: `file_name_invalid` (имя сначала очищается), `not_a_student` (админу раньше — `student_required`) |
+| 413 | `file_too_large` |
+
+`not_published` и `not_available_yet` у элемента не наступают (раньше — `item_not_found`), но в таблице остаются как
+коды контестов: `UNREACHABLE` ведётся по коду, а не по маршруту (D-101).
+
+Тесты класса (`tests/pg/test_student_classroom_api_pg.py`): путь ученика (лента, страница, загрузка PNG и HEIC, показ
+PNG inline и HEIC вложением, удаление, сдача, файл сдачи, мои работы), `from-last` после возврата и без сдачи, каждый
+код запросом, подмена (элемент чужого класса, чужой файл черновика по своему и чужому элементу, файл чужой работы,
+чужой и свой файл другого элемента в сдаче, вложение скрытого условия и другого элемента — всё 404), ключи и строки,
+которых в JSON быть не должно (sha256, логины, автор, неопубликованная оценка), каждый дешёвый отказ загрузки — до
+чтения тела и с пустым `tmp`, 413 без `Content-Length`, во время тела — ни блокировки работы и ученика, ни открытой
+транзакции.
+
 Тесты: обход всех маршрутов ученика из самого приложения (`tests/pg/test_student_api_pg.py`: аноним, админ, админ на
 полпути, без CSRF, чужой Origin; новый префикс приложения без объявления — ошибка), подмена на каждом эндпоинте,
 поиск строк-маркеров закрытых тестов, `error`, `stderr` во всём JSON, тело без транзакции, int4 — общий обход
-`tests/pg/test_int_bounds_pg.py`.
+`tests/pg/test_int_bounds_pg.py`. Префиксы маршрутов ученика — один список `student_api.PREFIXES`: по нему
+работают обходы тестов и `tools/gen-openapi.py`.
+
+### Комментарии, материалы, Справочник (4б.2, D-103)
+
+Маршруты — `student_api/comments.py` и `student_api/materials.py`, сервисы — §5 «Класс» (правила — `CLASSROOM.md`
+§9 и §11). Ученик — только пользователь сессии: ни путь, ни тело, ни query не называют ученика, поэтому личная ветка —
+всегда своя (`my-thread`), а id комментария из тела (`up_to`) или пути (`delete`) ищется только там, где ученик читает.
+
+| Метод и путь | Что | Ответ |
+|---|---|---|
+| `GET /api/feed/{item}/comments?after=&limit=` | общая ветка элемента, старые первыми (`limit` до 100; `next_after` — курсор) | `{thread_id, item, kind, comments_enabled, can_post, cannot_post, comments, next_after, unread}` |
+| `POST /api/feed/{item}/comments` | комментарий `{body}` (Markdown, до 4000 символов) | 201 комментарий (`comment_card`) |
+| `POST /api/feed/{item}/comments/read` | своя отметка `{up_to?}` (по умолчанию — последний); растёт только вверх | `{unread}` |
+| `GET /api/feed/{item}/my-thread?after=&limit=` | своя личная ветка с преподавателями (только у ручного задания) | как общая; `student` — `{display_name}` |
+| `POST /api/feed/{item}/my-thread` | сообщение преподавателям (первое создаёт ветку) | 201 комментарий |
+| `POST /api/feed/{item}/my-thread/read` | отметка, как у общей | `{unread}` |
+| `POST /api/comments/{id}/delete` | удалить свой (мягко: преподаватели видят текст; в частоте учитывается) | 204 |
+| `GET /api/library?q=` | Справочник: разделы (два уровня) с материалами в порядке преподавателя, только разделы, где есть что-то для ученика, и `unsorted`; с `q` (до 200 символов) — `{query, materials}`, поиск по названию без учёта регистра, `%`, `_`, `\` — буквально | `+ server_time` |
+| `GET /api/materials/{id}` | последняя версия: `body_md`, вложения (без sha256 и автора), `links` текста с `available` для этого ученика | материал |
+| `GET /api/materials/{id}/attachments/{att}` | файл последней версии (`content_files.file_response`) | файл |
+
+Комментарий ученику: `id`, `at`, `body` (недоверенный Markdown, как сохранён), `author` — `{display_name,
+teacher}`, `mine`; удалённых ученик не видит вовсе, логинов и id авторов нет. `cannot_post` — код, который получил бы
+комментарий сейчас (тело и частота — в стороне), например `comments_disabled`.
+
+**Подмена — всё 404 без различий:** чужая личная ветка недостижима (пути к ней нет; `my-thread` другого ученика у
+того же задания — своя ветка, его сообщений в ней нет); `up_to` из чужой личной ветки, из общей ветки в
+`my-thread/read`, из своей личной в `comments/read`, из ветки другого элемента — `comment_not_found`; удаление
+комментария, которого ученик не видит (чужая личная ветка, элемент не из его ленты, уже удалённый, нет такого), —
+`comment_not_found`, а видимого чужого — 403 `not_your_comment`. Материал без основания (`materials.rules.open_basis`:
+Справочник для него, материал-элемент его ленты, ссылка `[[памятка:…]]` в элементе или условии задачи, которые он
+видит) — `material_not_found`, тот же ответ, что у несуществующего id; **ссылка из другого материала основанием не
+является**, такая ссылка в `links` — `{slug, available: false}` без id и названия. Файл другой версии (каждое
+изменение материала — новая версия с новыми id вложений), другого материала, ссылка вместо файла —
+`attachment_not_found`. Архивный материал нет ни в дереве Справочника, ни в поиске, и без другого основания он
+`material_not_found`.
+
+**Частота комментариев** — `JUDGE_COMMENT_RATE_PER_MIN` (по умолчанию 10 за 60 с, удалённые тоже считаются): сверх —
+429 `rate_limited`, заголовок `Retry-After` и `retry_after_s` — через сколько секунд из окна выйдет самый старый
+комментарий (не меньше 1).
+
+**Коды → HTTP** (дополняют таблицу «Класс», тот же `CLASSROOM_STATUS`):
+
+| HTTP | Коды |
+|---|---|
+| 404 | `thread_not_found` (ветку не читает: условие скрыто после срока, архив), `comment_not_found`, `material_not_found`, `attachment_not_found` |
+| 403 | `no_access` (не в адресатах сейчас, условие скрыто), `not_your_comment` |
+| 409 | `not_an_assignment` (личная ветка не у задания), `item_archived`, `comments_disabled`, `comments_teacher_only` (контест-элемент: ученики там не пишут) |
+| 422 | `comment_required` (пусто или только невидимые символы), `comment_too_long`, `comment_invalid` (NUL, одиночный суррогат), `invalid_request` |
+| 429 | `rate_limited` |
+
+Не у ученика, хотя есть в правилах комментариев: `already_deleted` (удалённый ученик не видит — раньше
+`comment_not_found`), `not_addressed` (только преподаватель); `not_a_student` — в `UNREACHABLE`.
+
+Тесты (`tests/pg/test_student_classroom_api_pg.py`): каждый код запросом (вместе с кодами ленты, `Retry-After` и
+`retry_after_s` у 429), подмена комментариев (выше: личная ветка, удаление, `up_to` из четырёх чужих мест, чужой класс,
+повторное удаление), материалы (без основания = нет такого, ссылка из другого материала, файл старой версии, другого
+материала, ссылка, основание через ссылку в своём элементе и его отсутствие у чужого класса, архивный — ни в дереве,
+ни в поиске, ни по id), ключи, которых в JSON быть не должно.

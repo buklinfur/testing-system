@@ -10,12 +10,15 @@ import contextlib
 import hashlib
 import os
 import secrets
+import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import BinaryIO, Iterator, Optional
 
 HEX = set("0123456789abcdef")
 TMP_DIR = "tmp"  # <root>/tmp: uploads being received, on the same file system as the blobs
+TMP_MAX_AGE_S = 24 * 3600  # the reaper removes files in <root>/tmp untouched this long (a crash left them)
 HEAD_BYTES = 8192  # the first bytes an Incoming keeps (classroom/attachment_rules.HEAD_BYTES, a test compares)
 
 
@@ -31,6 +34,28 @@ def valid_sha256(value: str) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= HEX
 
 
+def sweep_tmp(root, max_age_s: float = TMP_MAX_AGE_S, now: Optional[float] = None) -> int:
+    """Remove the regular files directly in <root>/tmp not modified for max_age_s seconds - an Incoming whose process
+    died before close(); one being received is written to all the time. Symbolic links, directories and anything else
+    are left alone and never followed; nothing is created (no BlobStore: the reaper may write only in <root>/tmp,
+    D-100). The number removed. Run by the reaper (D-080, D-099)."""
+    path = Path(root) / TMP_DIR
+    if not path.is_dir():
+        return 0
+    cutoff = (time.time() if now is None else now) - max_age_s
+    removed = 0
+    with os.scandir(path) as entries:
+        for entry in entries:
+            try:
+                st = entry.stat(follow_symlinks=False)
+                if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
+                    os.unlink(entry.path)
+                    removed += 1
+            except OSError:
+                continue
+    return removed
+
+
 class BlobStore:
     def __init__(self, root) -> None:
         self.root = Path(root)
@@ -42,10 +67,14 @@ class BlobStore:
         return self.root / sha256[:2] / sha256
 
     def staging(self) -> Path:
-        """<root>/tmp, created on demand: the directory of files being received."""
+        """<root>/tmp, created on demand: the directory of files being received, 0700 (install-wsl.sh makes it so on
+        the installation; the files in it are 0600: tempfile.mkstemp, D-105)."""
         path = self.root / TMP_DIR
-        path.mkdir(exist_ok=True)
+        path.mkdir(mode=0o700, exist_ok=True)
         return path
+
+    def sweep_tmp(self, max_age_s: float = TMP_MAX_AGE_S, now: Optional[float] = None) -> int:
+        return sweep_tmp(self.root, max_age_s, now)
 
     def incoming(self, name: str = "", limit: Optional[int] = None) -> "Incoming":
         """A new file being received (see Incoming); use it in a with block."""

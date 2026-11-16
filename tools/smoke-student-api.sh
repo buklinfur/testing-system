@@ -9,8 +9,16 @@
 # press start, the personal start, the contest's pause (429 cooldown + Retry-After), the per-minute rate (429
 # rate_limited, if the server's JUDGE_SUBMIT_RATE_PER_MIN is at most 12), the leaderboard (whole and filtered by the
 # group) with its time measured, a hidden leaderboard 403, the load indicator for a student and for an admin.
-# At the end the admin archives both contests and the group and disables both students (they have submissions, so
-# they cannot be deleted).
+# The class (4b.2, D-104): an assignment and two materials made by the admin; the feed, the page with its link to the
+# memo, a draft of a PNG, a PDF and a HEIC photo (the PNG inline, the HEIC only as a download), a repeated name and
+# an SVG 422, a file deleted, the hand-in by the ids of the draft, a return and the hand-in again through from-last,
+# a hand-in over a grade not released (the teacher sees it handed in again, that grade never goes out), a released
+# grade closes the hand-in, the own works; the shared and the own private thread, the teacher's answer, the read mark,
+# deleting one's own, the comments rate (429 rate_limited + Retry-After, if JUDGE_COMMENT_RATE_PER_MIN is at most
+# 14); the library, its search, a material and its file; another student's draft file, hand-in file, private
+# comment and up_to 404, their shared comment 403, a material in no library 404.
+# At the end the admin archives both contests, the assignment, the materials and the group and disables both
+# students (they have submissions, so they cannot be deleted).
 #
 #   tools/smoke-student-api.sh [BASE_URL] [ORIGIN]       defaults: http://127.0.0.1:8000 and $JUDGE_PUBLIC_ORIGIN
 # It asks for an admin (login, password, a TOTP code from the phone); ADMIN_LOGIN, ADMIN_PASSWORD and TOTP_CODE
@@ -268,6 +276,179 @@ if [ "$limited" != 0 ]; then
 else
   echo "SKIP rate_limited: 12 more were accepted (JUDGE_SUBMIT_RATE_PER_MIN is 0 or above 15 here)"; SKIPS=$((SKIPS + 1))
 fi
+
+echo "--- the class (4b.2): the feed, a draft, hand-ins, a return, from-last, a grade not released, comments, materials"
+WHO=admin
+mup() {  # mup <label> <material id> <name> <file>: a file of a new version of the material (the admin API)
+  c "$1" 201 POST "/api/admin/materials/$2/attachments?name=$3" -H "$O" -H @"$D/admin.cookie" -H @"$D/admin.csrf" \
+    -H 'Content-Type: application/octet-stream' --data-binary @"$4"
+}
+dup() {  # dup <label> <want> <percent-encoded name> <file>: one more file of the draft of $WHO on $ITEM
+  c "$WHO: $1" "$2" POST "/api/feed/$ITEM/draft/files?name=$3" -H "$O" -H @"$D/$WHO.cookie" -H @"$D/$WHO.csrf" \
+    -H 'Content-Type: application/octet-stream' --data-binary @"$4"
+}
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 40)' "$D/pic.png"
+python3 -c 'import sys; open(sys.argv[1], "wb").write(b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 64)' "$D/photo.heic"
+printf '%%PDF-1.7\n%% smoke %s\n' "$STAMP" > "$D/report.pdf"
+printf '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>' > "$D/x.svg"
+printf 'for i in range(3):\n    print(i)\n' > "$D/loops.py"
+send "a material in the library for every student"    201 POST /api/admin/materials \
+  "{'slug': '$SLUG-memo', 'title': 'Памятка $STAMP', 'body_md': 'Циклы: for и while', 'library': 'all_students'}"
+MAT=$(val 'd["id"]' 2>/dev/null || echo 0)
+mup "its file"                                        "$MAT" loops.py "$D/loops.py"
+send "a material in no library"                       201 POST /api/admin/materials \
+  "{'slug': '$SLUG-hidden', 'title': 'Ответы $STAMP', 'body_md': 'для учителя'}"
+HIDDEN=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "an assignment for the class: files or text, points released by hand, comments on" 201 POST /api/admin/items \
+  "{'kind': 'assignment', 'title': 'Проект $STAMP', 'body_md': 'Сделай. См. [[памятка:$SLUG-memo]]', 'grading': 'points',
+    'max_points': 10, 'grades_release': 'manual', 'answer_kind': 'text_or_files', 'due_at': '2099-01-01 00:00',
+    'comments_enabled': True, 'group_ids': [$GID]}"
+ITEM=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "publish it"                                     200 POST "/api/admin/items/$ITEM/publish"
+
+WHO=s1
+get "the feed"                                        200 /api/feed
+check "the assignment, its own deadline in UTC"       "any(i['id'] == $ITEM and i['assignment']['due_at'].endswith('Z') and i['assignment']['status'] is None for i in d['items'])"
+get "the page of the assignment"                      200 "/api/feed/$ITEM"
+check "the statement, the memo link open, can hand in, no draft" \
+      "d['body_md'] and d['links'] == [{'slug': '$SLUG-memo', 'available': True, 'id': $MAT, 'title': 'Памятка $STAMP'}] and d['can_submit']['allowed'] and d['draft'] == []"
+dup "a PNG under a Cyrillic name"                     201 "%D1%81%D1%85%D0%B5%D0%BC%D0%B0.png" "$D/pic.png"
+check "the file, and the draft with expires_at"       "d['file']['name'] == 'схема.png' and len(d['draft']) == 1 and d['draft'][0]['expires_at'].endswith('Z') and 'sha256' not in d['file']"
+DPNG=$(val 'd["file"]["id"]' 2>/dev/null || echo 0)
+dup "a PDF"                                           201 report.pdf "$D/report.pdf"
+DPDF=$(val 'd["file"]["id"]' 2>/dev/null || echo 0)
+dup "a HEIC photo from a phone"                       201 photo.heic "$D/photo.heic"
+check "three files in the draft"                      "[f['name'] for f in d['draft']] == ['схема.png', 'report.pdf', 'photo.heic']"
+DHEIC=$(val 'd["file"]["id"]' 2>/dev/null || echo 0)
+dup "the same name again"                             422 REPORT.PDF "$D/report.pdf"
+check "duplicate_name"                                "d['detail'] == 'duplicate_name'"
+dup "an SVG"                                          422 x.svg "$D/x.svg"
+check "file_type_not_allowed"                         "d['detail'] == 'file_type_not_allowed'"
+get "the PNG of the draft"                            200 "/api/feed/$ITEM/draft/files/$DPNG"
+header "a picture: image/png"                      '^content-type: image/png'
+header "inline"                                       '^content-disposition: inline'
+cmp -s "$D/body" "$D/pic.png" && echo "OK   the same bytes" || fail "the PNG of the draft differs"
+get "the HEIC of the draft"                           200 "/api/feed/$ITEM/draft/files/$DHEIC"
+header "HEIC: never inline, a download"               '^content-disposition: attachment'
+header "nosniff"                                      '^x-content-type-options: nosniff'
+send "delete the PDF from the draft"                  204 POST "/api/feed/$ITEM/draft/files/$DPDF/delete"
+get "the draft"                                       200 "/api/feed/$ITEM/draft"
+check "the PNG and the HEIC are left"                 "[f['name'] for f in d['draft']] == ['схема.png', 'photo.heic']"
+
+WHO=s2
+get "s1's draft file, as s2"                          404 "/api/feed/$ITEM/draft/files/$DPNG"
+check "draft_file_not_found"                          "d['detail'] == 'draft_file_not_found'"
+send "s1's draft file in s2's hand-in"                404 POST "/api/feed/$ITEM/work" "{'text': 'x', 'files': [$DPNG]}"
+check "draft_file_not_found"                          "d['detail'] == 'draft_file_not_found'"
+
+WHO=s1
+send "hand in the text and two files"                 201 POST "/api/feed/$ITEM/work" "{'text': 'Мой проект', 'files': [$DPNG, $DHEIC]}"
+check "submitted, not late"                           "d['work']['status'] == 'submitted' and d['submission']['late'] is False"
+get "the page: the hand-in, the draft empty"          200 "/api/feed/$ITEM"
+check "one hand-in with both files"                   "len(d['hand_ins']) == 1 and [f['name'] for f in d['hand_ins'][0]['files']] == ['схема.png', 'photo.heic'] and d['draft'] == []"
+WFILE=$(val 'd["hand_ins"][0]["files"][0]["id"]' 2>/dev/null || echo 0)
+get "a file of the own hand-in"                       200 "/api/feed/$ITEM/work/files/$WFILE"
+cmp -s "$D/body" "$D/pic.png" && echo "OK   the same bytes" || fail "the file of the hand-in differs"
+WHO=s2
+get "s1's file of the hand-in, as s2"                 404 "/api/feed/$ITEM/work/files/$WFILE"
+check "file_not_found"                                "d['detail'] == 'file_not_found'"
+
+WHO=admin
+send "return s1's work"                               200 POST "/api/admin/items/$ITEM/works/$S1ID/return" "{'comment': 'добавь вывод'}"
+WHO=s1
+get "the page after the return"                       200 "/api/feed/$ITEM"
+check "returned, with the comment"                    "d['assignment']['status'] == 'returned' and d['assignment']['returned_comment'] == 'добавь вывод'"
+send "from-last: the files of the hand-in back"       200 POST "/api/feed/$ITEM/draft/from-last"
+check "the PNG and the HEIC in the draft again"       "[f['name'] for f in d['draft']] == ['схема.png', 'photo.heic']"
+FILES=$(val '[f["id"] for f in d["draft"]]' 2>/dev/null || echo '[]')
+send "hand in again with them"                        201 POST "/api/feed/$ITEM/work" "{'text': 'Мой проект, с выводом', 'files': $FILES}"
+check "submitted again"                               "d['work']['status'] == 'submitted' and d['work']['submissions'] == 2"
+
+WHO=admin
+send "grade s1: 7, not released"                      200 POST "/api/admin/items/$ITEM/works/$S1ID/grade" "{'score': 7}"
+WHO=s1
+get "the page with a grade not released"              200 "/api/feed/$ITEM"
+check "no grade seen, still can hand in"              "d['assignment']['status'] == 'submitted' and d['assignment']['grade'] is None and d['can_submit']['allowed']"
+send "hand in over the grade not released"            201 POST "/api/feed/$ITEM/work" "{'text': 'Исправил ещё'}"
+check "submitted, 3 hand-ins"                         "d['work']['status'] == 'submitted' and d['work']['submissions'] == 3"
+WHO=admin
+get "the teacher's card"                              200 "/api/admin/items/$ITEM/works/$S1ID"
+check "handed in again after a grade; the grade for the earlier hand-in" \
+      "d['resubmitted_after_grade'] and [e['superseded'] for e in d['events'] if e.get('action') == 'graded'] == [True]"
+send "release: that grade never goes out"            200 POST "/api/admin/items/$ITEM/release" "{'user_ids': [$S1ID]}"
+check "nothing_to_release"                            "[r['result'] for r in d['results']] == ['nothing_to_release']"
+send "grade s1: 8"                                    200 POST "/api/admin/items/$ITEM/works/$S1ID/grade" "{'score': 8}"
+send "release it"                                     200 POST "/api/admin/items/$ITEM/release" "{'user_ids': [$S1ID]}"
+check "released"                                      "[r['result'] for r in d['results']] == ['released']"
+WHO=s1
+get "the page with the released grade"                200 "/api/feed/$ITEM"
+check "graded 8.00"                                   "d['assignment']['status'] == 'graded' and d['assignment']['grade']['score'] == '8.00'"
+send "hand in over a released grade"                  409 POST "/api/feed/$ITEM/work" "{'text': 'ещё'}"
+check "already_graded"                                "d['detail'] == 'already_graded'"
+get "my works"                                        200 /api/works
+check "this one graded 8.00, 3 hand-ins"              "any(w['item']['id'] == $ITEM and w['grade']['score'] == '8.00' and w['submissions'] == 3 for w in d['items'])"
+
+echo "--- comments: the shared thread, the own private thread, others' comments, the rate"
+send "a comment in the shared thread"                 201 POST "/api/feed/$ITEM/comments" "{'body': 'Вопрос всем $STAMP'}"
+SHARED=$(val 'd["id"]' 2>/dev/null || echo 0)
+send "a question to the teacher"                      201 POST "/api/feed/$ITEM/my-thread" "{'body': 'Можно сдать позже?'}"
+PRIV=$(val 'd["id"]' 2>/dev/null || echo 0)
+WHO=admin
+send "the teacher answers s1"                         201 POST "/api/admin/items/$ITEM/students/$S1ID/comments" "{'body': 'Да'}"
+WHO=s1
+get "the own private thread"                          200 "/api/feed/$ITEM/my-thread"
+check "the question and the answer, 1 unread, no login" \
+      "[c['body'] for c in d['comments']] == ['Можно сдать позже?', 'Да'] and d['unread'] == 1 and d['comments'][1]['author']['teacher'] and 'login' not in d['comments'][1]['author']"
+send "mark it read"                                   200 POST "/api/feed/$ITEM/my-thread/read"
+check "unread 0"                                      "d == {'unread': 0}"
+WHO=s2
+get "s2's own private thread"                         200 "/api/feed/$ITEM/my-thread"
+check "nothing of s1's thread"                        "d['comments'] == [] and d['thread_id'] is None"
+send "up_to from s1's thread"                         404 POST "/api/feed/$ITEM/my-thread/read" "{'up_to': $PRIV}"
+check "comment_not_found"                             "d['detail'] == 'comment_not_found'"
+send "delete s1's private comment"                    404 POST "/api/comments/$PRIV/delete"
+check "comment_not_found"                             "d['detail'] == 'comment_not_found'"
+send "delete s1's shared comment"                     403 POST "/api/comments/$SHARED/delete"
+check "not_your_comment"                              "d['detail'] == 'not_your_comment'"
+WHO=s1
+send "delete the own shared comment"                  204 POST "/api/comments/$SHARED/delete"
+WHO=s2
+limited=0
+for i in $(seq 1 15); do
+  code=$(curl -s --noproxy '*' --max-time 10 -D "$D/hdr" -o "$D/body" -w '%{http_code}' -X POST "$BASE/api/feed/$ITEM/comments" \
+         -H "$O" -H @"$D/s2.cookie" -H @"$D/s2.csrf" -H "$J" -d "{\"body\": \"burst $i\"}")
+  if [ "$code" = 429 ]; then limited=$i; break; fi
+  [ "$code" = 201 ] || { fail "comment $i of the burst: $code $(head -c 200 "$D/body")"; break; }
+done
+if [ "$limited" != 0 ]; then
+  echo "OK   429 after $((limited - 1)) comments"
+  check "rate_limited with retry_after_s"             "d['detail'] == 'rate_limited' and 1 <= d['retry_after_s'] <= 60"
+  header "Retry-After header"                         '^retry-after: [0-9]+$'
+else
+  echo "SKIP comments rate_limited: 15 were accepted (JUDGE_COMMENT_RATE_PER_MIN is 0 or above 15 here)"; SKIPS=$((SKIPS + 1))
+fi
+
+echo "--- materials and «Справочник»"
+WHO=s1
+get "the library"                                     200 /api/library
+check "the memo is there, the hidden one is not"      "'$SLUG-memo' in [m['slug'] for m in d['unsorted']] and '$SLUG-hidden' not in str(d)"
+get "search in lower case Cyrillic"                   200 /api/library -G --data-urlencode "q=памятка $STAMP"
+check "finds the memo"                                "[m['slug'] for m in d['materials']] == ['$SLUG-memo']"
+get "the memo"                                        200 "/api/materials/$MAT"
+check "its text and its file, no sha256"              "d['body_md'] == 'Циклы: for и while' and [a['name'] for a in d['attachments']] == ['loops.py'] and 'sha256' not in str(d)"
+MATT=$(val 'd["attachments"][0]["id"]' 2>/dev/null || echo 0)
+get "its file"                                        200 "/api/materials/$MAT/attachments/$MATT"
+cmp -s "$D/body" "$D/loops.py" && echo "OK   the same bytes" || fail "the file of the memo differs"
+get "a material in no library"                        404 "/api/materials/$HIDDEN"
+check "material_not_found, as no material"            "d['detail'] == 'material_not_found'"
+get "a file of the memo under the hidden one"         404 "/api/materials/$HIDDEN/attachments/$MATT"
+get "an item of nobody"                               404 /api/feed/2147483647
+check "item_not_found"                                "d['detail'] == 'item_not_found'"
+
+WHO=admin
+send "archive the assignment"                         200 POST "/api/admin/items/$ITEM/archive"
+send "archive the memo (a material is never deleted)" 200 POST "/api/admin/materials/$MAT/archive"
+send "archive the hidden one"                         200 POST "/api/admin/materials/$HIDDEN/archive"
 
 echo "--- clean-up (admin): the contests and the group archived, the students disabled"
 WHO=admin

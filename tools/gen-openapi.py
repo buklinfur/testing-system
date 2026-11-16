@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Write docs/openapi-admin.json and docs/openapi-student.json: the OpenAPI of what each web UI calls.
 
-openapi-admin.json: /api/admin and /api/auth; openapi-student.json: the student API (/api/contests,
-/api/submissions, /api/load) and /api/auth. The public app never serves its OpenAPI over the network (MODULE_4A 5.7,
+openapi-admin.json: /api/admin and /api/auth; openapi-student.json: the student API (the prefixes of
+app.student_api.PREFIXES: /api/contests, /api/submissions, /api/load, /api/feed, /api/works, /api/comments,
+/api/library, /api/materials) and /api/auth. The public app never serves its OpenAPI over the network (MODULE_4A 5.7,
 openapi_url=None); these files in the repository are the published description. tests/test_openapi_units.py fails
 when one differs from the app: after changing an endpoint run
 
@@ -18,12 +19,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT), str(ROOT / "backend")]
+from app.student_api import PREFIXES as STUDENT_PREFIXES  # noqa: E402 - one list with the sweeps of the tests
+
 AUTH = ("/api/auth/",)
 # file -> (title, path prefixes); a prefix ends with "/" or is a whole path, so /api/admin never takes /api/adminx
 TARGETS = {
     "admin": (ROOT / "docs" / "openapi-admin.json", "judge: admin and auth API", ("/api/admin/",) + AUTH),
     "student": (ROOT / "docs" / "openapi-student.json", "judge: student and auth API",
-                ("/api/contests", "/api/submissions", "/api/load") + AUTH),
+                tuple(STUDENT_PREFIXES) + AUTH),
 }
 OUT = TARGETS["admin"][0]  # the admin file (kept for callers of module 4a)
 

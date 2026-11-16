@@ -36,7 +36,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, aliased
 
-from .. import locks
+from .. import locks, rates
 from ..auth import audit
 from ..models import (AssignmentWork, Comment, CommentThread, FeedItem, FeedItemAudience, FeedItemKind, Group,
                       GroupMember, Role, ThreadRead, User)
@@ -149,11 +149,20 @@ def _readable_thread(db: Session, viewer, item: FeedItem, student: Optional[User
 
 
 # ----------------------------------------------------------------------------- writing
-def _recent(db: Session, user: User, now: datetime) -> int:
-    """The student's comments of the last RATE_WINDOW_S seconds, deleted ones included."""
-    return db.execute(select(func.count()).select_from(Comment).where(
+def _recent(db: Session, user: User, now: datetime) -> list[datetime]:
+    """The moments of the student's comments of the last RATE_WINDOW_S seconds, deleted ones included."""
+    return list(db.execute(select(Comment.created_at).where(
         Comment.author_id == user.id,
-        Comment.created_at > now - timedelta(seconds=rules.RATE_WINDOW_S))).scalar_one()
+        Comment.created_at > now - timedelta(seconds=rules.RATE_WINDOW_S))).scalars())
+
+
+def _raise_post(decision, moments: list[datetime], now: datetime, limit: Optional[int]) -> None:
+    """_raise, and for rate_limited also when the oldest comment of the window leaves it: retry_after_s by
+    rates.window_ok over the same moments (at least 1; 4b.2, D-100)."""
+    if not decision and decision.reason == "rate_limited":
+        window = rates.window_ok(moments, now, limit, timedelta(seconds=rules.RATE_WINDOW_S))
+        raise FeedError("too many comments: wait a little", "rate_limited", retry_after_s=window.retry_after_s or 1)
+    _raise(decision)
 
 
 def _add(db: Session, thread: CommentThread, author_id: Optional[int], body: str, now: datetime) -> Comment:
@@ -169,8 +178,9 @@ def post_shared(db: Session, user: User, item: FeedItem, now: datetime, body: Op
     JUDGE_COMMENT_RATE_PER_MIN (0: none)."""
     _student(user)
     locks.take_pair(db, locks.COMMENT_RATE, user.id)
-    _raise(rules.can_post_shared(user, item, now, body=body, recent=_recent(db, user, now), limit=limit,
-                                 **_shared_inputs(db, item, user)))
+    moments = _recent(db, user, now)
+    _raise_post(rules.can_post_shared(user, item, now, body=body, recent=len(moments), limit=limit,
+                                      **_shared_inputs(db, item, user)), moments, now, limit)
     return _add(db, _thread_for_write(db, item, None, now), user.id, body, now)
 
 
@@ -179,9 +189,10 @@ def post_private(db: Session, user: User, item: FeedItem, now: datetime, body: O
     """A student's comment in their own private thread of an assignment (comment_rules.can_post_private)."""
     _student(user)
     locks.take_pair(db, locks.COMMENT_RATE, user.id)
-    _raise(rules.can_post_private(user, item, user, now, in_audience=feed.in_audience(db, item, user), body=body,
-                                  thread_exists=_thread(db, item, user.id) is not None,
-                                  recent=_recent(db, user, now), limit=limit))
+    moments = _recent(db, user, now)
+    _raise_post(rules.can_post_private(user, item, user, now, in_audience=feed.in_audience(db, item, user),
+                                       body=body, thread_exists=_thread(db, item, user.id) is not None,
+                                       recent=len(moments), limit=limit), moments, now, limit)
     return _add(db, _thread_for_write(db, item, user.id, now), user.id, body, now)
 
 

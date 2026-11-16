@@ -603,6 +603,20 @@ class DeployFilesTests(unittest.TestCase):
         cfg = WorkerConfig()
         self.assertGreater(keep_alive, 3 * max(cfg.heartbeat_interval_s, cfg.poll_interval_s))
 
+    def test_the_reaper_writes_only_in_the_tmp_of_the_blob_store(self):
+        """D-100: one ReadWritePaths, <JUDGE_BLOB_DIR>/tmp of backend.env.example, created by install-wsl.sh (a
+        missing path fails the unit); the rest of the file system read-only."""
+        unit = (ROOT / "deploy/systemd/judge-reaper.service").read_text()
+        lines = [l for l in unit.splitlines() if not l.startswith("#")]
+        blob_dir = read_systemd_env(ROOT / "deploy/env/backend.env.example")["JUDGE_BLOB_DIR"]
+        self.assertEqual([l for l in lines if l.startswith("ReadWritePaths=")], [f"ReadWritePaths={blob_dir}/tmp"])
+        for line in ("ProtectSystem=strict", "ProtectHome=true", "PrivateTmp=true", "NoNewPrivileges=true"):
+            self.assertIn(line, lines)
+        install = (ROOT / "deploy/install-wsl.sh").read_text()
+        # judge's alone: 0700 (D-105), its own line so that -m applies to it only
+        self.assertRegex(install, rf"\ninstall -d -o judge -g judge -m 700 {blob_dir}/tmp\n")
+        self.assertNotRegex(install, rf"install -d [^\n]*{blob_dir}/tmp [^\n]")
+
     def test_unit_stop_timeout_exceeds_drain_timeout(self):
         unit = (ROOT / "deploy/systemd/judge-worker.service").read_text()
         stop = int([l for l in unit.splitlines() if l.startswith("TimeoutStopSec=")][0].split("=")[1])

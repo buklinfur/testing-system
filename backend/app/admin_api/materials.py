@@ -36,13 +36,13 @@ from ..auth_api import Current, get_db, now
 from ..classroom import attachments as att
 from ..classroom.items import FeedError
 from ..content_files import file_response
-from ..http_body import require_type, save_body
+from ..http_body import require_type, save_body, upload_name
 from ..ids import Id, StrictId, VersionNo
 from ..jsonable import plain
 from ..materials import library, refs
 from ..materials import service as materials
 from ..models import Material
-from .attachments import UPLOAD_DOC, UPLOAD_TYPE, LinkBody, OrderBody, upload_name
+from .attachments import UPLOAD_DOC, UPLOAD_TYPE, LinkBody, OrderBody
 from .deps import Page, admin_actor, admin_session, page, paginate
 from .feed import Body, DeleteBody, blobs, get_group, refused
 

@@ -57,12 +57,13 @@ class FileSettings:
     """Files and links of the class feed (4v.3, docs/CLASSROOM.md §10): limits of a hand-in, the student's quota,
     a teacher's attachments. The defaults are classroom/attachment_rules.py's (a test compares)."""
 
-    submission_files_max: int = 10  # JUDGE_SUBMISSION_FILES_MAX: files and links of one hand-in (answer.md apart)
-    submission_file_max_bytes: int = 20 * 1024 * 1024  # JUDGE_SUBMISSION_FILE_MAX_MB
-    submission_total_max_bytes: int = 50 * 1024 * 1024  # JUDGE_SUBMISSION_TOTAL_MAX_MB: the files of one hand-in
-    student_quota_bytes: int = 200 * 1024 * 1024  # JUDGE_STUDENT_QUOTA_MB: distinct blobs of a student; 0 = none
+    submission_files_max: int = 20  # JUDGE_SUBMISSION_FILES_MAX: files and links of one hand-in (answer.md apart)
+    submission_file_max_bytes: int = 30 * 1024 * 1024  # JUDGE_SUBMISSION_FILE_MAX_MB (also a draft upload's body)
+    submission_total_max_bytes: int = 200 * 1024 * 1024  # JUDGE_SUBMISSION_TOTAL_MAX_MB: the files of one hand-in
+    student_quota_bytes: int = 1024 * 1024 * 1024  # JUDGE_STUDENT_QUOTA_MB: distinct blobs of a student; 0 = none
     item_attachments_max: int = 20  # JUDGE_ITEM_ATTACHMENTS_MAX: files and links of one feed item
     attachment_max_bytes: int = 50 * 1024 * 1024  # JUDGE_ATTACHMENT_MAX_MB: one file of a teacher
+    draft_ttl_days: int = 14  # JUDGE_DRAFT_TTL_DAYS: a draft goes this long after the own due moment / its last change
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,7 @@ class Settings:
                 student_quota_bytes=positive("JUDGE_STUDENT_QUOTA_MB", f.student_quota_bytes, mib, zero_ok=True),
                 item_attachments_max=positive("JUDGE_ITEM_ATTACHMENTS_MAX", f.item_attachments_max),
                 attachment_max_bytes=positive("JUDGE_ATTACHMENT_MAX_MB", f.attachment_max_bytes, mib),
+                draft_ttl_days=positive("JUDGE_DRAFT_TTL_DAYS", f.draft_ttl_days),
             ),
             submit=SubmitSettings(
                 source_max_bytes=at_most("JUDGE_SOURCE_MAX_KB", positive("JUDGE_SOURCE_MAX_KB", sb.source_max_bytes,

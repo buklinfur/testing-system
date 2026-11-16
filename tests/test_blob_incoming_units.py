@@ -85,6 +85,17 @@ class IncomingTests(unittest.TestCase):
         self.assertFalse(blobstore.valid_sha256(staging.name))
         self.assertNotEqual(len(staging.name), 2, "a directory of blobs has a two-letter name")
 
+    def test_the_temporary_directory_is_0700_and_its_files_0600(self):
+        """D-105: under the usual umask 022 the directory of files being received is judge's alone, and so is every
+        file in it, before it is adopted."""
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        store = BlobStore(Path(self.dir.name) / "fresh")
+        with store.incoming("фото.heic") as up:
+            up.write(b"x")
+            self.assertEqual(oct(os.stat(store.staging()).st_mode & 0o777), oct(0o700))
+            self.assertEqual(oct(os.stat(up.path).st_mode & 0o777), oct(0o600))
+
     def test_a_blob_that_is_there_stays_and_the_copy_goes(self):
         sha = self.store.put(b"x = 1\n")
         with self.store.incoming("a.py") as up:
@@ -156,6 +167,49 @@ class IncomingTests(unittest.TestCase):
         self.assertNothingLeft()
 
 
+class SweepTmpTests(unittest.TestCase):
+    """The reaper's sweep of <root>/tmp (D-099): only regular files untouched for a day, never what a link points to,
+    never a directory, never a blob."""
+
+    def test_old_regular_files_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = BlobStore(Path(root) / "blobs")
+            tmp = store.staging()
+            now = 1_800_000_000.0
+            old, fresh = tmp / "in-old", tmp / "in-fresh"
+            for path in (old, fresh):
+                path.write_bytes(b"x")
+            os.utime(old, (now - blobstore.TMP_MAX_AGE_S - 1,) * 2)
+            os.utime(fresh, (now - blobstore.TMP_MAX_AGE_S + 60,) * 2)
+            outside = Path(root) / "precious"
+            outside.write_bytes(b"keep")
+            os.utime(outside, (now - 10 * blobstore.TMP_MAX_AGE_S,) * 2)
+            (tmp / "link").symlink_to(outside)
+            os.utime(tmp / "link", (now - 10 * blobstore.TMP_MAX_AGE_S,) * 2, follow_symlinks=False)
+            (tmp / "dir").mkdir()
+            os.utime(tmp / "dir", (now - 10 * blobstore.TMP_MAX_AGE_S,) * 2)
+            sha = store.put(b"blob")
+            os.utime(store.path(sha), (now - 10 * blobstore.TMP_MAX_AGE_S,) * 2)
+            self.assertEqual(store.sweep_tmp(now=now), 1)
+            self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["dir", "in-fresh", "link"])
+            self.assertEqual(outside.read_bytes(), b"keep")
+            self.assertTrue(store.exists(sha))
+
+    def test_no_tmp_yet(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(BlobStore(Path(root)).sweep_tmp(), 0)
+
+    def test_the_reapers_sweep_creates_nothing(self):
+        """The reaper may write only in <root>/tmp (D-100): no root, no tmp is made when they are missing."""
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent) / "blobs"
+            self.assertEqual(blobstore.sweep_tmp(root), 0)
+            self.assertFalse(root.exists())
+            root.mkdir()
+            self.assertEqual(blobstore.sweep_tmp(root), 0)
+            self.assertEqual(list(root.iterdir()), [])
+
+
 class FileSettingsTests(unittest.TestCase):
     def test_defaults_are_the_rules(self):
         f = FileSettings()
@@ -167,26 +221,28 @@ class FileSettingsTests(unittest.TestCase):
         self.assertEqual(ar.TEACHER_LIMITS.files_max, f.item_attachments_max)
         self.assertEqual(ar.TEACHER_LIMITS.file_max_bytes, f.attachment_max_bytes)
         self.assertEqual(blobstore.HEAD_BYTES, ar.HEAD_BYTES)
+        self.assertEqual(f.draft_ttl_days, ar.DRAFT_TTL_DAYS)
         self.assertEqual(Settings.from_env({}).files, f)
 
     def test_from_env(self):
         f = Settings.from_env({"JUDGE_SUBMISSION_FILES_MAX": "3", "JUDGE_SUBMISSION_FILE_MAX_MB": "1",
                                "JUDGE_SUBMISSION_TOTAL_MAX_MB": "2", "JUDGE_STUDENT_QUOTA_MB": "0",
                                "JUDGE_ITEM_ATTACHMENTS_MAX": "5", "JUDGE_ATTACHMENT_MAX_MB": "7"}).files
-        self.assertEqual(f, FileSettings(3, MIB, 2 * MIB, 0, 5, 7 * MIB))
+        self.assertEqual(f, FileSettings(3, MIB, 2 * MIB, 0, 5, 7 * MIB, 14))
+        self.assertEqual(Settings.from_env({"JUDGE_DRAFT_TTL_DAYS": "3"}).files.draft_ttl_days, 3)
 
     def test_bad_values_stop_the_start(self):
         for name, value in (("JUDGE_SUBMISSION_FILES_MAX", "0"), ("JUDGE_SUBMISSION_FILE_MAX_MB", "-1"),
                             ("JUDGE_STUDENT_QUOTA_MB", "-1"), ("JUDGE_ATTACHMENT_MAX_MB", "0"),
-                            ("JUDGE_ITEM_ATTACHMENTS_MAX", "много")):
+                            ("JUDGE_ITEM_ATTACHMENTS_MAX", "много"), ("JUDGE_DRAFT_TTL_DAYS", "0")):
             with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                 Settings.from_env({name: value})
 
-    def test_the_example_env_lists_all_six(self):
+    def test_the_example_env_lists_all_seven(self):
         example = (ROOT / "deploy/env/backend.env.example").read_text(encoding="utf-8")
-        for name in ("JUDGE_SUBMISSION_FILES_MAX=10", "JUDGE_SUBMISSION_FILE_MAX_MB=20",
-                     "JUDGE_SUBMISSION_TOTAL_MAX_MB=50", "JUDGE_STUDENT_QUOTA_MB=200", "JUDGE_ITEM_ATTACHMENTS_MAX=20",
-                     "JUDGE_ATTACHMENT_MAX_MB=50"):
+        for name in ("JUDGE_SUBMISSION_FILES_MAX=20", "JUDGE_SUBMISSION_FILE_MAX_MB=30",
+                     "JUDGE_SUBMISSION_TOTAL_MAX_MB=200", "JUDGE_STUDENT_QUOTA_MB=1024",
+                     "JUDGE_ITEM_ATTACHMENTS_MAX=20", "JUDGE_ATTACHMENT_MAX_MB=50", "JUDGE_DRAFT_TTL_DAYS=14"):
             self.assertIn(f"# {name}\n", example)
 
 

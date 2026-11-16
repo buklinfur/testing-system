@@ -49,6 +49,9 @@ fi
 # 1. user and directories
 id judge >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/judge --shell /usr/sbin/nologin judge
 install -d -o judge -g judge /var/lib/judge/blobs /var/cache/judge/worker
+# files being received (blobstore.Incoming, 0600) and the only place the reaper may write: judge's alone (D-105);
+# -m also tightens a directory an earlier install made 755
+install -d -o judge -g judge -m 700 /var/lib/judge/blobs/tmp
 install -d -o root -g judge -m 750 /etc/judge
 install -d -o root -g root -m 755 /opt/judge
 

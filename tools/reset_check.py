@@ -24,8 +24,9 @@ sys.path[:0] = [str(ROOT), str(ROOT / "backend")]
 from sqlalchemy import create_engine, text  # noqa: E402
 
 # One of each thing a teacher and students leave behind, including what the downgrades of 4a.3 (groups, contest
-# deadlines), 4a.4 (version checks), 4v.1 (the feed), 4v.2 (comments), 4v.3 (files, links, attachments) and 4v.4
-# (materials, their versions and attachments, the library's groups and sections, material items, links) refuse.
+# deadlines), 4a.4 (version checks), 4v.1 (the feed), 4v.2 (comments), 4v.3 (files, links, attachments), 4v.4
+# (materials, their versions and attachments, the library's groups and sections, material items, links) and 4b.2
+# (students' draft files, a deleted one too) refuse.
 SEED_SQL = """
     INSERT INTO users (id, login, password_hash, display_name, role, is_active) VALUES
       (1, 'admin', '!', 'A', 'admin', true), (2, 'pupil', '!', 'P', 'student', true);
@@ -62,11 +63,11 @@ SEED_SQL = """
     INSERT INTO feed_item_audience (item_id, group_id) VALUES (1, 1), (2, 1);
     INSERT INTO deadline_extensions (feed_item_id, user_id, due_at) VALUES (2, 2, '2026-11-11 10:00+00');
     INSERT INTO blobs (sha256, size_bytes) VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 3);
-    INSERT INTO assignment_works (id, item_id, user_id, status, status_at) VALUES (1, 2, 2, 'graded', now());
-    INSERT INTO assignment_submissions (id, work_id) VALUES (1, 1);
+    INSERT INTO assignment_works (id, item_id, user_id, status, status_at, last_seq) VALUES (1, 2, 2, 'graded', now(), 2);
+    INSERT INTO assignment_submissions (id, work_id, seq) VALUES (1, 1, 1);
     INSERT INTO assignment_submission_files (submission_id, kind, path, blob_sha256, size, position)
       VALUES (1, 'text', 'answer.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 3, 0);
-    INSERT INTO assignment_reviews (work_id, action, score, reviewer_id) VALUES (1, 'graded', 4, 1);
+    INSERT INTO assignment_reviews (work_id, action, score, reviewer_id, seq) VALUES (1, 'graded', 4, 1, 2);
     INSERT INTO comment_threads (id, item_id, student_id) VALUES (1, 2, 2), (2, 2, NULL);
     INSERT INTO comments (id, thread_id, author_id, body) VALUES (1, 1, 2, 'вопрос'), (2, 2, 1, 'объявление');
     INSERT INTO thread_reads (user_id, thread_id, last_read_comment_id) VALUES (1, 1, 1);
@@ -79,8 +80,8 @@ SEED_SQL = """
       VALUES (3, 'file', 'схема.pdf', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 5, 0, 1);
     INSERT INTO attachments (item_id, kind, url, title, position, created_by)
       VALUES (3, 'link', 'https://scratch.mit.edu/projects/1', 'Пример', 1, 1);
-    INSERT INTO assignment_works (id, item_id, user_id, status, status_at) VALUES (2, 3, 2, 'submitted', now());
-    INSERT INTO assignment_submissions (id, work_id) VALUES (2, 2);
+    INSERT INTO assignment_works (id, item_id, user_id, status, status_at, last_seq) VALUES (2, 3, 2, 'submitted', now(), 1);
+    INSERT INTO assignment_submissions (id, work_id, seq) VALUES (2, 2, 1);
     INSERT INTO assignment_submission_files (submission_id, kind, path, blob_sha256, size, position)
       VALUES (2, 'file', 'project.sb3', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 5, 0);
     INSERT INTO assignment_submission_links (submission_id, url, position)
@@ -98,7 +99,12 @@ SEED_SQL = """
     INSERT INTO feed_item_audience (item_id, group_id) VALUES (4, 1);
     INSERT INTO material_refs (slug, problem_version_id) VALUES ('cycles', 1);
     INSERT INTO material_refs (slug, feed_item_id) VALUES ('cycles', 2);
-    INSERT INTO material_refs (slug, material_version_id) VALUES ('cycles', 2)
+    INSERT INTO material_refs (slug, material_version_id) VALUES ('cycles', 2);
+    INSERT INTO work_draft_files (item_id, user_id, name, blob_sha256, size)
+      VALUES (3, 2, 'фото.heic', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 5);
+    INSERT INTO work_draft_files (item_id, user_id, name, blob_sha256, size, created_at, deleted_at)
+      VALUES (3, 2, 'лишнее.jpg', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 3,
+              '2026-11-15 10:00+00', '2026-11-15 10:05+00')
 """
 
 

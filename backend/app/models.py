@@ -831,7 +831,9 @@ class AssignmentWork(Base):
     """A student's work on an assignment: created by the first submission or the first grade. Its row is locked
     (SELECT ... FOR UPDATE) by every change - a submission, a grade, a return, a release - so they go one after
     another. `status` is a cache of the history (assignment_submissions and assignment_reviews), written in the same
-    transaction; the history is the truth."""
+    transaction; the history is the truth. `last_seq`: the seq of the work's last event - every hand-in and review
+    takes the next one under that lock, so `seq` is the order the events were applied in, whatever moments their
+    requests were received at (D-102)."""
 
     __tablename__ = "assignment_works"
 
@@ -841,8 +843,10 @@ class AssignmentWork(Base):
     status: Mapped[WorkStatus] = mapped_column(pg_enum(WorkStatus, "work_status"), nullable=False)
     status_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = utcnow_column()
+    last_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
 
     __table_args__ = (
+        CheckConstraint("last_seq >= 0", name="last_seq_non_negative"),
         UniqueConstraint("item_id", "user_id", name="uq_assignment_works_item_user"),
         Index("ix_assignment_works_item_status", "item_id", "status"),
         Index("ix_assignment_works_user", "user_id"),
@@ -860,8 +864,13 @@ class AssignmentSubmission(Base):
     created_at: Mapped[datetime] = utcnow_column()  # the moment the request was received
     late: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     ip: Mapped[Optional[str]] = mapped_column(String(45))
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)  # the order among the work's events (AssignmentWork)
 
-    __table_args__ = (Index("ix_assignment_submissions_work_created", "work_id", "created_at"),)
+    __table_args__ = (
+        CheckConstraint("seq > 0", name="seq_positive"),
+        Index("ix_assignment_submissions_work_created", "work_id", "created_at"),
+        Index("uq_assignment_submissions_work_seq", "work_id", "seq", unique=True),
+    )
 
 
 # The limits the CHECKs below keep, the same numbers as the rules (classroom/attachment_rules.py; a unit test compares
@@ -926,9 +935,40 @@ class AssignmentSubmissionLink(Base):
     )
 
 
+class WorkDraftFile(Base):
+    """A file a student uploaded to the draft of an assignment before handing it in (4b.2, D-097, D-098): one per
+    upload, in the order of upload (id), private to the student until a hand-in names it - then the row goes and the
+    blob becomes a file of the hand-in. Deleting by the student sets deleted_at; the row (and so its blob in the
+    student's quota) stays until the reaper removes the whole draft of the pair (classroom/drafts.expiry, D-100). Names
+    are unique among the live files of the pair (item, student), case ignored. Not a trace of the user: erased with
+    it."""
+
+    __tablename__ = "work_draft_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("feed_items.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    blob_sha256: Mapped[str] = mapped_column(ForeignKey("blobs.sha256", ondelete="RESTRICT"), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = utcnow_column()
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(f"btrim(name, E' \\t\\r\\n') <> '' AND char_length(name) <= {ATTACHMENT_NAME_MAX_CHARS}",
+                        name="name_valid"),
+        CheckConstraint("size > 0", name="size_positive"),
+        CheckConstraint("deleted_at IS NULL OR deleted_at >= created_at", name="deleted_after_created"),
+        Index("ix_work_draft_files_owner", "user_id", "item_id", "id"),
+        Index("ix_work_draft_files_created", "created_at"),
+        Index("uq_work_draft_files_name", "item_id", "user_id", text("lower(name)"), unique=True,
+              postgresql_where=text("deleted_at IS NULL")),
+    )
+
+
 class AssignmentReview(Base):
     """What a teacher did with a work, rows only added: the history of grades. The current grade is the last
-    `graded` row; with grades_release = manual a student sees the last graded row that has a `released` row
+    `graded` row a later hand-in did not take off (D-102); with grades_release = manual a student sees the last graded row that has a `released` row
     (release_of), a `returned` row at once (docs/CLASSROOM.md)."""
 
     __tablename__ = "assignment_reviews"
@@ -942,8 +982,11 @@ class AssignmentReview(Base):
     reviewer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))  # null: console
     at: Mapped[datetime] = utcnow_column()
     release_of: Mapped[Optional[int]] = mapped_column(ForeignKey("assignment_reviews.id", ondelete="RESTRICT"))
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)  # the order among the work's events (AssignmentWork)
 
     __table_args__ = (
+        CheckConstraint("seq > 0", name="seq_positive"),
+        Index("uq_assignment_reviews_work_seq", "work_id", "seq", unique=True),
         CheckConstraint("(action = 'released') = (release_of IS NOT NULL)", name="release_of"),
         CheckConstraint("action = 'graded' OR (score IS NULL AND passed IS NULL)", name="mark_only_graded"),
         CheckConstraint("score IS NULL OR passed IS NULL", name="one_mark"),

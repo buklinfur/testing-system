@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 from typing import BinaryIO, Iterable
+from urllib.parse import unquote_to_bytes
 
 from starlette.requests import Request
 
@@ -110,3 +111,25 @@ def require_type(request: Request, *allowed: str) -> None:
     kind = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if kind not in allowed:
         raise ApiError(415, "unsupported_media_type", f"send the body as {' or '.join(allowed)}")
+
+
+def upload_name(request: Request) -> str:
+    """?name= decoded strictly from the raw query string. Starlette's query_params replaces bytes that are not
+    UTF-8 with U+FFFD; a name changed that way would be stored silently, so a broken encoding is 422 instead. The name
+    must come exactly once and not be blank; the service then cleans it (content_files.clean_name) and checks it. Shared
+    by the uploads of a teacher (admin_api.attachments, materials) and of a student (student_api.drafts)."""
+    found = []
+    for pair in request.scope.get("query_string", b"").split(b"&"):
+        key, _sep, value = pair.partition(b"=")
+        if pair and unquote_to_bytes(key.replace(b"+", b" ")) == b"name":
+            found.append(value)
+    if len(found) != 1:
+        raise ApiError(422, "invalid_request", problems=["name: give the file name once, as ?name=<percent-encoded "
+                                                         "UTF-8>"])
+    try:
+        name = unquote_to_bytes(found[0].replace(b"+", b" ")).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ApiError(422, "invalid_request", problems=["name: not UTF-8 after percent-decoding"]) from exc
+    if not name.strip():
+        raise ApiError(422, "invalid_request", problems=["name: empty"])
+    return name

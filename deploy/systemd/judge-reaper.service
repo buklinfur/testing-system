@@ -17,6 +17,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# stale uploads (4b.2, D-100): the reaper removes files only in <JUDGE_BLOB_DIR>/tmp (JUDGE_BLOB_DIR of
+# backend.env.example); it never touches the blobs, and writes nowhere else. install-wsl.sh creates the directory.
+ReadWritePaths=/var/lib/judge/blobs/tmp
 
 [Install]
 WantedBy=multi-user.target

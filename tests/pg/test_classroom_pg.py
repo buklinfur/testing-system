@@ -80,9 +80,11 @@ class ClassroomServiceTests(PgCase):
         """The cached status of every work == next_status applied to its events in their order."""
         self.s.expire_all()
         for work in self.s.execute(select(AssignmentWork).where(AssignmentWork.item_id == item.id)).scalars():
-            status = None
-            for kind, row in works.events(self.s, work):
-                t = grading.next_status(status, EVENT["submission" if kind == "submission" else row.action.value])
+            status, found = None, works.events(self.s, work)
+            for i, (kind, row) in enumerate(found):
+                seen = grading.student_status(item, found[:i]) == grading.GRADED  # D-102: what the student saw then
+                t = grading.next_status(status, EVENT["submission" if kind == "submission" else row.action.value],
+                                        grade_seen=seen)
                 self.assertTrue(t, f"work {work.id}: {kind} not allowed after {status}")
                 status = t.status
             self.assertEqual(work.status.value, status, f"work {work.id}")
@@ -350,7 +352,7 @@ class ClassroomServiceTests(PgCase):
         draft = self.assignment(publish=False)
         self.refused("not_published", works.grade_work, self.s, self.actor, draft, self.a, T0, score=1)
         # graded without a hand-in: the work is created graded
-        result = works.grade_work(self.s, self.actor, item, self.a, T0, score=0, comment="не сдано")
+        result = works.grade_work(self.s, self.actor, item, self.a, T0, score=0, comment="не сдано", release=True)
         self.s.commit()
         self.assertEqual(result["status"], "graded")
         self.refused("already_graded", self.submit, self.a, item)
@@ -485,7 +487,7 @@ class ClassroomServiceTests(PgCase):
         self.assert_cache_matches_history(item)
 
     def test_hand_in_against_a_grade(self):
-        item = self.assignment()
+        item = self.assignment(grades_release="immediate")  # a grade seen at once closes the hand-in
         self.submit(self.a, item)
         self.s.commit()
 
@@ -524,6 +526,116 @@ class ClassroomServiceTests(PgCase):
         self.assertEqual(len(released), 1)
         graded_before = [r.id for r in reviews if r.action.value == "graded" and r.id < released[0].id]
         self.assertEqual(released[0].release_of, graded_before[-1], "the release published the grade it saw")
+        self.assert_cache_matches_history(item)
+
+    def test_hand_in_over_an_unreleased_grade_takes_it_off_the_work(self):
+        """D-102: the hand-in passes, the work is submitted again, the grade stays in the history «к прежней сдаче»,
+        the teacher sees the work handed in again after a grade, and that grade is never released."""
+        item = self.assignment()
+        self.submit(self.a, item)
+        first = works.grade_work(self.s, self.actor, item, self.a, T0 + US, score=4, comment="черновая")
+        self.s.commit()
+        before = works.student_work(self.s, self.a, item, T0 + 2 * US)
+        self.submit(self.a, item, now=T0 + 2 * US, text="исправил")
+        self.s.commit()
+        work = works.work_of(self.s, item, self.a)
+        self.assertEqual(work.status.value, "submitted")
+        after = works.student_work(self.s, self.a, item, T0 + 2 * US)
+        self.assertEqual((after["status"], after["grade"], after["submissions"]), ("submitted", None, 2))
+        self.assertEqual({k: v for k, v in before.items() if k != "submissions"},
+                         {k: v for k, v in after.items() if k != "submissions"})
+        card = works.work_card(self.s, self.blobs, item, self.a, T0 + 2 * US)
+        graded = [e for e in card["events"] if e["kind"] == "review" and e["action"] == "graded"]
+        self.assertEqual([(e["id"], e["superseded"]) for e in graded], [(first["review_id"], True)])
+        self.assertTrue(card["resubmitted_after_grade"])
+        row = works.review_queue(self.s, T0 + 2 * US, item=item)["items"]
+        row = next(r for r in row if r["user_id"] == self.a.id)
+        self.assertEqual((row["status"], row["grade"], row["resubmitted_after_grade"]), ("submitted", None, True))
+        self.assertEqual(works.release_grades(self.s, self.actor, item, T0 + 3 * US, [self.a])[0]["result"],
+                         "nothing_to_release")
+        self.s.rollback()
+        # graded again: the new grade is the current one and is released; the old one never
+        second = works.grade_work(self.s, self.actor, item, self.a, T0 + 3 * US, score=9)
+        self.assertEqual(works.release_grades(self.s, self.actor, item, T0 + 4 * US, [self.a])[0]["result"],
+                         "released")
+        self.s.commit()
+        released = self.s.execute(select(AssignmentReview.release_of)
+                                  .where(AssignmentReview.action == "released")).scalars().all()
+        self.assertEqual(released, [second["review_id"]])
+        card = works.work_card(self.s, self.blobs, item, self.a, T0 + 4 * US)
+        self.assertFalse(card["resubmitted_after_grade"])
+        self.assertEqual(card["student_sees"]["grade"]["score"], Decimal(9))
+        # the released grade closes the hand-in, as before
+        self.refused("already_graded", self.submit, self.a, item, now=T0 + 5 * US)
+        self.assert_cache_matches_history(item)
+
+    def test_release_against_a_hand_in_over_the_grade(self):
+        """D-102, two connections: a release of an unreleased grade and the student's hand-in over it go one after
+        the other under the lock of the work. Either the release wins (the grade is seen, the hand-in is
+        already_graded) or the hand-in does (the grade is off the work, the release finds nothing_to_release) -
+        never a released grade for an earlier hand-in. Each order is forced once, then both start together."""
+        for name, delay_release, delay_hand_in in (("release first", 0, 0.1), ("hand-in first", 0.1, 0),
+                                                   ("together", 0, 0)):
+            with self.subTest(name):
+                item = self.assignment()
+                self.submit(self.a, item)
+                grade = works.grade_work(self.s, self.actor, item, self.a, T0 + US, score=5)
+                self.s.commit()
+
+                def release(session, item=item, delay=delay_release):
+                    time.sleep(delay)
+                    return works.release_grades(session, self.actor, session.get(FeedItem, item.id), T0 + 2 * US,
+                                                [session.get(User, self.a.id)])[0]["result"]
+
+                def hand_in(session, item=item, delay=delay_hand_in):
+                    time.sleep(delay)
+                    it, user = self.in_session(session, item, self.a)
+                    return works.submit_work(session, user, it, T0 + 2 * US, blobs=self.blobs, text="ещё")[0].id
+
+                result, handed = self.run_parallel(release, hand_in)
+                work = works.work_of(self.s, item, self.a)
+                if result == "released":
+                    self.assertEqual((handed, work.status.value), ("already_graded", "graded"))
+                else:
+                    self.assertEqual(result, "nothing_to_release")
+                    self.assertIsInstance(handed, int)
+                    self.assertEqual(work.status.value, "submitted")
+                    self.assertEqual(grading.superseded(item, works.events(self.s, work)), {grade["review_id"]})
+                if name == "release first":
+                    self.assertEqual(result, "released")
+                elif name == "hand-in first":
+                    self.assertEqual(result, "nothing_to_release")
+                released = self.s.execute(select(AssignmentReview).where(AssignmentReview.work_id == work.id,
+                                                                         AssignmentReview.action == "released")
+                                          ).scalars().all()
+                gone = grading.superseded(item, works.events(self.s, work))
+                self.assertFalse([r for r in released if r.release_of in gone], "a grade for an earlier hand-in")
+                self.assert_cache_matches_history(item)
+
+    def test_events_go_in_the_order_they_were_applied_not_by_moment(self):
+        """A hand-in received before a grade that waited for the lock of the work while the grade committed comes
+        after it (seq, D-102): the grade is for the earlier hand-in, the cache agrees with the history."""
+        item = self.assignment()
+        self.submit(self.a, item)
+        self.s.commit()
+
+        def grade(session):
+            it, user = self.in_session(session, item, self.a)
+            return works.grade_work(session, self.actor, it, user, T0 + 2 * US, score=3)["review_id"]
+
+        def hand_in(session):
+            time.sleep(0.1)  # the grade has the lock by now; this request was received earlier
+            it, user = self.in_session(session, item, self.a)
+            return works.submit_work(session, user, it, T0 + US, blobs=self.blobs, text="ещё")[0].id
+
+        review_id, sub_id = self.run_parallel(grade, hand_in)
+        work = works.work_of(self.s, item, self.a)
+        found = works.events(self.s, work)
+        self.assertEqual([(kind, row.id) for kind, row in found][-2:], [("review", review_id), ("submission", sub_id)])
+        self.assertEqual(work.status.value, "submitted")
+        self.assertEqual(grading.superseded(item, found), {review_id})
+        self.assertEqual(works.last_submission(self.s, work).id, sub_id)
+        self.assertEqual(work.last_seq, len(found))
         self.assert_cache_matches_history(item)
 
     def test_two_bulk_releases_at_once_release_each_grade_once(self):

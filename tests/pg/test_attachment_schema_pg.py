@@ -38,6 +38,9 @@ class AttachmentSchemaTests(PgCase):
 
     # ---------------------------------------------------------------- helpers
     def insert(self, table, returning="id", **values):
+        if table in ("assignment_submissions", "assignment_reviews"):  # D-102: the order of the work's events
+            self.seq = getattr(self, "seq", 0) + 1
+            values.setdefault("seq", self.seq)
         cols = ", ".join(values)
         params = ", ".join(f":{k}" for k in values)
         return self.s.execute(text(f"INSERT INTO {table} ({cols}) VALUES ({params}) RETURNING {returning}"),

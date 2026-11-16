@@ -285,7 +285,8 @@ def work_list(ctx: Context, args) -> int:
         emit_json(ctx, rows)
         return 0
     show(ctx, [{**r, "grade_text": _grade_text(r["grade"]),
-                "released": None if r["grade"] is None else r["grade"]["released"]} for r in rows],
+                "released": None if r["grade"] is None else r["grade"]["released"],
+                "status": r["status"] + (" (again)" if r["resubmitted_after_grade"] else "")} for r in rows],
          [("item", "ITEM"), ("login", "LOGIN"), ("status", "STATUS"), ("late", "LATE"), ("missing", "MISSING"),
           ("submissions", "HAND-INS"), ("last_submitted_at", "LAST"), ("grade_text", "GRADE"),
           ("released", "RELEASED")])
@@ -311,6 +312,7 @@ def work_show(ctx: Context, args) -> int:
         return 0
     sees = card["student_sees"]
     ctx.print(f"item #{card['item']} {card['login']}: {card['status']}" + (", missing" if card["missing"] else "")
+              + (", handed in again after a grade: needs a new one" if card["resubmitted_after_grade"] else "")
               + (f" (since {ctx.time(card['status_at'])})" if card["status_at"] else ""))
     ctx.print(f"  the student sees: {sees['status'] or 'assigned'}, grade {_grade_text(sees['grade'])}"
               + (", late" if sees["late"] else ""))
@@ -329,7 +331,7 @@ def work_show(ctx: Context, args) -> int:
         else:
             what = e["action"]
             if what == "graded":
-                what += " " + _grade_text(e)
+                what += " " + _grade_text(e) + (" (for an earlier hand-in, never released)" if e["superseded"] else "")
             elif what == "released":
                 what += f" #{e['release_of']}"
             by = f"admin #{e['reviewer_id']}" if e["reviewer_id"] else "console"

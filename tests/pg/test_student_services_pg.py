@@ -163,6 +163,20 @@ class StudentServicesTests(PgCase):
                 self.refused("file_not_found", sp.statement_file, self.s, self.a, self.blobs, "c", "A", path, NOW,
                              request=request)
         self.refused("problem_not_found", sp.problem_view, self.s, self.a, self.blobs, self.settings, "c", "B", NOW)
+
+    def test_the_statement_resolves_its_links_for_the_student(self):
+        """4b.2 (D-100): [[памятка:…]] of every statement of the version, each slug once; a material the student has
+        no basis for looks like no material at all."""
+        from app.materials import service as ms
+        self.enter(self.a)
+        open_ = ms.create_material(self.s, audit.Actor(cli="cli:test"), NOW, slug="cycles", title="Циклы",
+                                   library="all_students").version.material_id
+        ms.create_material(self.s, audit.Actor(cli="cli:test"), NOW, slug="secret", title="Секрет")
+        self.version.statements = {"ru": "См. [[памятка:cycles]], [[памятка:secret]]", "en": "[[памятка:cycles]]"}
+        self.s.commit()
+        view = sp.problem_view(self.s, self.a, self.blobs, self.settings, "c", "A", NOW)
+        self.assertEqual(view["links"], [{"slug": "cycles", "available": True, "id": open_, "title": "Циклы"},
+                                         {"slug": "secret", "available": False}])
         self.cp.available_from = NOW + timedelta(minutes=1)  # not there yet: the same answer as no problem at all
         self.s.commit()
         self.refused("problem_not_found", sp.problem_view, self.s, self.a, self.blobs, self.settings, "c", "A", NOW)

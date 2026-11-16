@@ -25,7 +25,8 @@ def _window(contest: Contest, participation: Optional[Participation]) -> Optiona
     return None if w is None else {"start": w.start, "end": w.end}
 
 
-def _row(user: User, s: Seen, now: datetime) -> dict:
+def contest_row(user: User, s: Seen, now: datetime) -> dict:
+    """A contest in the student's list, and the summary of a contest item of the feed (student/feed.py)."""
     c, part = s.contest, s.participation
     return {"slug": c.slug, "title": c.title, "mode": "full" if s.full else "own_results", "phase": phase(c, now),
             "state": c.state, "starts_at": c.starts_at, "ends_at": c.ends_at, "timing_mode": c.timing_mode,
@@ -52,7 +53,7 @@ def my_contests(db: Session, user: User, now: datetime) -> list:
         part, in_group = parts.get(c.id), c.id in in_groups
         full = access.can_view_contest(user, c, part, now, in_group)
         if full or access.can_see_own_results(user, c, part):
-            out.append(_row(user, Seen(c, part, in_group, full), now))
+            out.append(contest_row(user, Seen(c, part, in_group, full), now))
     return out
 
 
@@ -78,7 +79,7 @@ def contest_view(db: Session, user: User, slug: str, now: datetime) -> dict:
     """The page of a contest. Seen only for one's own results: the row of the list and nothing else. Before the
     student's time begins (started()), the problems are not named: an empty list and their number (D-093)."""
     s = seen(db, user, slug, now)
-    out = _row(user, s, now)
+    out = contest_row(user, s, now)
     out["server_time"] = now
     if not s.full:
         return out

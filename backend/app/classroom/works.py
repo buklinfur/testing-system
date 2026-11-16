@@ -2,8 +2,10 @@
 docs/CLASSROOM.md §4, §5, §7).
 
 Locking. Every change of a work - a hand-in, a grade, a return, a release - locks its row of assignment_works
-(SELECT ... FOR UPDATE) and decides on the status read under that lock, so concurrent changes go one after
-another. A hand-in first takes the advisory lock (locks.STUDENT_FILES, student id) and then the row: the hand-ins
+(SELECT ... FOR UPDATE) and decides on the status and the events read under that lock, so concurrent changes go one
+after another: a release and a hand-in over an unreleased grade (D-102) never both win - the release first makes
+the grade seen and the hand-in already_graded, the hand-in first takes the grade off the work and the release finds
+nothing_to_release. A hand-in first takes the advisory lock (locks.STUDENT_FILES, student id) and then the row: the hand-ins
 of one student (on any item) go one at a time, so the quota - the distinct blobs of all their hand-ins - counts
 every earlier one (4v.3). The first change of a pair (item, student) creates the row with INSERT ... ON CONFLICT
 (item_id, user_id) DO NOTHING and then locks it: two first hand-ins at once make one work. A release of many works locks them in the
@@ -25,7 +27,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Iterable, Optional, Sequence
 
-from sqlalchemy import false, func, literal, select, union_all
+from sqlalchemy import false, func, select, union_all
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -34,7 +36,7 @@ from ..auth import audit
 from ..blobstore import BlobStore, Incoming
 from ..models import (AssignmentReview, AssignmentSubmission, AssignmentSubmissionFile, AssignmentSubmissionLink,
                       AssignmentWork, FeedItem, FeedItemAudience, FeedItemKind, FeedItemState, Group, GroupMember,
-                      ReviewAction, Role, SubmissionFileKind, User, WorkStatus)
+                      ReviewAction, Role, SubmissionFileKind, User, WorkDraftFile, WorkStatus)
 from . import access, grading
 from . import attachment_rules
 from . import attachments as files_service
@@ -43,8 +45,6 @@ from .items import FeedError
 
 ANSWER_FILE = "answer.md"
 COMMENT_MAX = 2000
-# the order of the events of a work: by time, a hand-in before a review at the same moment, then by id
-SUBMISSION_RANK, REVIEW_RANK = 0, 1
 
 
 def _v(value):
@@ -78,8 +78,21 @@ def _lock_or_create(db: Session, item: FeedItem, user: User, now: datetime) -> t
     return row, None if created is not None else row.status.value
 
 
-def _set_status(work: AssignmentWork, prior: Optional[str], event: str, now: datetime) -> None:
-    t = grading.next_status(prior, event)
+def seen_status(db: Session, item: FeedItem, work: Optional[AssignmentWork]) -> Optional[str]:
+    """The status of the work as its student sees it (grading.student_status over its events): what every refusal
+    of a hand-in or a draft upload is decided on (D-102). None: no work."""
+    return None if work is None else grading.student_status(item, events(db, work))
+
+
+def _seq(work: AssignmentWork) -> int:
+    """The next seq of the work's events, taken under the lock of its row (D-102)."""
+    work.last_seq += 1
+    return work.last_seq
+
+
+def _set_status(work: AssignmentWork, prior: Optional[str], event: str, now: datetime, *,
+                grade_seen: bool = True) -> None:
+    t = grading.next_status(prior, event, grade_seen=grade_seen)
     if not t:
         raise FeedError(t.reason, t.reason)
     if work.status != WorkStatus(t.status):
@@ -110,19 +123,25 @@ def _comment(text: Optional[str]) -> Optional[str]:
 def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs: BlobStore,
                 text: Optional[str] = None, text_limit: int = access.ANSWER_TEXT_MAX_BYTES,
                 ip: Optional[str] = None, files: Sequence[Incoming] = (), links: Sequence = (),
-                limits: attachment_rules.Limits = attachment_rules.Limits(),
+                drafts: Sequence[int] = (), limits: attachment_rules.Limits = attachment_rules.Limits(),
                 quota: Optional[int] = attachment_rules.STUDENT_QUOTA_BYTES) -> tuple[AssignmentSubmission, object]:
     """A hand-in of the student of the session, received at `now`: a text answer, files (finished
-    blobstore.Incoming, in their order) and links (url, title). Returns (the hand-in, the decision: late or not).
+    blobstore.Incoming, in their order), files of the student's draft of this item by id (4b.2, in their order,
+    after the Incoming ones) and links (url, title). Returns (the hand-in, the decision: late or not).
 
-    Order: access.can_submit_work (with the number of files and links) -> attachment_rules.check_hand_in (names,
-    types, sizes, links) -> the advisory lock of the student, the lock of the work, can_submit_work again on the
-    status read under it -> the quota (attachment_rules.quota_ok: sizes of the blobs this hand-in adds that the
-    student does not have yet, answer.md included) -> only then the files go into the store. A refusal raises
-    FeedError before anything is stored; the caller closes the uploads either way."""
+    Order: access.can_submit_work (with the number of files, draft files and links) -> attachment_rules.check_hand_in
+    of the Incoming files and the links -> the advisory lock of the student -> the named draft files, locked (FOR
+    UPDATE; an id that is not a live file of this student's draft of this item: draft_file_not_found) and
+    check_hand_in of everything together (their first bytes read from the store) -> the lock of the work,
+    can_submit_work again on the status read under it -> the quota (attachment_rules.quota_ok: sizes of the blobs
+    this hand-in adds that the student does not have yet among their hand-ins and drafts, answer.md included; a
+    draft file is theirs already) -> only then the Incoming files go into the store; the draft rows named are
+    deleted, their blobs now files of the hand-in. A refusal raises FeedError before anything is stored; the caller
+    closes the uploads either way."""
     files = [f.finish() for f in files]
     links = [files_service.rules_link(getattr(link, "url", link), getattr(link, "title", None)) for link in links]
     views = [files_service.file_view(f) for f in files]
+    drafts = list(drafts)
     in_audience = feed.in_audience(db, item, user)
     extensions = feed.due_moments(db, item, user)
     current = work_of(db, item, user)
@@ -130,18 +149,23 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
     def decide(status):
         d = access.can_submit_work(user, item, now, in_audience=in_audience, extensions=extensions,
                                    work_status=status, text=text, text_limit=text_limit,
-                                   attachments=len(files) + len(links))
+                                   attachments=len(files) + len(drafts) + len(links))
         if not d:
             raise FeedError(d.reason, d.reason)
         return d
 
-    decide(_v(current.status) if current is not None else None)
+    decide(seen_status(db, item, current))
     if files or links:
         files_service.refuse(attachment_rules.check_hand_in(views, links, limits))
     answer = text.encode("utf-8") if text is not None and text.strip() else None
     locks.take_pair(db, locks.STUDENT_FILES, user.id)
+    taken = _take_drafts(db, user, item, drafts)
+    if taken:
+        draft_views = [files_service.FileView(row.name, row.size, _head(blobs, row.blob_sha256)) for row in taken]
+        files_service.refuse(attachment_rules.check_hand_in(views + draft_views, links, limits))
     work, prior = _lock_or_create(db, item, user, now)
-    decision = decide(prior)
+    seen = seen_status(db, item, work) if prior is not None else None  # read again under the lock of the work
+    decision = decide(seen)
     new = {f.sha256: f.size for f in files}
     if answer is not None:
         new[hashlib.sha256(answer).hexdigest()] = len(answer)
@@ -150,7 +174,7 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
     if not attachment_rules.quota_ok(used, adding, quota):
         raise FeedError("there is no more space for your files: ask the teacher", "quota_exceeded", used=used,
                         adding=adding, quota=quota)
-    sub = AssignmentSubmission(work_id=work.id, created_at=now, late=decision.late, ip=ip)
+    sub = AssignmentSubmission(work_id=work.id, created_at=now, late=decision.late, ip=ip, seq=_seq(work))
     db.add(sub)
     db.flush()
     if answer is not None:
@@ -162,19 +186,63 @@ def submit_work(db: Session, user: User, item: FeedItem, now: datetime, *, blobs
         sha = files_service.adopt(db, upload)
         db.add(AssignmentSubmissionFile(submission_id=sub.id, kind=SubmissionFileKind.file, path=view.name,
                                         blob_sha256=sha, size=view.size, position=position))
+    for position, row in enumerate(taken, len(files) + 1):
+        db.add(AssignmentSubmissionFile(submission_id=sub.id, kind=SubmissionFileKind.file, path=row.name,
+                                        blob_sha256=row.blob_sha256, size=row.size, position=position))
+    for row in {r.id: r for r in taken}.values():
+        db.delete(row)
     for position, link in enumerate(links):
         db.add(AssignmentSubmissionLink(submission_id=sub.id, url=link.url, title=link.title, position=position))
-    _set_status(work, prior, "submit", now)
+    _set_status(work, prior, "submit", now, grade_seen=seen == grading.GRADED)
     db.flush()
     return sub, decision
 
 
+def _take_drafts(db: Session, user: User, item: FeedItem, ids: Sequence[int]) -> list[WorkDraftFile]:
+    """The live files of the student's draft of the item with these ids, in the order of `ids`, locked (FOR UPDATE:
+    a second hand-in naming the same file waits, then finds it gone). An id repeated stays repeated (the hand-in
+    then refuses duplicate_name); any id that is not such a file: draft_file_not_found."""
+    if not ids:
+        return []
+    rows = {r.id: r for r in db.execute(
+        select(WorkDraftFile).where(WorkDraftFile.id.in_(set(ids)), WorkDraftFile.item_id == item.id,
+                                    WorkDraftFile.user_id == user.id, WorkDraftFile.deleted_at.is_(None))
+        .with_for_update().execution_options(populate_existing=True)).scalars()}
+    missing = [i for i in ids if i not in rows]
+    if missing:
+        raise FeedError(f"no file {missing[0]} in your draft", "draft_file_not_found", id=missing[0])
+    return [rows[i] for i in ids]
+
+
+def _head(blobs: BlobStore, sha256: str) -> bytes:
+    """The first bytes of a stored blob, for the signature check of the rules."""
+    fh = blobs.open(sha256)
+    if fh is None:
+        raise RuntimeError(f"blob {sha256} is recorded but missing from the store")
+    with fh:
+        return fh.read(attachment_rules.HEAD_BYTES)
+
+
+def last_submission(db: Session, work: AssignmentWork) -> Optional[AssignmentSubmission]:
+    """The latest hand-in of the work (the one that counts), or None."""
+    return db.execute(select(AssignmentSubmission).where(AssignmentSubmission.work_id == work.id)
+                      .order_by(AssignmentSubmission.seq.desc())
+                      .limit(1)).scalar_one_or_none()
+
+
 def quota_used(db: Session, user: User, shas: Iterable[str] = ()) -> tuple[int, set]:
-    """(the sizes of the distinct blobs in all the student's hand-ins, which of `shas` they already have)."""
-    mine = (select(AssignmentSubmissionFile.blob_sha256, func.max(AssignmentSubmissionFile.size).label("size"))
-            .join(AssignmentSubmission, AssignmentSubmission.id == AssignmentSubmissionFile.submission_id)
-            .join(AssignmentWork, AssignmentWork.id == AssignmentSubmission.work_id)
-            .where(AssignmentWork.user_id == user.id).group_by(AssignmentSubmissionFile.blob_sha256).subquery())
+    """(the sizes of the distinct blobs in all the student's hand-ins and draft files - deleted draft files too,
+    until the reaper removes them (4b.2) - and which of `shas` they already have). Only the student's own rows
+    count: a blob stored for someone else is new to them (an upload never tells what the store holds)."""
+    handed_in = (select(AssignmentSubmissionFile.blob_sha256.label("sha"), AssignmentSubmissionFile.size.label("size"))
+                 .join(AssignmentSubmission, AssignmentSubmission.id == AssignmentSubmissionFile.submission_id)
+                 .join(AssignmentWork, AssignmentWork.id == AssignmentSubmission.work_id)
+                 .where(AssignmentWork.user_id == user.id))
+    drafted = (select(WorkDraftFile.blob_sha256.label("sha"), WorkDraftFile.size.label("size"))
+               .where(WorkDraftFile.user_id == user.id))
+    rows = union_all(handed_in, drafted).subquery()
+    mine = (select(rows.c.sha.label("blob_sha256"), func.max(rows.c.size).label("size"))
+            .group_by(rows.c.sha).subquery())
     used = db.execute(select(func.coalesce(func.sum(mine.c.size), 0))).scalar_one()
     shas = list(shas)
     owned = set(db.execute(select(mine.c.blob_sha256).where(mine.c.blob_sha256.in_(shas))).scalars()) if shas else set()
@@ -208,13 +276,13 @@ def grade_work(db: Session, actor: audit.Actor, item: FeedItem, student: User, n
     work, prior = _lock_or_create(db, item, student, now)
     _set_status(work, prior, "grade", now)
     review = AssignmentReview(work_id=work.id, action=ReviewAction.graded, score=score, passed=passed,
-                              comment=comment, reviewer_id=actor.user_id, at=now)
+                              comment=comment, reviewer_id=actor.user_id, at=now, seq=_seq(work))
     db.add(review)
     db.flush()
     released = False
     if release and not grading.seen_at_once(item):
         db.add(AssignmentReview(work_id=work.id, action=ReviewAction.released, release_of=review.id,
-                                reviewer_id=actor.user_id, at=now))
+                                reviewer_id=actor.user_id, at=now, seq=_seq(work)))
         released = True
     db.flush()
     audit.record(db, actor, "work.grade", now, object_type="assignment_work", object_id=work.id,
@@ -238,7 +306,7 @@ def return_work(db: Session, actor: audit.Actor, item: FeedItem, student: User, 
     prior = work.status.value
     _set_status(work, prior, "return", now)
     review = AssignmentReview(work_id=work.id, action=ReviewAction.returned, comment=comment,
-                              reviewer_id=actor.user_id, at=now)
+                              reviewer_id=actor.user_id, at=now, seq=_seq(work))
     db.add(review)
     db.flush()
     audit.record(db, actor, "work.return", now, object_type="assignment_work", object_id=work.id,
@@ -266,14 +334,12 @@ def release_grades(db: Session, actor: audit.Actor, item: FeedItem, now: datetim
     results, released = [], []
     for work, user in rows:
         t = grading.next_status(work.status.value, "release")
-        reviews = list(db.execute(select(AssignmentReview).where(AssignmentReview.work_id == work.id)
-                                  .order_by(AssignmentReview.id)).scalars())
-        target, code = grading.release_target(item, reviews) if t else (None, t.reason)
+        target, code = grading.release_target(item, events(db, work)) if t else (None, t.reason)
         if target is None:
             results.append({"user_id": user.id, "login": user.login, "result": code})
             continue
         db.add(AssignmentReview(work_id=work.id, action=ReviewAction.released, release_of=target.id,
-                                reviewer_id=actor.user_id, at=now))
+                                reviewer_id=actor.user_id, at=now, seq=_seq(work)))
         results.append({"user_id": user.id, "login": user.login, "result": "released"})
         released.append(user.login)
     if wanted is not None:
@@ -290,23 +356,13 @@ def release_grades(db: Session, actor: audit.Actor, item: FeedItem, now: datetim
 
 # ----------------------------------------------------------------------------- what is seen
 def events(db: Session, work: AssignmentWork) -> list[tuple]:
-    """The hand-ins and reviews of a work in the order they happened: one query ordered by (at, kind, id), a
-    hand-in before a review at the same moment, rows of one kind by id (a grade and its release in one transaction
-    share `at`). Pairs ("submission", row) / ("review", row), as grading.student_view takes them."""
-    subs = select(literal("submission").label("kind"), literal(SUBMISSION_RANK).label("rank"),
-                  AssignmentSubmission.id.label("id"), AssignmentSubmission.created_at.label("at")) \
-        .where(AssignmentSubmission.work_id == work.id)
-    revs = select(literal("review").label("kind"), literal(REVIEW_RANK).label("rank"), AssignmentReview.id.label("id"),
-                  AssignmentReview.at.label("at")).where(AssignmentReview.work_id == work.id)
-    both = union_all(subs, revs).subquery()
-    order = db.execute(select(both.c.kind, both.c.id).order_by(both.c.at, both.c.rank, both.c.id)).all()
-    by_kind = {
-        "submission": {r.id: r for r in db.execute(select(AssignmentSubmission)
-                                                   .where(AssignmentSubmission.work_id == work.id)).scalars()},
-        "review": {r.id: r for r in db.execute(select(AssignmentReview)
-                                               .where(AssignmentReview.work_id == work.id)).scalars()},
-    }
-    return [(kind, by_kind[kind][row_id]) for kind, row_id in order]
+    """The hand-ins and reviews of a work in the order they were applied: by seq, which each took under the lock of
+    the work (D-102) - not by moment: a request keeps the moment it was received and may wait for the lock while
+    another change commits. Pairs ("submission", row) / ("review", row), as grading.student_view takes them."""
+    subs = db.execute(select(AssignmentSubmission).where(AssignmentSubmission.work_id == work.id)).scalars()
+    revs = db.execute(select(AssignmentReview).where(AssignmentReview.work_id == work.id)).scalars()
+    found = [("submission", r) for r in subs] + [("review", r) for r in revs]
+    return sorted(found, key=lambda pair: pair[1].seq)
 
 
 def student_work(db: Session, user: User, item: FeedItem, now: datetime) -> Optional[dict]:
@@ -367,12 +423,14 @@ def work_file(db: Session, viewer, item: FeedItem, student: User, file_id: int) 
 
 
 def work_detail(db: Session, blobs: BlobStore, item: FeedItem, student: User, now: datetime) -> Optional[dict]:
-    """The teacher's view of one work: every hand-in with its text, every review (unreleased grades too), the
-    cached status and what the student sees. None: no work."""
+    """The teacher's view of one work: every hand-in with its text, every review (unreleased grades too; a grade a
+    later hand-in took off the work is `superseded`: «к прежней сдаче», D-102), the cached status, the mark
+    resubmitted_after_grade and what the student sees. None: no work."""
     work = work_of(db, item, student)
     if work is None:
         return None
     found = events(db, work)
+    gone = grading.superseded(item, found)
     out_events = []
     for kind, row in found:
         if kind == "submission":
@@ -381,9 +439,11 @@ def work_detail(db: Session, blobs: BlobStore, item: FeedItem, student: User, no
         else:
             out_events.append({"kind": "review", "id": row.id, "at": row.at, "action": row.action.value,
                                "score": row.score, "passed": row.passed, "comment": row.comment,
-                               "reviewer_id": row.reviewer_id, "release_of": row.release_of})
+                               "reviewer_id": row.reviewer_id, "release_of": row.release_of,
+                               "superseded": row.id in gone})
     return {"work_id": work.id, "item": item.id, "user_id": student.id, "login": student.login,
-            "status": work.status.value, "status_at": work.status_at, "events": out_events,
+            "status": work.status.value, "status_at": work.status_at,
+            "resubmitted_after_grade": grading.resubmitted_after_grade(item, found), "events": out_events,
             "student_sees": grading.student_view(item, now, found, feed.due_moments(db, item, student))}
 
 
@@ -397,7 +457,7 @@ def work_card(db: Session, blobs: BlobStore, item: FeedItem, student: User, now:
         if item.kind != FeedItemKind.assignment or not feed.in_audience(db, item, student):
             return None
         out = {"work_id": None, "item": item.id, "user_id": student.id, "login": student.login,
-               "status": ASSIGNED, "status_at": None, "events": [],
+               "status": ASSIGNED, "status_at": None, "resubmitted_after_grade": False, "events": [],
                "student_sees": grading.student_view(item, now, [], feed.due_moments(db, item, student))}
     out["display_name"] = student.display_name
     out["missing"] = out["student_sees"]["missing"]
@@ -430,17 +490,18 @@ def addressee_ids(db: Session, item: FeedItem) -> set:
 def _last_late():
     """The `late` of the latest hand-in of a work (null: no hand-in), as a correlated subquery."""
     return (select(AssignmentSubmission.late).where(AssignmentSubmission.work_id == AssignmentWork.id)
-            .order_by(AssignmentSubmission.created_at.desc(), AssignmentSubmission.id.desc()).limit(1)
+            .order_by(AssignmentSubmission.seq.desc()).limit(1)
             .scalar_subquery())
 
 
 def queue_row(db: Session, item: FeedItem, user: User, work: Optional[AssignmentWork], now: datetime) -> dict:
     """One line of the review queue: the status (assigned without work), the flags late and missing, the number of
-    hand-ins and the current grade for the teacher (the last graded row; `released`: the student sees it)."""
+    hand-ins, the current grade for the teacher (grading.current_grade: the last graded row a later hand-in did not
+    take off; `released`: the student sees it) and resubmitted_after_grade (D-102)."""
     found = events(db, work) if work is not None else []
     submissions = [row for kind, row in found if kind == "submission"]
     reviews = [row for kind, row in found if kind == "review"]
-    current = next((r for r in reversed(reviews) if r.action == ReviewAction.graded), None)
+    current = grading.current_grade(item, found)
     seen = grading.visible_grade(item, reviews)
     return {"item": item.id, "item_title": item.title, "user_id": user.id, "login": user.login,
             "display_name": user.display_name, "work_id": None if work is None else work.id,
@@ -449,6 +510,7 @@ def queue_row(db: Session, item: FeedItem, user: User, work: Optional[Assignment
             "submissions": len(submissions), "last_submitted_at": submissions[-1].created_at if submissions else None,
             "late": bool(submissions) and bool(submissions[-1].late),
             "missing": access.missing(item, now, bool(submissions), feed.due_moments(db, item, user)),
+            "resubmitted_after_grade": grading.resubmitted_after_grade(item, found),
             "grade": None if current is None else {"score": current.score, "passed": current.passed,
                                                    "released": seen is not None and seen.id == current.id}}
 

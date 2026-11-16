@@ -73,6 +73,8 @@ STATUS = {
     "already_graded": 409, "deadline_passed": 409, "not_available_yet": 409, "no_access": 403,
     "answer_required": 422, "text_not_expected": 422, "text_too_long": 422, "files_required": 422,
     "files_not_expected": 422, "quota_exceeded": 409, "too_many_files": 422, "submission_too_large": 422,
+    # a student's draft (4b.2, D-099): a draft file named by a hand-in that is not theirs or not there
+    "draft_file_not_found": 404,
     # a student's comment only (4b.2; D-077): teachers write with comments off and in contest items, delete any
     # comment and have no rate
     "comments_disabled": 409, "comments_teacher_only": 409, "not_your_comment": 403, "rate_limited": 429,
@@ -91,7 +93,7 @@ RESULT_ONLY = frozenset({"nothing_to_release", "already_released"})
 # codes no admin request can produce: only a student's hand-in (D-063; the test of 4b.2, ROADMAP)
 HAND_IN_ONLY = frozenset({"already_graded", "deadline_passed", "not_available_yet", "no_access", "answer_required",
                           "text_not_expected", "text_too_long", "files_required", "files_not_expected",
-                          "quota_exceeded", "too_many_files", "submission_too_large"})
+                          "quota_exceeded", "too_many_files", "submission_too_large", "draft_file_not_found"})
 # codes of services whose admin routes come in a later stage: none now (file_not_found has its route since 4v.3
 # stage 5); a test keeps it empty unless a stage says why
 NO_ROUTE_YET: frozenset = frozenset()
